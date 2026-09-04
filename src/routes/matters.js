@@ -1,0 +1,772 @@
+const express = require("express");
+const { query, pool } = require("../db");
+const asyncHandler = require("../utils/asyncHandler");
+const { requireAuth } = require("../middleware/auth");
+const { matterVisibilityClause } = require("../utils/permissions");
+
+const router = express.Router();
+router.use(requireAuth); // every route below requires a valid logged-in user
+
+const STAGE_COUNT = 11; // Instructed(0) .. Closed(10)
+
+function logActivity(client, matterId, userId, type, text) {
+  return client.query(
+    `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1, $2, $3, $4)`,
+    [matterId, userId, type, text]
+  );
+}
+
+/**
+ * Loads a matter's full nested detail: the matter row plus every related
+ * collection. Run as parallel queries rather than one giant join — simpler
+ * to read and reason about, and each of these hits an indexed matter_id
+ * column so it's cheap even on a large caseload.
+ */
+async function loadMatterDetail(matterId) {
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links] = await Promise.all([
+    query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
+    query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
+    query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
+    query(`SELECT * FROM enquiries WHERE matter_id = $1 ORDER BY number ASC`, [matterId]),
+    query(`SELECT * FROM searches WHERE matter_id = $1 ORDER BY date_ordered DESC NULLS LAST`, [matterId]),
+    query(`SELECT * FROM undertakings WHERE matter_id = $1 ORDER BY date_given DESC NULLS LAST`, [matterId]),
+    query(`SELECT * FROM tasks WHERE matter_id = $1 ORDER BY (status = 'Open') DESC, due_date ASC NULLS LAST`, [matterId]),
+    query(`SELECT * FROM activity_log WHERE matter_id = $1 ORDER BY occurred_at DESC LIMIT 100`, [matterId]),
+    query(
+      `SELECT linked_matter_id AS id, m.reference, m.address, m.client, m.current_stage_index, m.target_completion
+       FROM matter_links l JOIN matters m ON m.id = l.linked_matter_id
+       WHERE l.matter_id = $1`,
+      [matterId]
+    ),
+  ]);
+
+  if (!matter.rows.length) return null;
+
+  return {
+    ...matter.rows[0],
+    documents: documents.rows,
+    emails: emails.rows,
+    enquiries: enquiries.rows,
+    searches: searches.rows,
+    undertakings: undertakings.rows,
+    tasks: tasks.rows,
+    activity: activity.rows,
+    linkedMatters: links.rows,
+  };
+}
+
+/** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
+async function assertMatterVisible(req, res, matterId) {
+  const params = [matterId, req.user.firmId];
+  const visibility = matterVisibilityClause(req.user, 3);
+  params.push(...visibility.params);
+
+  const result = await query(
+    `SELECT id FROM matters m WHERE m.id = $1 AND m.firm_id = $2 ${visibility.clause}`,
+    params
+  );
+  if (!result.rows.length) {
+    res.status(404).json({ error: "Matter not found." });
+    return false;
+  }
+  return true;
+}
+
+// -----------------------------------------------------------------------
+// GET /matters — paginated, filtered list
+// -----------------------------------------------------------------------
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    const {
+      limit = 20,
+      offset = 0,
+      type,
+      showClosed = "true",
+      feeEarnerId,
+      search,
+    } = req.query;
+
+    const pageSize = Math.min(parseInt(limit, 10) || 20, 100); // hard ceiling so a client can't request the whole table at once
+    const pageOffset = Math.max(parseInt(offset, 10) || 0, 0);
+
+    const conditions = ["m.firm_id = $1"];
+    const params = [req.user.firmId];
+
+    const visibility = matterVisibilityClause(req.user, params.length + 1);
+    if (visibility.clause) {
+      conditions.push(visibility.clause.replace(/^AND /, ""));
+      params.push(...visibility.params);
+    }
+
+    if (type && type !== "All") {
+      params.push(type);
+      conditions.push(`m.type = $${params.length}`);
+    }
+    if (showClosed === "false") {
+      conditions.push(`m.current_stage_index <> 10`);
+    }
+    if (feeEarnerId) {
+      params.push(feeEarnerId);
+      conditions.push(`m.fee_earner_id = $${params.length}`);
+    }
+    if (search && search.trim()) {
+      params.push(search.trim());
+      conditions.push(
+        `to_tsvector('english', coalesce(m.address,'') || ' ' || coalesce(m.client,'') || ' ' || coalesce(m.reference,'')) @@ plainto_tsquery('english', $${params.length})`
+      );
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    const [rows, count] = await Promise.all([
+      query(
+        `SELECT m.*, fe.name AS fee_earner_name
+         FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
+         WHERE ${whereClause}
+         ORDER BY m.updated_at DESC
+         LIMIT ${pageSize} OFFSET ${pageOffset}`,
+        params
+      ),
+      query(`SELECT count(*) FROM matters m WHERE ${whereClause}`, params),
+    ]);
+
+    res.json({
+      matters: rows.rows,
+      pagination: {
+        total: parseInt(count.rows[0].count, 10),
+        limit: pageSize,
+        offset: pageOffset,
+      },
+    });
+  })
+);
+
+// -----------------------------------------------------------------------
+// POST /matters — create
+// -----------------------------------------------------------------------
+router.post(
+  "/",
+  asyncHandler(async (req, res) => {
+    const { address, client, type, price, feeEarnerId, supervisorId, otherSideSolicitor, otherSideSolicitorEmail, estateAgent, lender, targetExchange, targetCompletion, mortgageOfferExpiry } = req.body;
+
+    if (!address || !client || !type) {
+      return res.status(400).json({ error: "address, client and type are required." });
+    }
+    if (!["Sale", "Purchase", "Remortgage"].includes(type)) {
+      return res.status(400).json({ error: "type must be Sale, Purchase or Remortgage." });
+    }
+
+    // Reference generation: CV-<year>-<next sequence for the firm>.
+    // In a high-concurrency firm this should move to a Postgres SEQUENCE per
+    // firm to fully rule out a race between two staff opening a matter at
+    // the same instant; fine as a straightforward count for phase 1.
+    const year = new Date().getFullYear();
+    const countResult = await query(
+      `SELECT count(*) FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
+      [req.user.firmId, `CV-${year}-%`]
+    );
+    const nextNum = parseInt(countResult.rows[0].count, 10) + 1;
+    const reference = `CV-${year}-${String(nextNum).padStart(4, "0")}`;
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const result = await client_.query(
+        `INSERT INTO matters (
+           firm_id, reference, address, client, type, price, fee_earner_id, supervisor_id,
+           other_side_solicitor, other_side_solicitor_email, estate_agent, lender,
+           date_instructed, target_exchange, target_completion, mortgage_offer_expiry
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CURRENT_DATE, $13,$14,$15)
+         RETURNING *`,
+        [req.user.firmId, reference, address, client, type, price || null, feeEarnerId || null, supervisorId || null,
+         otherSideSolicitor || null, otherSideSolicitorEmail || null, estateAgent || null, lender || null,
+         targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null]
+      );
+      const matter = result.rows[0];
+      await logActivity(client_, matter.id, req.user.id, "stage", "Matter opened at Instructed");
+      await client_.query("COMMIT");
+      res.status(201).json(matter);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+// -----------------------------------------------------------------------
+// GET /matters/:id — full detail
+// -----------------------------------------------------------------------
+router.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const detail = await loadMatterDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: "Matter not found." });
+    res.json(detail);
+  })
+);
+
+// -----------------------------------------------------------------------
+// PATCH /matters/:id — update core fields (address, parties, dates, notes, team, stage)
+// -----------------------------------------------------------------------
+const PATCHABLE_FIELDS = {
+  address: "address", client: "client", type: "type", price: "price",
+  feeEarnerId: "fee_earner_id", supervisorId: "supervisor_id",
+  otherSideSolicitor: "other_side_solicitor", otherSideSolicitorEmail: "other_side_solicitor_email",
+  estateAgent: "estate_agent", lender: "lender",
+  targetExchange: "target_exchange", targetCompletion: "target_completion",
+  actualExchange: "actual_exchange", actualCompletion: "actual_completion",
+  mortgageOfferExpiry: "mortgage_offer_expiry", notes: "notes",
+  preExchangeChecklist: "pre_exchange_checklist",
+  preExchangeConfirmedBy: "pre_exchange_confirmed_by",
+  preExchangeConfirmedDate: "pre_exchange_confirmed_date",
+};
+
+// JSONB columns need their JS value serialized before going to Postgres —
+// everything else in PATCHABLE_FIELDS is a plain scalar and passes through as-is.
+const JSON_FIELDS = new Set(["preExchangeChecklist"]);
+
+router.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+
+    const setClauses = [];
+    const params = [];
+    for (const [bodyKey, column] of Object.entries(PATCHABLE_FIELDS)) {
+      if (bodyKey in req.body) {
+        params.push(JSON_FIELDS.has(bodyKey) ? JSON.stringify(req.body[bodyKey]) : req.body[bodyKey]);
+        setClauses.push(`${column} = $${params.length}`);
+      }
+    }
+    if (!setClauses.length) return res.status(400).json({ error: "No recognised fields to update." });
+
+    params.push(req.params.id);
+    const result = await query(
+      `UPDATE matters SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING *`,
+      params
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Matter not found." });
+
+    await query(
+      `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'edit','Matter details updated')`,
+      [req.params.id, req.user.id]
+    );
+    res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// POST /matters/:id/stage — move the stage tracker
+// -----------------------------------------------------------------------
+const STAGE_NAMES = [
+  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
+  "Mortgage Offer", "Report on Title", "Exchange", "Completion", "Post-Completion", "Closed",
+];
+
+router.post(
+  "/:id/stage",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { stageIndex } = req.body;
+    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= STAGE_COUNT) {
+      return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
+    }
+
+    const result = await query(
+      `UPDATE matters SET current_stage_index = $1 WHERE id = $2 RETURNING *`,
+      [stageIndex, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Matter not found." });
+
+    await query(
+      `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage',$3)`,
+      [req.params.id, req.user.id, `Moved to ${STAGE_NAMES[stageIndex]}`]
+    );
+    res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Activity / "log update" notes
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/notes",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "text is required." });
+
+    const result = await query(
+      `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'note',$3) RETURNING *`,
+      [req.params.id, req.user.id, text.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Documents
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/documents",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { name, category, date, notes } = req.body;
+    if (!name || !category) return res.status(400).json({ error: "name and category are required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const result = await client_.query(
+        `INSERT INTO documents (matter_id, name, category, doc_date, notes, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [req.params.id, name, category, date || null, notes || null, req.user.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "doc", `Document added: ${name}`);
+      await client_.query("COMMIT");
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+// -----------------------------------------------------------------------
+// Emails — includes the same auto-match-to-enquiries logic as the frontend
+// prototype, now running once, server-side, instead of per-browser.
+// -----------------------------------------------------------------------
+
+/** Mirrors the frontend's parseEnquiryReplies heuristic: pulls numbered replies out of an email body. */
+function parseEnquiryReplies(body) {
+  if (!body) return {};
+  const lines = body.split(/\n+/);
+  const found = {};
+  let currentNum = null;
+  let buffer = [];
+  const flush = () => {
+    if (currentNum !== null && buffer.length) found[currentNum] = buffer.join(" ").trim();
+  };
+  for (const line of lines) {
+    const m = line.match(/^\s*(\d{1,2})[.)\:]\s+(.*)$/);
+    if (m) {
+      flush();
+      currentNum = parseInt(m[1], 10);
+      buffer = [m[2]];
+    } else if (currentNum !== null && line.trim()) {
+      buffer.push(line.trim());
+    }
+  }
+  flush();
+  return found;
+}
+
+async function matchEmailToEnquiries(client_, matterId, email) {
+  const replies = parseEnquiryReplies(email.body);
+  if (!Object.keys(replies).length) return 0;
+
+  const outstanding = await client_.query(
+    `SELECT id, number FROM enquiries WHERE matter_id = $1 AND status = 'Outstanding'`,
+    [matterId]
+  );
+
+  let matched = 0;
+  for (const enquiry of outstanding.rows) {
+    if (replies[enquiry.number]) {
+      await client_.query(
+        `UPDATE enquiries SET status = 'Pending Review', answer = $1, date_answered = $2,
+           auto_filled = true, source_email_id = $3, follow_up_notes = ''
+         WHERE id = $4`,
+        [replies[enquiry.number], email.email_date, email.id, enquiry.id]
+      );
+      matched++;
+    }
+  }
+  return matched;
+}
+
+router.post(
+  "/:id/emails",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { direction, from, to, subject, body, date } = req.body;
+    if (!direction || !subject || !date) return res.status(400).json({ error: "direction, subject and date are required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const emailResult = await client_.query(
+        `INSERT INTO emails (matter_id, direction, from_address, to_address, subject, body, email_date)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [req.params.id, direction, from || null, to || null, subject, body || null, date]
+      );
+      const email = emailResult.rows[0];
+      await logActivity(client_, req.params.id, req.user.id, "email", `Email logged: ${subject}`);
+
+      let matched = 0;
+      if (direction === "in") {
+        matched = await matchEmailToEnquiries(client_, req.params.id, email);
+        if (matched > 0) {
+          await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} auto-filled from this email — pending review`);
+        }
+      }
+
+      await client_.query("COMMIT");
+      res.status(201).json({ email, enquiriesMatched: matched });
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Manual re-check — lets a user re-run matching against a specific email on demand. */
+router.post(
+  "/:id/emails/:emailId/match",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const emailResult = await client_.query(`SELECT * FROM emails WHERE id = $1 AND matter_id = $2`, [req.params.emailId, req.params.id]);
+      if (!emailResult.rows.length) {
+        await client_.query("ROLLBACK");
+        return res.status(404).json({ error: "Email not found." });
+      }
+      const matched = await matchEmailToEnquiries(client_, req.params.id, emailResult.rows[0]);
+      if (matched > 0) {
+        await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} matched from "${emailResult.rows[0].subject}" — pending review`);
+      }
+      await client_.query("COMMIT");
+      res.json({ enquiriesMatched: matched });
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+// -----------------------------------------------------------------------
+// Enquiries
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/enquiries",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { question } = req.body;
+    if (!question || !question.trim()) return res.status(400).json({ error: "question is required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const maxResult = await client_.query(`SELECT coalesce(max(number), 0) AS max FROM enquiries WHERE matter_id = $1`, [req.params.id]);
+      const nextNumber = maxResult.rows[0].max + 1;
+      const result = await client_.query(
+        `INSERT INTO enquiries (matter_id, number, question, date_raised, status)
+         VALUES ($1,$2,$3, CURRENT_DATE, 'Outstanding') RETURNING *`,
+        [req.params.id, nextNumber, question.trim()]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "enquiry", `Enquiry ${nextNumber} added`);
+      await client_.query("COMMIT");
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Bulk-add from the standard enquiries template. */
+router.post(
+  "/:id/enquiries/bulk",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { questions } = req.body;
+    if (!Array.isArray(questions) || !questions.length) return res.status(400).json({ error: "questions must be a non-empty array." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const maxResult = await client_.query(`SELECT coalesce(max(number), 0) AS max FROM enquiries WHERE matter_id = $1`, [req.params.id]);
+      let next = maxResult.rows[0].max;
+      const inserted = [];
+      for (const q of questions) {
+        next++;
+        const result = await client_.query(
+          `INSERT INTO enquiries (matter_id, number, question, date_raised, status)
+           VALUES ($1,$2,$3, CURRENT_DATE, 'Outstanding') RETURNING *`,
+          [req.params.id, next, q]
+        );
+        inserted.push(result.rows[0]);
+      }
+      await logActivity(client_, req.params.id, req.user.id, "enquiry", `${inserted.length} standard enquiries added from template`);
+      await client_.query("COMMIT");
+      res.status(201).json(inserted);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Manually answer an Outstanding enquiry (not via the auto-match path). */
+router.patch(
+  "/:id/enquiries/:enquiryId/answer",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { answer, dateAnswered } = req.body;
+    if (!answer || !answer.trim()) return res.status(400).json({ error: "answer is required." });
+
+    const result = await query(
+      `UPDATE enquiries SET status = 'Answered', answer = $1, date_answered = $2
+       WHERE id = $3 AND matter_id = $4 RETURNING *`,
+      [answer.trim(), dateAnswered || new Date().toISOString().slice(0, 10), req.params.enquiryId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
+
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
+      [req.params.id, req.user.id, `Enquiry ${result.rows[0].number} answered`]);
+    res.json(result.rows[0]);
+  })
+);
+
+/** Review a Pending Review (auto-filled) enquiry: confirm it, or flag a follow-up. */
+router.patch(
+  "/:id/enquiries/:enquiryId/review",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { outcome, finalAnswer, followUpNote } = req.body; // outcome: 'confirm' | 'follow_up'
+
+    if (outcome === "confirm") {
+      if (!finalAnswer || !finalAnswer.trim()) return res.status(400).json({ error: "finalAnswer is required to confirm." });
+      const result = await query(
+        `UPDATE enquiries SET status = 'Answered', answer = $1 WHERE id = $2 AND matter_id = $3 RETURNING *`,
+        [finalAnswer.trim(), req.params.enquiryId, req.params.id]
+      );
+      if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
+      await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
+        [req.params.id, req.user.id, `Enquiry ${result.rows[0].number} reply confirmed`]);
+      return res.json(result.rows[0]);
+    }
+
+    if (outcome === "follow_up") {
+      if (!followUpNote || !followUpNote.trim()) return res.status(400).json({ error: "followUpNote is required to flag a follow-up." });
+      const result = await query(
+        `UPDATE enquiries SET status = 'Outstanding', follow_up_notes = $1, auto_filled = false
+         WHERE id = $2 AND matter_id = $3 RETURNING *`,
+        [followUpNote.trim(), req.params.enquiryId, req.params.id]
+      );
+      if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
+      await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
+        [req.params.id, req.user.id, `Follow-up needed on enquiry ${result.rows[0].number}: ${followUpNote.trim()}`]);
+      return res.json(result.rows[0]);
+    }
+
+    res.status(400).json({ error: "outcome must be 'confirm' or 'follow_up'." });
+  })
+);
+
+// -----------------------------------------------------------------------
+// Searches
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/searches",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { type, dateOrdered, expectedReturn } = req.body;
+    if (!type) return res.status(400).json({ error: "type is required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const result = await client_.query(
+        `INSERT INTO searches (matter_id, type, date_ordered, expected_return) VALUES ($1,$2,$3,$4) RETURNING *`,
+        [req.params.id, type, dateOrdered || null, expectedReturn || null]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "search", `${type} ordered`);
+      await client_.query("COMMIT");
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+router.patch(
+  "/:id/searches/:searchId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { expectedReturn, dateReceived, issue, issueNotes } = req.body;
+
+    const result = await query(
+      `UPDATE searches SET
+         expected_return = coalesce($1, expected_return),
+         date_received = $2,
+         issue = coalesce($3, issue),
+         issue_notes = $4
+       WHERE id = $5 AND matter_id = $6 RETURNING *`,
+      [expectedReturn || null, dateReceived || null, issue, issueNotes || null, req.params.searchId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Search not found." });
+
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'search',$3)`,
+      [req.params.id, req.user.id, issue ? `Issue flagged on ${result.rows[0].type}` : `${result.rows[0].type} updated`]);
+    res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Undertakings
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/undertakings",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { direction, description, party, dateGiven } = req.body;
+    if (!direction || !description || !description.trim()) return res.status(400).json({ error: "direction and description are required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const result = await client_.query(
+        `INSERT INTO undertakings (matter_id, direction, description, party, date_given, status)
+         VALUES ($1,$2,$3,$4,$5,'Outstanding') RETURNING *`,
+        [req.params.id, direction, description.trim(), party || null, dateGiven || null]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "undertaking", `Undertaking ${direction === "given" ? "given to" : "received from"} ${party || "the other side"}`);
+      await client_.query("COMMIT");
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+router.patch(
+  "/:id/undertakings/:undertakingId/discharge",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { dateDischarged } = req.body;
+
+    const result = await query(
+      `UPDATE undertakings SET status = 'Discharged', date_discharged = $1 WHERE id = $2 AND matter_id = $3 RETURNING *`,
+      [dateDischarged || new Date().toISOString().slice(0, 10), req.params.undertakingId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Undertaking not found." });
+
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'undertaking','Undertaking marked as discharged')`,
+      [req.params.id, req.user.id]);
+    res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Tasks / reminders
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/tasks",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { description, dueDate } = req.body;
+    if (!description || !description.trim()) return res.status(400).json({ error: "description is required." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const result = await client_.query(
+        `INSERT INTO tasks (matter_id, description, due_date, status, created_by)
+         VALUES ($1,$2,$3,'Open',$4) RETURNING *`,
+        [req.params.id, description.trim(), dueDate || null, req.user.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "task", `Task added: ${description.trim()}`);
+      await client_.query("COMMIT");
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+router.patch(
+  "/:id/tasks/:taskId/complete",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const result = await query(
+      `UPDATE tasks SET status = 'Done', date_completed = CURRENT_DATE WHERE id = $1 AND matter_id = $2 RETURNING *`,
+      [req.params.taskId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Task not found." });
+
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'task',$3)`,
+      [req.params.id, req.user.id, `Task completed: ${result.rows[0].description}`]);
+    res.json(result.rows[0]);
+  })
+);
+
+router.patch(
+  "/:id/tasks/:taskId/reopen",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const result = await query(
+      `UPDATE tasks SET status = 'Open', date_completed = NULL WHERE id = $1 AND matter_id = $2 RETURNING *`,
+      [req.params.taskId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Task not found." });
+    res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Chain / linked matters (reciprocal)
+// -----------------------------------------------------------------------
+router.put(
+  "/:id/links/:linkedId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    if (!(await assertMatterVisible(req, res, req.params.linkedId))) return;
+
+    await query(
+      `INSERT INTO matter_links (matter_id, linked_matter_id) VALUES ($1,$2), ($2,$1)
+       ON CONFLICT DO NOTHING`,
+      [req.params.id, req.params.linkedId]
+    );
+    res.status(204).send();
+  })
+);
+
+router.delete(
+  "/:id/links/:linkedId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    await query(
+      `DELETE FROM matter_links WHERE (matter_id = $1 AND linked_matter_id = $2) OR (matter_id = $2 AND linked_matter_id = $1)`,
+      [req.params.id, req.params.linkedId]
+    );
+    res.status(204).send();
+  })
+);
+
+module.exports = router;
