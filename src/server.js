@@ -2,6 +2,10 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 
+const { pool } = require("./db");
+const { runMigrations } = require("../scripts/migrate");
+const { runSeed } = require("../scripts/seed");
+
 const authRoutes = require("./routes/auth");
 const matterRoutes = require("./routes/matters");
 const userRoutes = require("./routes/users");
@@ -56,6 +60,30 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
+
+// Start listening FIRST, then run setup in the background. This matters on
+// hosts that kill the process if it doesn't bind a port quickly (Render's
+// free tier does this) — running migrations before listen() risks a
+// SIGTERM if they take more than a few seconds. Migrations are safe to run
+// on every boot (each one only applies once, tracked in schema_migrations).
+//
+// Seeding is NOT safe to run on every boot — it wipes and recreates the
+// demo firm each time, which would destroy real changes. It only runs if
+// SEED_ON_BOOT=true is explicitly set, for hosts (like Render's free tier)
+// that don't offer a shell to run `npm run seed` by hand. Unset it again
+// after the first successful run.
 app.listen(PORT, () => {
   console.log(`V J Crawford Conveyancing API listening on port ${PORT}`);
+
+  (async () => {
+    try {
+      await runMigrations(pool);
+      if (process.env.SEED_ON_BOOT === "true") {
+        console.log("[boot] SEED_ON_BOOT is true — seeding demo data...");
+        await runSeed(pool);
+      }
+    } catch (err) {
+      console.error("[boot] Setup on boot failed:", err.message);
+    }
+  })();
 });
