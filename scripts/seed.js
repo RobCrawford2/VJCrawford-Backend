@@ -4,15 +4,13 @@
  * file") so the backend can be tested end-to-end with realistic, familiar
  * data. Safe to re-run — it wipes and recreates the demo firm each time.
  *
- * Usage: npm run seed
+ * Exported as `runSeed(pool)` so it can be triggered on server boot (see
+ * server.js — gated behind SEED_ON_BOOT=true) as well as run directly via
+ * `npm run seed`.
  */
-require("dotenv").config();
 const bcrypt = require("bcryptjs");
-const { Pool } = require("pg");
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-async function run() {
+async function runSeed(pool) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -116,20 +114,29 @@ async function run() {
     );
 
     await client.query("COMMIT");
-    console.log("Seed complete.");
-    console.log("Demo login: sarah@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
-    console.log("            marcus@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
-    console.log("            david@vjcrawfordconveyancing.co.uk / password123 (admin)");
+    console.log("[seed] Seed complete.");
+    console.log("[seed] Demo login: sarah@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
+    console.log("[seed]             marcus@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
+    console.log("[seed]             david@vjcrawfordconveyancing.co.uk / password123 (admin)");
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-run().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// CLI usage: `npm run seed` — creates its own pool, runs, then exits.
+if (require.main === module) {
+  require("dotenv").config();
+  const { Pool } = require("pg");
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  runSeed(pool)
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}
+
+module.exports = { runSeed };
