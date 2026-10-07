@@ -1,4 +1,6 @@
+const path = require("path");
 const express = require("express");
+const multer = require("multer");
 const { query, pool } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
 const { requireAuth } = require("../middleware/auth");
@@ -7,7 +9,14 @@ const { matterVisibilityClause } = require("../utils/permissions");
 const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
-const STAGE_COUNT = 11; // Instructed(0) .. Closed(10)
+// Must match STAGES in frontend/src/App.jsx.
+const STAGE_NAMES = [
+  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
+  "Mortgage Offer", "Report on Title", "Pre-Exchange Review", "Exchange", "Completion",
+  "Post-Completion", "Closed",
+];
+const STAGE_COUNT = STAGE_NAMES.length; // Instructed(0) .. Closed(11)
+const CLOSED_INDEX = STAGE_COUNT - 1;
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -104,7 +113,7 @@ router.get(
       conditions.push(`m.type = $${params.length}`);
     }
     if (showClosed === "false") {
-      conditions.push(`m.current_stage_index <> 10`);
+      conditions.push(`m.current_stage_index <> ${CLOSED_INDEX}`);
     }
     if (feeEarnerId) {
       params.push(feeEarnerId);
@@ -262,10 +271,6 @@ router.patch(
 // -----------------------------------------------------------------------
 // POST /matters/:id/stage — move the stage tracker
 // -----------------------------------------------------------------------
-const STAGE_NAMES = [
-  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
-  "Mortgage Offer", "Report on Title", "Exchange", "Completion", "Post-Completion", "Closed",
-];
 
 router.post(
   "/:id/stage",
@@ -335,6 +340,115 @@ router.post(
     } finally {
       client_.release();
     }
+  })
+);
+
+// -----------------------------------------------------------------------
+// Document files — the actual file behind a document record, stored in
+// Postgres (document_files). One file per document; uploading again
+// replaces it.
+// -----------------------------------------------------------------------
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+// Extension → MIME type we serve it back as. Anything not listed is
+// refused, which also keeps out HTML/SVG/scripts that a browser might run.
+const ALLOWED_FILE_TYPES = {
+  ".pdf": "application/pdf",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".rtf": "application/rtf",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".msg": "application/vnd.ms-outlook",
+  ".eml": "message/rfc822",
+};
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1 } });
+
+function receiveFile(req, res, next) {
+  upload.single("file")(req, res, (err) => {
+    if (err?.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: `Files must be ${MAX_FILE_BYTES / 1024 / 1024} MB or smaller.` });
+    }
+    if (err) return res.status(400).json({ error: "Couldn't read the uploaded file." });
+    next();
+  });
+}
+
+router.put(
+  "/:id/documents/:documentId/file",
+  // Check access before reading the upload into memory.
+  asyncHandler(async (req, res, next) => {
+    if (await assertMatterVisible(req, res, req.params.id)) next();
+  }),
+  receiveFile,
+  asyncHandler(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file was attached." });
+    const ext = path.extname(req.file.originalname || "").toLowerCase();
+    const mime = ALLOWED_FILE_TYPES[ext];
+    if (!mime) {
+      return res.status(400).json({ error: "That type of file isn't allowed. Use PDF, Word, Excel, images, text, or Outlook emails." });
+    }
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const doc = await client_.query(
+        `UPDATE documents SET file_name = $1, file_mime = $2, file_size = $3
+         WHERE id = $4 AND matter_id = $5 RETURNING *`,
+        [req.file.originalname, mime, req.file.size, req.params.documentId, req.params.id]
+      );
+      if (!doc.rows.length) {
+        await client_.query("ROLLBACK");
+        return res.status(404).json({ error: "Document not found." });
+      }
+      await client_.query(
+        `INSERT INTO document_files (document_id, data, uploaded_by) VALUES ($1, $2, $3)
+         ON CONFLICT (document_id) DO UPDATE SET data = EXCLUDED.data, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
+        [req.params.documentId, req.file.buffer, req.user.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "doc", `File attached to ${doc.rows[0].name}: ${req.file.originalname}`);
+      await client_.query("COMMIT");
+      res.json(doc.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+router.get(
+  "/:id/documents/:documentId/file",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const result = await query(
+      `SELECT d.file_name, d.file_mime, f.data
+       FROM documents d JOIN document_files f ON f.document_id = d.id
+       WHERE d.id = $1 AND d.matter_id = $2`,
+      [req.params.documentId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "No file attached to this document." });
+
+    const { file_name, file_mime, data } = result.rows[0];
+    res.set({
+      "Content-Type": file_mime || "application/octet-stream",
+      "Content-Length": data.length,
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file_name)}`,
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "private, no-store",
+    });
+    res.send(data);
   })
 );
 

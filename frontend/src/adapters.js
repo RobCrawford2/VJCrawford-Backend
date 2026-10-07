@@ -12,7 +12,10 @@ export function userName(users, id) {
 }
 
 function adaptDocument(d) {
-  return { id: d.id, name: d.name, category: d.category, date: d.doc_date || "", notes: d.notes || "" };
+  return {
+    id: d.id, name: d.name, category: d.category, date: d.doc_date || "", notes: d.notes || "",
+    fileName: d.file_name || "", fileSize: d.file_size || 0,
+  };
 }
 function adaptEmail(e) {
   return { id: e.id, direction: e.direction, from: e.from_address || "", to: e.to_address || "", subject: e.subject, body: e.body || "", date: e.email_date };

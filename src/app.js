@@ -51,6 +51,10 @@ app.use((err, req, res, next) => {
     // Postgres unique_violation
     return res.status(409).json({ error: "That record already exists." });
   }
+  if (err.code === "22P02") {
+    // Postgres invalid_text_representation — e.g. a malformed id in the URL
+    return res.status(400).json({ error: "That doesn't look like a valid id or value." });
+  }
   if (err.code === "23503") {
     // Postgres foreign_key_violation
     return res.status(400).json({ error: "That references something that doesn't exist." });

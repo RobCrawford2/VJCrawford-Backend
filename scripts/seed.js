@@ -89,7 +89,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
 
     await insertMatter({
       reference: "CV-2026-0038", address: "Flat 3, Ashworth Court, 22 Grove Road, Bristol, BS6 6UN", client: "Priya Shah",
-      type: "Sale", price: 245000, stage: 10, feeEarner: marcus.id,
+      type: "Sale", price: 245000, stage: 11, feeEarner: marcus.id,
       otherSideSolicitor: "Redgrave Legal", otherSideSolicitorEmail: "property@redgravelegal.co.uk", estateAgent: "Northside Homes",
       instructed: "2026-04-14", targetExchange: "2026-06-10", targetCompletion: "2026-06-24",
       actualExchange: "2026-06-10", actualCompletion: "2026-06-24",

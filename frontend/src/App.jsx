@@ -60,6 +60,25 @@ const DOC_CATEGORIES = [
   "Contract", "Title", "Search", "ID / AML", "Mortgage", "Correspondence", "SDLT / LR", "Other"
 ];
 
+// Must match ALLOWED_FILE_TYPES / MAX_FILE_BYTES in src/routes/matters.js.
+const DOC_FILE_EXTENSIONS = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".rtf", ".txt", ".csv", ".jpg", ".jpeg", ".png", ".gif", ".heic", ".tif", ".tiff", ".msg", ".eml"];
+const DOC_MAX_FILE_MB = 10;
+// Types a browser can safely show in a tab; everything else downloads.
+const DOC_VIEWABLE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/gif", "text/plain"];
+
+function checkDocFile(file) {
+  const ext = (file.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
+  if (!DOC_FILE_EXTENSIONS.includes(ext)) return "That type of file isn't allowed. Use PDF, Word, Excel, images, text, or Outlook emails.";
+  if (file.size > DOC_MAX_FILE_MB * 1024 * 1024) return `Files must be ${DOC_MAX_FILE_MB} MB or smaller.`;
+  return "";
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 const SEARCH_TYPES = [
   "Local Authority Search", "Water & Drainage Search", "Environmental Search",
   "Chancel Repair Search", "Flood Risk Search", "Mining Search", "Other"
@@ -521,13 +540,56 @@ export default function App() {
   }
 
   // ---- Documents ----
-  async function addDocument(id, doc) {
+  async function addDocument(id, doc, file) {
+    let created;
     try {
-      await api.addDocument(id, doc);
-      await afterMutation();
-      setShowAddDoc(false);
+      created = await api.addDocument(id, doc);
     } catch (err) {
       window.alert(err.message || "Couldn't add the document.");
+      return;
+    }
+    if (file) {
+      try {
+        await api.uploadDocumentFile(id, created.id, file);
+      } catch (err) {
+        window.alert(`The document was recorded, but the file didn't upload: ${err.message} You can attach it again from the Documents tab.`);
+      }
+    }
+    await afterMutation();
+    setShowAddDoc(false);
+  }
+
+  async function attachDocumentFile(id, documentId, file) {
+    const problem = checkDocFile(file);
+    if (problem) return window.alert(problem);
+    try {
+      await api.uploadDocumentFile(id, documentId, file);
+      await afterMutation();
+    } catch (err) {
+      window.alert(err.message || "Couldn't upload the file.");
+    }
+  }
+
+  async function openDocumentFile(id, doc, download) {
+    // Open the tab now, while we still have the click — browsers block
+    // window.open calls made after an await.
+    const viewer = download ? null : window.open("", "_blank");
+    try {
+      const blob = await api.getDocumentFile(id, doc.id);
+      const url = URL.createObjectURL(blob);
+      if (viewer && DOC_VIEWABLE_TYPES.includes(blob.type)) {
+        viewer.location.href = url;
+      } else {
+        viewer?.close();
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = doc.fileName || doc.name;
+        a.click();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      viewer?.close();
+      window.alert(err.message || "Couldn't open the file.");
     }
   }
 
@@ -945,6 +1007,33 @@ export default function App() {
         .ac-stage-hint { font-size: 11.5px; color: var(--slate-light); margin-top: 1px; }
         .ac-stage-row.current .ac-stage-hint { color: var(--slate); }
 
+        /* horizontal stage timeline (top of overview) */
+        .ac-timeline {
+          grid-column: 1 / -1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 3px;
+          padding: 14px 16px 10px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04);
+        }
+        .ac-timeline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .ac-timeline-now { font-size: 12.5px; color: var(--slate); }
+        .ac-timeline-now strong { color: var(--ink); }
+        .ac-timeline-track { display: flex; overflow-x: auto; padding-bottom: 4px; position: relative; }
+        .ac-tl-step {
+          flex: 1 0 74px; display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative;
+          background: none; border: none; padding: 2px 3px 4px; text-align: center; border-radius: 3px;
+        }
+        .ac-tl-step:hover { background: var(--paper); }
+        .ac-tl-step::before {
+          content: ""; position: absolute; top: 13px; left: 0; right: 0; height: 2px; background: var(--line); z-index: 0;
+        }
+        .ac-tl-step:first-child::before { left: 50%; }
+        .ac-tl-step:last-child::before { right: 50%; }
+        .ac-tl-step.done::before { background: var(--success); }
+        .ac-tl-step.current::before { background: linear-gradient(to right, var(--success) 50%, var(--line) 50%); }
+        .ac-tl-step:first-child.current::before { background: var(--line); }
+        .ac-tl-label { font-size: 11px; font-weight: 600; line-height: 1.25; color: var(--slate-light); }
+        .ac-tl-step.done .ac-tl-label { color: var(--ink-soft); }
+        .ac-tl-step.current .ac-tl-label { color: var(--ink); }
+        .ac-tl-date { font-size: 10px; font-family: var(--font-mono); color: var(--slate); }
+
         /* cards */
         .ac-card { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04); }
         .ac-card h3 {
@@ -1003,6 +1092,9 @@ export default function App() {
         }
         .ac-doc-name { font-weight: 600; font-size: 13.5px; }
         .ac-doc-meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+        .ac-doc-file { font-size: 12px; color: var(--ink-soft); margin-top: 4px; display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+        .ac-doc-actions { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
+        .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-email-dir {
           font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
@@ -1279,6 +1371,8 @@ export default function App() {
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onAddDoc={() => setShowAddDoc(true)}
+              onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
+              onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
               onEdit={() => setShowEditMatter(true)}
@@ -1310,7 +1404,7 @@ export default function App() {
 
       {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} />}
       {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
-      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d) => addDocument(selected.id, d)} />}
+      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
       {showAddEnquiry && selected && <AddEnquiryForm onClose={() => setShowAddEnquiry(false)} onAdd={(q) => addEnquiry(selected.id, q)} />}
@@ -1373,7 +1467,60 @@ export default function App() {
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+/** Date each stage was last reached, from the "Moved to …" entries in the activity log. */
+function stageReachedDates(matter) {
+  const dates = {};
+  for (const a of matter.activity || []) {
+    if (a.type !== "stage") continue;
+    const idx = a.text === "Matter opened at Instructed" ? 0 : STAGES.findIndex((s) => a.text === `Moved to ${s.name}`);
+    if (idx >= 0 && (!dates[idx] || new Date(a.date) > new Date(dates[idx]))) dates[idx] = a.date;
+  }
+  if (!dates[0] && matter.keyDates?.instructed) dates[0] = matter.keyDates.instructed;
+  return dates;
+}
+
+function StageTimeline({ matter, onSetStage }) {
+  const currentIdx = matter.currentStageIndex;
+  const reached = stageReachedDates(matter);
+  const current = STAGES[currentIdx];
+  const trackRef = useRef(null);
+
+  // On narrow screens the track scrolls sideways — keep the current stage in view.
+  useEffect(() => {
+    const track = trackRef.current;
+    const step = track?.children[currentIdx];
+    if (track && step && track.scrollWidth > track.clientWidth) {
+      track.scrollLeft = step.offsetLeft - track.clientWidth / 2 + step.clientWidth / 2;
+    }
+  }, [matter.id, currentIdx]);
+  return (
+    <div className="ac-timeline">
+      <div className="ac-timeline-head">
+        <span className="ac-tracker-title" style={{ padding: 0 }}>Matter progress</span>
+        <span className="ac-timeline-now">
+          Stage {currentIdx + 1} of {STAGES.length}: <strong>{current.name}</strong> — {current.hint}
+        </span>
+      </div>
+      <div className="ac-timeline-track" ref={trackRef}>
+        {STAGES.map((s, idx) => {
+          const state = idx < currentIdx ? "done" : idx === currentIdx ? "current" : "todo";
+          const date = idx <= currentIdx ? reached[idx] : null;
+          return (
+            <button key={s.name} type="button" className={`ac-tl-step ${state}`} onClick={() => onSetStage(idx)} title={`${s.name} — ${s.hint}`}>
+              <span className={`ac-stamp ${state === "todo" ? "" : state}`}>
+                {state === "done" ? <Check size={12} /> : state === "current" ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
+              </span>
+              <span className="ac-tl-label">{s.name}</span>
+              {date && <span className="ac-tl-date" title={formatDate(date)}>{new Date(date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1414,6 +1561,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
       {activeTab === "overview" && (
         <div className="ac-detail-body">
+          <StageTimeline matter={matter} onSetStage={onSetStage} />
           <div className="ac-col-main">
             {(() => {
               const attention = needsAttention(matter, staleDays);
@@ -1596,25 +1744,6 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               )}
             </div>
 
-            <div className="ac-tracker">
-              <div className="ac-tracker-title">Matter progress</div>
-              {STAGES.map((s, idx) => {
-                const done = idx < matter.currentStageIndex;
-                const current = idx === matter.currentStageIndex;
-                return (
-                  <div key={s.name} className={`ac-stage-row ${done ? "done" : ""} ${current ? "current" : ""}`} onClick={() => onSetStage(idx)}>
-                    <div className="ac-stage-line" />
-                    <div className={`ac-stamp ${done ? "done" : ""} ${current ? "current" : ""}`}>
-                      {done ? <Check size={12} /> : current ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
-                    </div>
-                    <div>
-                      <div className="ac-stage-label">{s.name}</div>
-                      <div className="ac-stage-hint">{s.hint}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
           </div>
         </div>
       )}
@@ -1867,10 +1996,25 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {matter.documents.map((d) => (
               <div key={d.id} className="ac-doc-row">
                 <div className="ac-doc-icon"><FileText size={16} /></div>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="ac-doc-name">{d.name}</div>
                   <div className="ac-doc-meta">{d.category} · {formatDate(d.date)}</div>
+                  {d.fileName && <div className="ac-doc-file"><Paperclip size={11} /> {d.fileName} · {formatFileSize(d.fileSize)}</div>}
                   {d.notes && <div className="ac-doc-notes">{d.notes}</div>}
+                </div>
+                <div className="ac-doc-actions">
+                  {d.fileName ? (
+                    <>
+                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, false)}>View</button>
+                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, true)}><Download size={12} /> Download</button>
+                    </>
+                  ) : (
+                    <label className="ac-tablebtn" style={{ cursor: "pointer" }}>
+                      <Paperclip size={12} /> Attach file
+                      <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} style={{ display: "none" }}
+                        onChange={(e) => { const file = e.target.files[0]; e.target.value = ""; if (file) onAttachFile(d.id, file); }} />
+                    </label>
+                  )}
                 </div>
               </div>
             ))}
@@ -2227,17 +2371,41 @@ function OutlookConsentModal({ onCancel, onApprove }) {
 
 function AddDocForm({ onClose, onAdd }) {
   const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: new Date().toISOString().slice(0, 10), notes: "" });
+  const [file, setFile] = useState(null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-  function submit(e) {
+  function pickFile(e) {
+    const picked = e.target.files[0] || null;
+    if (picked) {
+      const problem = checkDocFile(picked);
+      if (problem) {
+        setError(problem);
+        e.target.value = "";
+        setFile(null);
+        return;
+      }
+      if (!f.name.trim()) setF({ ...f, name: picked.name.replace(/\.[^.]+$/, "") });
+    }
+    setError("");
+    setFile(picked);
+  }
+
+  async function submit(e) {
     e.preventDefault();
+    if (saving) return;
     if (!f.name.trim()) {
       setError("Document name is required.");
       return;
     }
     setError("");
-    onAdd(f);
+    setSaving(true);
+    try {
+      await onAdd(f, file);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -2246,6 +2414,10 @@ function AddDocForm({ onClose, onAdd }) {
         <div className="ac-modal-head">
           <h2>Add document</h2>
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="ac-field">
+          <label>File (optional, up to {DOC_MAX_FILE_MB} MB)</label>
+          <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} onChange={pickFile} />
         </div>
         <div className="ac-field">
           <label>Document name</label>
@@ -2268,7 +2440,7 @@ function AddDocForm({ onClose, onAdd }) {
           <textarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><Paperclip size={14} /> Add to file</button>
+        <button className="ac-submit" type="submit" disabled={saving}><Paperclip size={14} /> {saving ? (file ? "Uploading…" : "Saving…") : "Add to file"}</button>
       </form>
     </div>
   );

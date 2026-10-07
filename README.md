@@ -29,9 +29,11 @@ with the interface itself barely changing.
 This is the honest part. Phase 1 is the foundation, not the finished
 system:
 
-- **No file upload / document storage.** Documents are still metadata only
-  (name, category, date, notes) with a `storage_key` column ready for
-  Phase 2, when actual files go into S3 or Azure Blob Storage.
+- **Document files are stored in Postgres** (`document_files`, up to 10 MB
+  each). That's simple and needs no extra accounts, but database storage is
+  limited and comparatively expensive — once the firm has a lot of files,
+  move them to object storage (e.g. S3 London); `documents.storage_key` is
+  already there for that.
 - **No real Outlook integration.** The email auto-matching logic is real
   and running server-side now, but emails still have to be logged manually
   — Microsoft Graph integration is Phase 2.
@@ -114,7 +116,7 @@ All routes except `/auth/register` and `/auth/login` require
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/register` | Create a new firm + first admin user |
+| POST | `/auth/register` | Create a new firm + first admin user (disabled unless `ALLOW_REGISTRATION=true`) |
 | POST | `/auth/login` | Log in, get a token |
 | GET | `/auth/me` | Current user + firm details |
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
@@ -125,6 +127,8 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/matters/:id/stage` | Move the stage tracker |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |
+| PUT | `/matters/:id/documents/:docId/file` | Upload (or replace) the file for a document — multipart field `file`, max 10 MB, PDF/Office/images/text/Outlook only |
+| GET | `/matters/:id/documents/:docId/file` | Download a document's file |
 | POST | `/matters/:id/emails` | Log an email (auto-matches enquiry replies) |
 | POST | `/matters/:id/emails/:emailId/match` | Manually re-run enquiry matching |
 | POST | `/matters/:id/enquiries` | Add an enquiry |
