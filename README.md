@@ -38,7 +38,7 @@ system:
 - **No client accounting / ledger.** Deliberately out of scope — this
   should integrate with your firm's existing SRA Accounts Rules-compliant
   accounting software rather than be rebuilt from scratch.
-- **No production security hardening yet.** Rate limiting, refresh tokens,
+- **No production security hardening yet.** Refresh tokens,
   audit-log immutability, and a few other things below are needed before
   this goes anywhere near real client data. See "Before this goes live"
   at the bottom.
@@ -159,6 +159,16 @@ A few realistic options, roughly cheapest/simplest to most involved:
   control, more setup, usually the right call once you're past a handful
   of staff or have specific data-residency requirements.
 
+### Demo data on a deployed host
+
+Hosts without a shell (like Render's free tier) can load the demo firm on
+boot by setting `SEED_ON_BOOT=true`. Because those demo accounts are then
+reachable from the internet, boot seeding also requires `DEMO_PASSWORD`
+(10+ characters) — it won't use the local `password123` default, and skips
+seeding with a log message if `DEMO_PASSWORD` is missing. Seeding wipes and
+recreates the demo firm, so set `SEED_ON_BOOT` back to `false` once it has
+run.
+
 Whichever you choose, set real environment variables (never commit `.env`),
 put the API behind HTTPS, and set `CORS_ORIGIN` to your actual deployed
 frontend URL.
@@ -168,8 +178,9 @@ frontend URL.
 This is a repeat of the compliance conversation we've already had, made
 concrete against this codebase specifically:
 
-- [ ] **Rate limiting** on `/auth/login` (this repo doesn't have it yet —
-      needed to prevent brute-force password guessing)
+- [x] **Rate limiting** on `/auth/login` — 5 failed attempts on one
+      account, or 30 failed attempts from one address, blocks further tries
+      for 15 minutes (`src/middleware/rateLimit.js`)
 - [ ] **Refresh tokens / shorter-lived access tokens** — right now a
       token is valid for its full 12-hour lifetime with no revocation
       mechanism if a device is lost

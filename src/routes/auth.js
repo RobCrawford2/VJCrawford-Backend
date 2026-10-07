@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
 const { requireAuth } = require("../middleware/auth");
+const { loginAccountLimiter, authIpLimiter } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
@@ -23,6 +24,7 @@ function signToken(user) {
  */
 router.post(
   "/register",
+  authIpLimiter,
   asyncHandler(async (req, res) => {
     const { firmName, name, email, password } = req.body;
 
@@ -75,6 +77,8 @@ router.post(
  */
 router.post(
   "/login",
+  authIpLimiter,
+  loginAccountLimiter,
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {

@@ -10,7 +10,7 @@
  */
 const bcrypt = require("bcryptjs");
 
-async function runSeed(pool) {
+async function runSeed(pool, { password = "password123" } = {}) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -25,7 +25,7 @@ async function runSeed(pool) {
       )
     ).rows[0];
 
-    const passwordHash = await bcrypt.hash("password123", 12);
+    const passwordHash = await bcrypt.hash(password, 12);
 
     const david = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,'admin') RETURNING id`,
@@ -115,9 +115,12 @@ async function runSeed(pool) {
 
     await client.query("COMMIT");
     console.log("[seed] Seed complete.");
-    console.log("[seed] Demo login: sarah@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
-    console.log("[seed]             marcus@vjcrawfordconveyancing.co.uk / password123 (fee earner)");
-    console.log("[seed]             david@vjcrawfordconveyancing.co.uk / password123 (admin)");
+    // Only echo the password when it's the well-known local default; a
+    // custom DEMO_PASSWORD shouldn't end up in the host's logs.
+    const shown = password === "password123" ? password : "<DEMO_PASSWORD>";
+    console.log(`[seed] Demo login: sarah@vjcrawfordconveyancing.co.uk / ${shown} (fee earner)`);
+    console.log(`[seed]             marcus@vjcrawfordconveyancing.co.uk / ${shown} (fee earner)`);
+    console.log(`[seed]             david@vjcrawfordconveyancing.co.uk / ${shown} (admin)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -131,7 +134,7 @@ if (require.main === module) {
   require("dotenv").config();
   const { Pool } = require("pg");
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  runSeed(pool)
+  runSeed(pool, { password: process.env.DEMO_PASSWORD || "password123" })
     .then(() => pool.end())
     .catch((err) => {
       console.error(err);

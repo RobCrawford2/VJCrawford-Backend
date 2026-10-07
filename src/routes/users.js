@@ -32,6 +32,9 @@ router.post(
     if (!["fee_earner", "supervisor", "admin"].includes(role)) {
       return res.status(400).json({ error: "role must be fee_earner, supervisor or admin." });
     }
+    if (password.length < 10) {
+      return res.status(400).json({ error: "Password must be at least 10 characters." });
+    }
 
     const existing = await query("SELECT id FROM users WHERE email = $1", [email.toLowerCase()]);
     if (existing.rows.length) return res.status(409).json({ error: "A user with that email already exists." });

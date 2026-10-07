@@ -13,6 +13,11 @@ const settingsRoutes = require("./routes/settings");
 
 const app = express();
 
+// Render (and most hosts) put the app behind one proxy. Trusting that hop
+// lets req.ip be the real client address, which the login rate limits
+// depend on — otherwise every request looks like it came from the proxy.
+app.set("trust proxy", 1);
+
 app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
@@ -70,8 +75,10 @@ const PORT = process.env.PORT || 4000;
 // Seeding is NOT safe to run on every boot — it wipes and recreates the
 // demo firm each time, which would destroy real changes. It only runs if
 // SEED_ON_BOOT=true is explicitly set, for hosts (like Render's free tier)
-// that don't offer a shell to run `npm run seed` by hand. Unset it again
-// after the first successful run.
+// that don't offer a shell to run `npm run seed` by hand, and also needs
+// DEMO_PASSWORD set (10+ characters) so the internet-facing demo accounts
+// don't use the well-known local default. Unset SEED_ON_BOOT again after the
+// first successful run.
 app.listen(PORT, () => {
   console.log(`V J Crawford Conveyancing API listening on port ${PORT}`);
 
@@ -79,8 +86,18 @@ app.listen(PORT, () => {
     try {
       await runMigrations(pool);
       if (process.env.SEED_ON_BOOT === "true") {
-        console.log("[boot] SEED_ON_BOOT is true — seeding demo data...");
-        await runSeed(pool);
+        // Boot seeding only happens on a deployed host, where the demo
+        // accounts are reachable from the internet — so refuse the
+        // well-known local default and require a real password.
+        const password = process.env.DEMO_PASSWORD || "";
+        if (password.length < 10) {
+          console.error(
+            "[boot] SEED_ON_BOOT is true but DEMO_PASSWORD is missing or under 10 characters — skipping seed."
+          );
+        } else {
+          console.log("[boot] SEED_ON_BOOT is true — seeding demo data...");
+          await runSeed(pool, { password });
+        }
       }
     } catch (err) {
       console.error("[boot] Setup on boot failed:", err.message);
