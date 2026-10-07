@@ -212,3 +212,47 @@ test("matters can be moved to every stage, including Closed, and the log names t
   const open = await request(app).get("/matters?showClosed=false&limit=100").set(david);
   assert.ok(open.body.matters.every((m) => m.id !== matterId), "closed matter still listed when hiding closed");
 });
+
+test("files can be attached to documents and downloaded again", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matterId = (await request(app).get("/matters").set(sarah)).body.matters[0].id;
+  const doc = (await request(app).post(`/matters/${matterId}/documents`).set(sarah)
+    .send({ name: "Signed contract", category: "Contract" })).body;
+
+  const pdf = Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(2000, 7)]);
+  const up = await request(app).put(`/matters/${matterId}/documents/${doc.id}/file`).set(sarah)
+    .attach("file", pdf, "contract (signed).pdf");
+  assert.equal(up.status, 200);
+  assert.equal(up.body.file_name, "contract (signed).pdf");
+  assert.equal(up.body.file_size, pdf.length);
+
+  const down = await request(app).get(`/matters/${matterId}/documents/${doc.id}/file`).set(sarah)
+    .buffer(true).parse((res, cb) => { const c = []; res.on("data", (d) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
+  assert.equal(down.status, 200);
+  assert.equal(down.headers["content-type"], "application/pdf");
+  assert.equal(down.headers["x-content-type-options"], "nosniff");
+  assert.ok(Buffer.compare(down.body, pdf) === 0, "downloaded bytes differ");
+
+  // Detail view lists the file without sending its bytes.
+  const detail = await request(app).get(`/matters/${matterId}`).set(sarah);
+  const listed = detail.body.documents.find((d) => d.id === doc.id);
+  assert.equal(listed.file_name, "contract (signed).pdf");
+  assert.equal(listed.data, undefined);
+
+  // Unsafe types and oversize files are refused.
+  const html = await request(app).put(`/matters/${matterId}/documents/${doc.id}/file`).set(sarah)
+    .attach("file", Buffer.from("<script>alert(1)</script>"), "evil.html");
+  assert.equal(html.status, 400);
+  const big = await request(app).put(`/matters/${matterId}/documents/${doc.id}/file`).set(sarah)
+    .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), "big.pdf");
+  assert.equal(big.status, 413);
+
+  // Another fee earner can't fetch or overwrite it.
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/matters/${matterId}/documents/${doc.id}/file`).set(marcus)).status, 404);
+  assert.equal((await request(app).put(`/matters/${matterId}/documents/${doc.id}/file`).set(marcus)
+    .attach("file", pdf, "x.pdf")).status, 404);
+
+  // Re-seeding still works with files attached.
+  await runSeed(pool);
+});

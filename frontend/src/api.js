@@ -18,14 +18,16 @@ export function setUnauthorizedHandler(fn) {
   onUnauthorized = fn;
 }
 
-async function request(path, { method = "GET", body, skipAuth = false } = {}) {
-  const headers = { "Content-Type": "application/json" };
+async function request(path, { method = "GET", body, formData, skipAuth = false, blob = false } = {}) {
+  // FormData sets its own multipart Content-Type (with boundary), so only
+  // JSON bodies get an explicit one.
+  const headers = formData ? {} : { "Content-Type": "application/json" };
   if (!skipAuth && authToken) headers.Authorization = `Bearer ${authToken}`;
 
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: formData || (body !== undefined ? JSON.stringify(body) : undefined),
   });
 
   if (res.status === 401 && !skipAuth) {
@@ -34,6 +36,7 @@ async function request(path, { method = "GET", body, skipAuth = false } = {}) {
   }
 
   if (res.status === 204) return null;
+  if (blob && res.ok) return res.blob();
 
   let data;
   try {
@@ -70,6 +73,12 @@ export const api = {
   addNote: (id, text) => request(`/matters/${id}/notes`, { method: "POST", body: { text } }),
 
   addDocument: (id, doc) => request(`/matters/${id}/documents`, { method: "POST", body: doc }),
+  uploadDocumentFile: (id, documentId, file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return request(`/matters/${id}/documents/${documentId}/file`, { method: "PUT", formData });
+  },
+  getDocumentFile: (id, documentId) => request(`/matters/${id}/documents/${documentId}/file`, { blob: true }),
 
   addEmail: (id, email) => request(`/matters/${id}/emails`, { method: "POST", body: email }),
   matchEmail: (id, emailId) => request(`/matters/${id}/emails/${emailId}/match`, { method: "POST" }),

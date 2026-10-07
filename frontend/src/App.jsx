@@ -60,6 +60,25 @@ const DOC_CATEGORIES = [
   "Contract", "Title", "Search", "ID / AML", "Mortgage", "Correspondence", "SDLT / LR", "Other"
 ];
 
+// Must match ALLOWED_FILE_TYPES / MAX_FILE_BYTES in src/routes/matters.js.
+const DOC_FILE_EXTENSIONS = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".rtf", ".txt", ".csv", ".jpg", ".jpeg", ".png", ".gif", ".heic", ".tif", ".tiff", ".msg", ".eml"];
+const DOC_MAX_FILE_MB = 10;
+// Types a browser can safely show in a tab; everything else downloads.
+const DOC_VIEWABLE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/gif", "text/plain"];
+
+function checkDocFile(file) {
+  const ext = (file.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
+  if (!DOC_FILE_EXTENSIONS.includes(ext)) return "That type of file isn't allowed. Use PDF, Word, Excel, images, text, or Outlook emails.";
+  if (file.size > DOC_MAX_FILE_MB * 1024 * 1024) return `Files must be ${DOC_MAX_FILE_MB} MB or smaller.`;
+  return "";
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 const SEARCH_TYPES = [
   "Local Authority Search", "Water & Drainage Search", "Environmental Search",
   "Chancel Repair Search", "Flood Risk Search", "Mining Search", "Other"
@@ -521,13 +540,56 @@ export default function App() {
   }
 
   // ---- Documents ----
-  async function addDocument(id, doc) {
+  async function addDocument(id, doc, file) {
+    let created;
     try {
-      await api.addDocument(id, doc);
-      await afterMutation();
-      setShowAddDoc(false);
+      created = await api.addDocument(id, doc);
     } catch (err) {
       window.alert(err.message || "Couldn't add the document.");
+      return;
+    }
+    if (file) {
+      try {
+        await api.uploadDocumentFile(id, created.id, file);
+      } catch (err) {
+        window.alert(`The document was recorded, but the file didn't upload: ${err.message} You can attach it again from the Documents tab.`);
+      }
+    }
+    await afterMutation();
+    setShowAddDoc(false);
+  }
+
+  async function attachDocumentFile(id, documentId, file) {
+    const problem = checkDocFile(file);
+    if (problem) return window.alert(problem);
+    try {
+      await api.uploadDocumentFile(id, documentId, file);
+      await afterMutation();
+    } catch (err) {
+      window.alert(err.message || "Couldn't upload the file.");
+    }
+  }
+
+  async function openDocumentFile(id, doc, download) {
+    // Open the tab now, while we still have the click — browsers block
+    // window.open calls made after an await.
+    const viewer = download ? null : window.open("", "_blank");
+    try {
+      const blob = await api.getDocumentFile(id, doc.id);
+      const url = URL.createObjectURL(blob);
+      if (viewer && DOC_VIEWABLE_TYPES.includes(blob.type)) {
+        viewer.location.href = url;
+      } else {
+        viewer?.close();
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = doc.fileName || doc.name;
+        a.click();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      viewer?.close();
+      window.alert(err.message || "Couldn't open the file.");
     }
   }
 
@@ -1030,6 +1092,9 @@ export default function App() {
         }
         .ac-doc-name { font-weight: 600; font-size: 13.5px; }
         .ac-doc-meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+        .ac-doc-file { font-size: 12px; color: var(--ink-soft); margin-top: 4px; display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+        .ac-doc-actions { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
+        .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-email-dir {
           font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
@@ -1306,6 +1371,8 @@ export default function App() {
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onAddDoc={() => setShowAddDoc(true)}
+              onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
+              onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
               onEdit={() => setShowEditMatter(true)}
@@ -1337,7 +1404,7 @@ export default function App() {
 
       {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} />}
       {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
-      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d) => addDocument(selected.id, d)} />}
+      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
       {showAddEnquiry && selected && <AddEnquiryForm onClose={() => setShowAddEnquiry(false)} onAdd={(q) => addEnquiry(selected.id, q)} />}
@@ -1453,7 +1520,7 @@ function StageTimeline({ matter, onSetStage }) {
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1929,10 +1996,25 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {matter.documents.map((d) => (
               <div key={d.id} className="ac-doc-row">
                 <div className="ac-doc-icon"><FileText size={16} /></div>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="ac-doc-name">{d.name}</div>
                   <div className="ac-doc-meta">{d.category} · {formatDate(d.date)}</div>
+                  {d.fileName && <div className="ac-doc-file"><Paperclip size={11} /> {d.fileName} · {formatFileSize(d.fileSize)}</div>}
                   {d.notes && <div className="ac-doc-notes">{d.notes}</div>}
+                </div>
+                <div className="ac-doc-actions">
+                  {d.fileName ? (
+                    <>
+                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, false)}>View</button>
+                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, true)}><Download size={12} /> Download</button>
+                    </>
+                  ) : (
+                    <label className="ac-tablebtn" style={{ cursor: "pointer" }}>
+                      <Paperclip size={12} /> Attach file
+                      <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} style={{ display: "none" }}
+                        onChange={(e) => { const file = e.target.files[0]; e.target.value = ""; if (file) onAttachFile(d.id, file); }} />
+                    </label>
+                  )}
                 </div>
               </div>
             ))}
@@ -2289,17 +2371,41 @@ function OutlookConsentModal({ onCancel, onApprove }) {
 
 function AddDocForm({ onClose, onAdd }) {
   const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: new Date().toISOString().slice(0, 10), notes: "" });
+  const [file, setFile] = useState(null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-  function submit(e) {
+  function pickFile(e) {
+    const picked = e.target.files[0] || null;
+    if (picked) {
+      const problem = checkDocFile(picked);
+      if (problem) {
+        setError(problem);
+        e.target.value = "";
+        setFile(null);
+        return;
+      }
+      if (!f.name.trim()) setF({ ...f, name: picked.name.replace(/\.[^.]+$/, "") });
+    }
+    setError("");
+    setFile(picked);
+  }
+
+  async function submit(e) {
     e.preventDefault();
+    if (saving) return;
     if (!f.name.trim()) {
       setError("Document name is required.");
       return;
     }
     setError("");
-    onAdd(f);
+    setSaving(true);
+    try {
+      await onAdd(f, file);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -2308,6 +2414,10 @@ function AddDocForm({ onClose, onAdd }) {
         <div className="ac-modal-head">
           <h2>Add document</h2>
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="ac-field">
+          <label>File (optional, up to {DOC_MAX_FILE_MB} MB)</label>
+          <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} onChange={pickFile} />
         </div>
         <div className="ac-field">
           <label>Document name</label>
@@ -2330,7 +2440,7 @@ function AddDocForm({ onClose, onAdd }) {
           <textarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><Paperclip size={14} /> Add to file</button>
+        <button className="ac-submit" type="submit" disabled={saving}><Paperclip size={14} /> {saving ? (file ? "Uploading…" : "Saving…") : "Add to file"}</button>
       </form>
     </div>
   );
