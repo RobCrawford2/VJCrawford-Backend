@@ -4,7 +4,7 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock
 } from "lucide-react";
 import Login from "./Login";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
@@ -330,6 +330,7 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [settings, setSettings] = useState({ outlookConnected: false, autoFile: true, domain: "", staleDays: 14, currentUser: "" });
   const [showSettings, setShowSettings] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [showOutlookConsent, setShowOutlookConsent] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
@@ -1055,6 +1056,13 @@ export default function App() {
         .ac-fieldset-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--slate); margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 
         .ac-savebadge { font-size: 10.5px; color: var(--slate-light); display: flex; align-items: center; gap: 5px; }
+        .ac-account { display: flex; align-items: center; gap: 6px; padding-left: 14px; border-left: 1px solid var(--line); }
+        .ac-account-name { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); margin-right: 4px; }
+        .ac-account-btn {
+          display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--slate);
+          background: none; border: 1px solid var(--line); border-radius: 3px; padding: 5px 9px;
+        }
+        .ac-account-btn:hover { color: var(--ink); border-color: var(--ink); }
         .ac-resetlink { font-size: 11px; color: var(--slate-light); background: none; border: none; display: flex; align-items: center; gap: 4px; margin-top: 8px; }
         .ac-resetlink:hover { color: var(--danger); }
 
@@ -1064,6 +1072,11 @@ export default function App() {
           .ac-sidebar--hidden-mobile { display: none; }
           .ac-body { position: relative; }
           .ac-topstats { display: none; }
+          .ac-account-name, .ac-account-btn span { display: none; }
+          .ac-topbar { padding: 12px 14px 10px; gap: 8px; }
+          .ac-brand h1 { font-size: 16px; }
+          .ac-brand span.tag { display: none; }
+          .ac-account { padding-left: 8px; gap: 4px; }
           .ac-backlink { display: inline-flex !important; }
         }
       `}</style>
@@ -1091,6 +1104,15 @@ export default function App() {
           <button className="ac-iconbtn" onClick={() => setShowSettings(true)} title="Settings & integrations">
             <SettingsIcon size={18} />
           </button>
+          <div className="ac-account">
+            <span className="ac-account-name">{authUser.name}</span>
+            <button className="ac-account-btn" onClick={() => setShowChangePassword(true)} title="Change your password">
+              <Lock size={13} /> <span>Change password</span>
+            </button>
+            <button className="ac-account-btn" onClick={logOut} title="Log out">
+              <LogOut size={13} /> <span>Log out</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1242,7 +1264,6 @@ export default function App() {
                 );
               })()}
 
-              <button className="ac-resetlink" onClick={logOut}><LogOut size={11} /> Log out</button>
             </div>
           )}
 
@@ -1337,6 +1358,7 @@ export default function App() {
           onDisconnectOutlook={() => saveSettings({ outlookConnected: false })}
         />
       )}
+      {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
       {showOutlookConsent && (
         <OutlookConsentModal
           onCancel={() => setShowOutlookConsent(false)}
@@ -2916,6 +2938,63 @@ function AddSearchForm({ onClose, onAdd }) {
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><ShieldCheck size={14} /> Add search</button>
+      </form>
+    </div>
+  );
+}
+
+function ChangePasswordForm({ onClose }) {
+  const [f, setF] = useState({ current: "", next: "", confirm: "" });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (f.next.length < 10) return setError("New password must be at least 10 characters.");
+    if (f.next !== f.confirm) return setError("The new passwords don't match.");
+    setSaving(true);
+    try {
+      await api.changePassword(f.current, f.next);
+      setDone(true);
+    } catch (err) {
+      setError(err.message || "Couldn't change your password.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="ac-modal-head">
+          <h2>Change password</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        {done ? (
+          <>
+            <p style={{ fontSize: 13.5 }}>Your password has been changed. Use the new one next time you log in.</p>
+            <button className="ac-submit" type="button" onClick={onClose}><Check size={14} /> Done</button>
+          </>
+        ) : (
+          <>
+            <div className="ac-field">
+              <label>Current password</label>
+              <input type="password" autoComplete="current-password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} required />
+            </div>
+            <div className="ac-field">
+              <label>New password (at least 10 characters)</label>
+              <input type="password" autoComplete="new-password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} required />
+            </div>
+            <div className="ac-field">
+              <label>Confirm new password</label>
+              <input type="password" autoComplete="new-password" value={f.confirm} onChange={(e) => setF({ ...f, confirm: e.target.value })} required />
+            </div>
+            {error && <p style={{ color: "var(--danger)", fontSize: 13 }}>{error}</p>}
+            <button className="ac-submit" type="submit" disabled={saving}><Check size={14} /> {saving ? "Saving…" : "Change password"}</button>
+          </>
+        )}
       </form>
     </div>
   );

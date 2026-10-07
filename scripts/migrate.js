@@ -58,11 +58,10 @@ async function runMigrations(pool) {
   return appliedCount;
 }
 
-// CLI usage: `npm run migrate` — creates its own pool, runs, then exits.
+// CLI usage: `npm run migrate` — uses the shared pool, runs, then exits.
 if (require.main === module) {
   require("dotenv").config();
-  const { Pool } = require("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const { pool } = require("../src/db");
   runMigrations(pool)
     .then(() => pool.end())
     .catch((err) => {

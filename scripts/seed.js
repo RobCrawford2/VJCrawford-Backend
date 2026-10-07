@@ -134,11 +134,10 @@ async function runSeed(pool, { password = "password123" } = {}) {
   }
 }
 
-// CLI usage: `npm run seed` — creates its own pool, runs, then exits.
+// CLI usage: `npm run seed` — uses the shared pool, runs, then exits.
 if (require.main === module) {
   require("dotenv").config();
-  const { Pool } = require("pg");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const { pool } = require("../src/db");
   runSeed(pool, { password: process.env.DEMO_PASSWORD || "password123" })
     .then(() => pool.end())
     .catch((err) => {

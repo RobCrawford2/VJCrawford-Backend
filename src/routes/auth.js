@@ -132,4 +132,34 @@ router.get(
   })
 );
 
+/**
+ * POST /auth/change-password — lets the logged-in user change their own
+ * password. A wrong current password returns 400, not 401: the frontend
+ * treats any 401 as "session expired" and logs the user out.
+ */
+router.post(
+  "/change-password",
+  authIpLimiter,
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Current and new password are both required." });
+    }
+    if (newPassword.length < 10) {
+      return res.status(400).json({ error: "New password must be at least 10 characters." });
+    }
+
+    const result = await query(`SELECT password_hash FROM users WHERE id = $1`, [req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: "User not found." });
+
+    const ok = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+    if (!ok) return res.status(400).json({ error: "Current password is incorrect." });
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, req.user.id]);
+    res.status(204).send();
+  })
+);
+
 module.exports = router;
