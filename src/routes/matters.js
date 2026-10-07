@@ -7,7 +7,14 @@ const { matterVisibilityClause } = require("../utils/permissions");
 const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
-const STAGE_COUNT = 11; // Instructed(0) .. Closed(10)
+// Must match STAGES in frontend/src/App.jsx.
+const STAGE_NAMES = [
+  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
+  "Mortgage Offer", "Report on Title", "Pre-Exchange Review", "Exchange", "Completion",
+  "Post-Completion", "Closed",
+];
+const STAGE_COUNT = STAGE_NAMES.length; // Instructed(0) .. Closed(11)
+const CLOSED_INDEX = STAGE_COUNT - 1;
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -104,7 +111,7 @@ router.get(
       conditions.push(`m.type = $${params.length}`);
     }
     if (showClosed === "false") {
-      conditions.push(`m.current_stage_index <> 10`);
+      conditions.push(`m.current_stage_index <> ${CLOSED_INDEX}`);
     }
     if (feeEarnerId) {
       params.push(feeEarnerId);
@@ -262,10 +269,6 @@ router.patch(
 // -----------------------------------------------------------------------
 // POST /matters/:id/stage — move the stage tracker
 // -----------------------------------------------------------------------
-const STAGE_NAMES = [
-  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
-  "Mortgage Offer", "Report on Title", "Exchange", "Completion", "Post-Completion", "Closed",
-];
 
 router.post(
   "/:id/stage",

@@ -157,6 +157,7 @@ test("deactivating a user or changing their role takes effect immediately", asyn
 
 test("public firm registration is off unless ALLOW_REGISTRATION=true", async () => {
   const body = { firmName: "Some Other Firm", name: "Someone", email: "someone@otherfirm.example", password: "long-enough-pass" };
+  await pool.query(`DELETE FROM firms WHERE name = 'Some Other Firm'`); // leftovers from an aborted run
   const off = await request(app).post("/auth/register").send(body);
   assert.equal(off.status, 403);
 
@@ -191,4 +192,23 @@ test("a malformed id gives a 400, not a server error", async () => {
   const david = { Authorization: `Bearer ${await tokenFor("david")}` };
   const res = await request(app).get("/matters/not-a-real-id").set(david);
   assert.equal(res.status, 400);
+});
+
+test("matters can be moved to every stage, including Closed, and the log names the right stage", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const matterId = (await request(app).get("/matters?showClosed=false").set(david)).body.matters[0].id;
+
+  const pre = await request(app).post(`/matters/${matterId}/stage`).set(david).send({ stageIndex: 7 });
+  assert.equal(pre.status, 200);
+  const closed = await request(app).post(`/matters/${matterId}/stage`).set(david).send({ stageIndex: 11 });
+  assert.equal(closed.status, 200);
+  assert.equal((await request(app).post(`/matters/${matterId}/stage`).set(david).send({ stageIndex: 12 })).status, 400);
+
+  const detail = await request(app).get(`/matters/${matterId}`).set(david);
+  const log = detail.body.activity.map((a) => a.text);
+  assert.ok(log.includes("Moved to Pre-Exchange Review"));
+  assert.ok(log.includes("Moved to Closed"));
+
+  const open = await request(app).get("/matters?showClosed=false&limit=100").set(david);
+  assert.ok(open.body.matters.every((m) => m.id !== matterId), "closed matter still listed when hiding closed");
 });

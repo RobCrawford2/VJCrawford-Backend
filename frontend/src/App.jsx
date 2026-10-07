@@ -945,6 +945,33 @@ export default function App() {
         .ac-stage-hint { font-size: 11.5px; color: var(--slate-light); margin-top: 1px; }
         .ac-stage-row.current .ac-stage-hint { color: var(--slate); }
 
+        /* horizontal stage timeline (top of overview) */
+        .ac-timeline {
+          grid-column: 1 / -1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 3px;
+          padding: 14px 16px 10px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04);
+        }
+        .ac-timeline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .ac-timeline-now { font-size: 12.5px; color: var(--slate); }
+        .ac-timeline-now strong { color: var(--ink); }
+        .ac-timeline-track { display: flex; overflow-x: auto; padding-bottom: 4px; position: relative; }
+        .ac-tl-step {
+          flex: 1 0 74px; display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative;
+          background: none; border: none; padding: 2px 3px 4px; text-align: center; border-radius: 3px;
+        }
+        .ac-tl-step:hover { background: var(--paper); }
+        .ac-tl-step::before {
+          content: ""; position: absolute; top: 13px; left: 0; right: 0; height: 2px; background: var(--line); z-index: 0;
+        }
+        .ac-tl-step:first-child::before { left: 50%; }
+        .ac-tl-step:last-child::before { right: 50%; }
+        .ac-tl-step.done::before { background: var(--success); }
+        .ac-tl-step.current::before { background: linear-gradient(to right, var(--success) 50%, var(--line) 50%); }
+        .ac-tl-step:first-child.current::before { background: var(--line); }
+        .ac-tl-label { font-size: 11px; font-weight: 600; line-height: 1.25; color: var(--slate-light); }
+        .ac-tl-step.done .ac-tl-label { color: var(--ink-soft); }
+        .ac-tl-step.current .ac-tl-label { color: var(--ink); }
+        .ac-tl-date { font-size: 10px; font-family: var(--font-mono); color: var(--slate); }
+
         /* cards */
         .ac-card { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04); }
         .ac-card h3 {
@@ -1373,6 +1400,59 @@ export default function App() {
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
 
+/** Date each stage was last reached, from the "Moved to …" entries in the activity log. */
+function stageReachedDates(matter) {
+  const dates = {};
+  for (const a of matter.activity || []) {
+    if (a.type !== "stage") continue;
+    const idx = a.text === "Matter opened at Instructed" ? 0 : STAGES.findIndex((s) => a.text === `Moved to ${s.name}`);
+    if (idx >= 0 && (!dates[idx] || new Date(a.date) > new Date(dates[idx]))) dates[idx] = a.date;
+  }
+  if (!dates[0] && matter.keyDates?.instructed) dates[0] = matter.keyDates.instructed;
+  return dates;
+}
+
+function StageTimeline({ matter, onSetStage }) {
+  const currentIdx = matter.currentStageIndex;
+  const reached = stageReachedDates(matter);
+  const current = STAGES[currentIdx];
+  const trackRef = useRef(null);
+
+  // On narrow screens the track scrolls sideways — keep the current stage in view.
+  useEffect(() => {
+    const track = trackRef.current;
+    const step = track?.children[currentIdx];
+    if (track && step && track.scrollWidth > track.clientWidth) {
+      track.scrollLeft = step.offsetLeft - track.clientWidth / 2 + step.clientWidth / 2;
+    }
+  }, [matter.id, currentIdx]);
+  return (
+    <div className="ac-timeline">
+      <div className="ac-timeline-head">
+        <span className="ac-tracker-title" style={{ padding: 0 }}>Matter progress</span>
+        <span className="ac-timeline-now">
+          Stage {currentIdx + 1} of {STAGES.length}: <strong>{current.name}</strong> — {current.hint}
+        </span>
+      </div>
+      <div className="ac-timeline-track" ref={trackRef}>
+        {STAGES.map((s, idx) => {
+          const state = idx < currentIdx ? "done" : idx === currentIdx ? "current" : "todo";
+          const date = idx <= currentIdx ? reached[idx] : null;
+          return (
+            <button key={s.name} type="button" className={`ac-tl-step ${state}`} onClick={() => onSetStage(idx)} title={`${s.name} — ${s.hint}`}>
+              <span className={`ac-stamp ${state === "todo" ? "" : state}`}>
+                {state === "done" ? <Check size={12} /> : state === "current" ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
+              </span>
+              <span className="ac-tl-label">{s.name}</span>
+              {date && <span className="ac-tl-date" title={formatDate(date)}>{new Date(date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
@@ -1414,6 +1494,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
       {activeTab === "overview" && (
         <div className="ac-detail-body">
+          <StageTimeline matter={matter} onSetStage={onSetStage} />
           <div className="ac-col-main">
             {(() => {
               const attention = needsAttention(matter, staleDays);
@@ -1596,25 +1677,6 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               )}
             </div>
 
-            <div className="ac-tracker">
-              <div className="ac-tracker-title">Matter progress</div>
-              {STAGES.map((s, idx) => {
-                const done = idx < matter.currentStageIndex;
-                const current = idx === matter.currentStageIndex;
-                return (
-                  <div key={s.name} className={`ac-stage-row ${done ? "done" : ""} ${current ? "current" : ""}`} onClick={() => onSetStage(idx)}>
-                    <div className="ac-stage-line" />
-                    <div className={`ac-stamp ${done ? "done" : ""} ${current ? "current" : ""}`}>
-                      {done ? <Check size={12} /> : current ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
-                    </div>
-                    <div>
-                      <div className="ac-stage-label">{s.name}</div>
-                      <div className="ac-stage-hint">{s.hint}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
           </div>
         </div>
       )}
