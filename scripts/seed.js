@@ -15,7 +15,12 @@ async function runSeed(pool, { password = "password123" } = {}) {
   try {
     await client.query("BEGIN");
 
-    // Wipe any previous demo firm (cascades to everything belonging to it).
+    // Wipe any previous demo firm. Matters go first: their documents, tasks
+    // etc. reference the firm's users via created_by (no cascade), so
+    // deleting the firm in one step fails once any such rows exist.
+    await client.query(
+      `DELETE FROM matters WHERE firm_id IN (SELECT id FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)')`
+    );
     await client.query(`DELETE FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)'`);
 
     const firm = (
