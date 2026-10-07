@@ -21,11 +21,18 @@ function signToken(user) {
  * Creates a new firm and its first user (an admin). This is the "sign up
  * the firm" endpoint — subsequent staff are added via POST /users by an
  * existing admin, not through this route.
+ *
+ * Off unless ALLOW_REGISTRATION=true: this is a single-firm deployment, so
+ * there's no reason to let anyone on the internet create firms on it. Turn
+ * it on briefly if a fresh database ever needs its first firm.
  */
 router.post(
   "/register",
   authIpLimiter,
   asyncHandler(async (req, res) => {
+    if (process.env.ALLOW_REGISTRATION !== "true") {
+      return res.status(403).json({ error: "New firm registration is disabled." });
+    }
     const { firmName, name, email, password } = req.body;
 
     if (!firmName || !name || !email || !password) {

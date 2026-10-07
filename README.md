@@ -114,7 +114,7 @@ All routes except `/auth/register` and `/auth/login` require
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/register` | Create a new firm + first admin user |
+| POST | `/auth/register` | Create a new firm + first admin user (disabled unless `ALLOW_REGISTRATION=true`) |
 | POST | `/auth/login` | Log in, get a token |
 | GET | `/auth/me` | Current user + firm details |
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |

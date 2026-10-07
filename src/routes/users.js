@@ -55,6 +55,29 @@ router.patch(
   requireRole("admin"),
   asyncHandler(async (req, res) => {
     const { role, supervisorId, active } = req.body;
+    if (role !== undefined && !["fee_earner", "supervisor", "admin"].includes(role)) {
+      return res.status(400).json({ error: "role must be fee_earner, supervisor or admin." });
+    }
+
+    // Never leave the firm without an active admin — nobody could then add
+    // staff, reactivate accounts or change firm settings.
+    const losesAdmin = (role !== undefined && role !== "admin") || active === false;
+    if (losesAdmin) {
+      const target = await query(
+        `SELECT role, active FROM users WHERE id = $1 AND firm_id = $2`,
+        [req.params.id, req.user.firmId]
+      );
+      if (target.rows[0]?.role === "admin" && target.rows[0].active) {
+        const others = await query(
+          `SELECT count(*) FROM users WHERE firm_id = $1 AND role = 'admin' AND active AND id <> $2`,
+          [req.user.firmId, req.params.id]
+        );
+        if (parseInt(others.rows[0].count, 10) === 0) {
+          return res.status(400).json({ error: "This is the firm's only active admin. Make someone else an admin first." });
+        }
+      }
+    }
+
     const setClauses = [];
     const params = [];
 

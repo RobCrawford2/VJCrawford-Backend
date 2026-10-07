@@ -121,6 +121,8 @@ test("demo data can be re-seeded after staff have added documents and tasks", as
   await runSeed(pool, { password: "a-custom-demo-pass" });
   assert.equal((await login("david", "a-custom-demo-pass")).status, 200);
   assert.equal((await login("david", PASSWORD)).status, 401);
+
+  await runSeed(pool); // back to the default password for the tests below
 });
 
 test("sslmode=require is rewritten to verify-full (silences pg warning)", () => {
@@ -128,4 +130,65 @@ test("sslmode=require is rewritten to verify-full (silences pg warning)", () => 
   assert.equal(normalizeConnectionString("postgres://h/db?a=1&sslmode=prefer&b=2"), "postgres://h/db?a=1&sslmode=verify-full&b=2");
   assert.equal(normalizeConnectionString("postgres://h/db?sslmode=disable"), "postgres://h/db?sslmode=disable");
   assert.equal(normalizeConnectionString("postgres://h/db"), "postgres://h/db");
+});
+
+test("deactivating a user or changing their role takes effect immediately", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const created = await request(app).post("/users").set(david)
+    .send({ name: "Temp Leaver", email: "leaver@vjcrawfordconveyancing.co.uk", password: "leaver-password", role: "admin" });
+  assert.equal(created.status, 201);
+
+  const login = await request(app).post("/auth/login")
+    .send({ email: "leaver@vjcrawfordconveyancing.co.uk", password: "leaver-password" });
+  const leaver = { Authorization: `Bearer ${login.body.token}` };
+  assert.equal((await request(app).get("/matters").set(leaver)).status, 200);
+
+  // Role change: the token still says admin, but the demotion applies at once.
+  assert.ok((await request(app).get("/matters").set(leaver)).body.matters.length > 0);
+  await request(app).patch(`/users/${created.body.id}`).set(david).send({ role: "fee_earner" });
+  const list = await request(app).get("/matters?limit=100").set(leaver);
+  assert.equal(list.body.matters.length, 0, "demoted user still sees the whole firm's matters");
+
+  await request(app).patch(`/users/${created.body.id}`).set(david).send({ active: false });
+  const after = await request(app).get("/matters").set(leaver);
+  assert.equal(after.status, 401);
+  assert.match(after.body.error, /no longer active/);
+});
+
+test("public firm registration is off unless ALLOW_REGISTRATION=true", async () => {
+  const body = { firmName: "Some Other Firm", name: "Someone", email: "someone@otherfirm.example", password: "long-enough-pass" };
+  const off = await request(app).post("/auth/register").send(body);
+  assert.equal(off.status, 403);
+
+  process.env.ALLOW_REGISTRATION = "true";
+  try {
+    assert.equal((await request(app).post("/auth/register").send(body)).status, 201);
+  } finally {
+    delete process.env.ALLOW_REGISTRATION;
+    await pool.query(`DELETE FROM firms WHERE name = 'Some Other Firm'`);
+  }
+});
+
+test("the firm's last active admin can't be demoted or deactivated", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const davidId = (await request(app).get("/auth/me").set(david)).body.id;
+
+  for (const patch of [{ role: "supervisor" }, { active: false }]) {
+    const res = await request(app).patch(`/users/${davidId}`).set(david).send(patch);
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /only active admin/);
+  }
+
+  // With a second admin, demoting one of them is fine.
+  const other = await request(app).post("/users").set(david)
+    .send({ name: "Second Admin", email: "admin2@vjcrawfordconveyancing.co.uk", password: "second-admin-pw", role: "admin" });
+  assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor" })).status, 200);
+
+  assert.equal((await request(app).patch(`/users/${davidId}`).set(david).send({ role: "boss" })).status, 400);
+});
+
+test("a malformed id gives a 400, not a server error", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const res = await request(app).get("/matters/not-a-real-id").set(david);
+  assert.equal(res.status, 400);
 });
