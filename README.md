@@ -94,6 +94,19 @@ npm run seed
 npm run dev
 ```
 
+## Running the tests
+
+The tests run against a real Postgres database and **wipe and re-seed the
+demo firm** in it, so point them at a throwaway database, never the live
+one:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/vjcrawford_test npm test
+```
+
+GitHub runs the same tests (plus a frontend build) automatically on every
+pull request — see `.github/workflows/ci.yml`.
+
 ## API overview
 
 All routes except `/auth/register` and `/auth/login` require
@@ -104,6 +117,7 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/auth/register` | Create a new firm + first admin user |
 | POST | `/auth/login` | Log in, get a token |
 | GET | `/auth/me` | Current user + firm details |
+| POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
 | GET | `/matters?limit=&offset=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
 | POST | `/matters` | Create a matter |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |

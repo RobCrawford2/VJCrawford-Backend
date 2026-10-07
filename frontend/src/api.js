@@ -53,6 +53,8 @@ export const api = {
   login: (email, password) => request("/auth/login", { method: "POST", body: { email, password }, skipAuth: true }),
   register: (payload) => request("/auth/register", { method: "POST", body: payload, skipAuth: true }),
   me: () => request("/auth/me"),
+  changePassword: (currentPassword, newPassword) =>
+    request("/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
 
   // ---- Matters ----
   getMatters: (params = {}) => {

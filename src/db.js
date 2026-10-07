@@ -6,8 +6,18 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
+/**
+ * pg currently treats sslmode=prefer/require/verify-ca in the URL as
+ * verify-full, and logs a security warning on every boot saying that will
+ * change. Spelling out verify-full keeps today's (stricter) behaviour and
+ * silences the warning.
+ */
+function normalizeConnectionString(url) {
+  return url.replace(/([?&]sslmode=)(prefer|require|verify-ca)(?=&|$)/, "$1verify-full");
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: normalizeConnectionString(process.env.DATABASE_URL),
   // Most managed Postgres providers (Render, Railway, RDS, etc.) require SSL
   // in production but not for a local Docker instance. Adjust as needed once
   // you know your hosting provider's requirements.
@@ -25,6 +35,7 @@ pool.on("error", (err) => {
 
 module.exports = {
   pool,
+  normalizeConnectionString,
   /** Run a single query. Use pool.connect() directly instead for multi-statement transactions. */
   query: (text, params) => pool.query(text, params),
 };
