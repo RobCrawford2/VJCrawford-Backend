@@ -1,24 +1,20 @@
 {
-  "name": "vjcrawford-conveyancing-api",
+  "name": "vjcrawford-conveyancing-frontend",
   "version": "0.1.0",
-  "description": "Backend API for V J Crawford Conveyancing's case management system (Phase 1: database, auth, core matter API).",
   "private": true,
-  "main": "src/server.js",
+  "type": "module",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "migrate": "node scripts/migrate.js",
-    "seed": "node scripts/seed.js"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.5"
+    "lucide-react": "^0.383.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
-  "engines": {
-    "node": ">=18"
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
   }
 }
