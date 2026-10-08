@@ -27,7 +27,7 @@ function logActivity(client, matterId, userId, type, text) {
  * column so it's cheap even on a large caseload.
  */
 async function loadMatterDetail(matterId) {
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -42,6 +42,19 @@ async function loadMatterDetail(matterId) {
        WHERE l.matter_id = $1`,
       [matterId]
     ),
+    query(
+      `SELECT r.*, u.name AS created_by_name, em.subject AS source_email_subject
+       FROM enquiry_replies r JOIN enquiries e ON e.id = r.enquiry_id
+       LEFT JOIN users u ON u.id = r.created_by LEFT JOIN emails em ON em.id = r.source_email_id
+       WHERE e.matter_id = $1 ORDER BY r.date_received ASC, r.created_at ASC`,
+      [matterId]
+    ),
+    query(
+      `SELECT c.*, u.name AS created_by_name
+       FROM enquiry_comments c JOIN enquiries e ON e.id = c.enquiry_id LEFT JOIN users u ON u.id = c.created_by
+       WHERE e.matter_id = $1 ORDER BY c.created_at ASC`,
+      [matterId]
+    ),
   ]);
 
   if (!matter.rows.length) return null;
@@ -50,7 +63,11 @@ async function loadMatterDetail(matterId) {
     ...matter.rows[0],
     documents: documents.rows,
     emails: emails.rows,
-    enquiries: enquiries.rows,
+    enquiries: enquiries.rows.map((q) => ({
+      ...q,
+      replies: replies.rows.filter((r) => r.enquiry_id === q.id),
+      comments: comments.rows.filter((c) => c.enquiry_id === q.id),
+    })),
     searches: searches.rows,
     undertakings: undertakings.rows,
     tasks: tasks.rows,
@@ -74,6 +91,30 @@ async function nextReferenceNumber(db, firmId, year) {
 }
 
 const formatReference = (year, n) => `CV-${year}-${String(n).padStart(4, "0")}`;
+
+/** Whether the firm requires sign-off for fee earners' stage moves. */
+async function firmRequiresSignoff(firmId) {
+  const result = await query(`SELECT require_stage_signoff FROM firms WHERE id = $1`, [firmId]);
+  return result.rows[0]?.require_stage_signoff ?? true;
+}
+
+/**
+ * Who can sign off a stage move on a matter: any admin, or a supervisor who
+ * supervises the matter or its fee earner. Fee earners can't.
+ */
+const SIGNOFF_CLAUSE = (userParam) => `(
+  $${userParam}::text = 'admin'
+  OR ($${userParam}::text = 'supervisor' AND (m.supervisor_id = $${userParam + 1} OR fe.supervisor_id = $${userParam + 1}))
+)`;
+
+async function canSignOff(user, matterId) {
+  const result = await query(
+    `SELECT 1 FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
+     WHERE m.id = $1 AND m.firm_id = $2 AND ${SIGNOFF_CLAUSE(3)}`,
+    [matterId, user.firmId, user.role, user.id]
+  );
+  return result.rows.length > 0;
+}
 
 /** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
 async function assertMatterVisible(req, res, matterId) {
@@ -305,6 +346,28 @@ router.post(
 );
 
 // -----------------------------------------------------------------------
+// GET /matters/sign-offs/pending — requests waiting for this user's sign-off
+// -----------------------------------------------------------------------
+router.get(
+  "/sign-offs/pending",
+  asyncHandler(async (req, res) => {
+    const result = await query(
+      `SELECT r.id, r.matter_id, r.from_stage, r.to_stage, r.note, r.requested_at,
+              rq.name AS requested_by_name, m.reference, m.address, m.client
+       FROM stage_requests r
+       JOIN matters m ON m.id = r.matter_id
+       LEFT JOIN users fe ON fe.id = m.fee_earner_id
+       LEFT JOIN users rq ON rq.id = r.requested_by
+       WHERE r.status = 'pending' AND m.firm_id = $1 AND r.requested_by IS DISTINCT FROM $3
+         AND ${SIGNOFF_CLAUSE(2)}
+       ORDER BY r.requested_at ASC`,
+      [req.user.firmId, req.user.role, req.user.id]
+    );
+    res.json(result.rows.map((r) => ({ ...r, to_stage_name: STAGE_NAMES[r.to_stage], from_stage_name: STAGE_NAMES[r.from_stage] })));
+  })
+);
+
+// -----------------------------------------------------------------------
 // GET /matters/:id — full detail
 // -----------------------------------------------------------------------
 router.get(
@@ -313,7 +376,21 @@ router.get(
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const detail = await loadMatterDetail(req.params.id);
     if (!detail) return res.status(404).json({ error: "Matter not found." });
-    res.json(detail);
+    const [pending, canSign, requireSignoff] = await Promise.all([
+      query(
+        `SELECT r.*, u.name AS requested_by_name FROM stage_requests r LEFT JOIN users u ON u.id = r.requested_by
+         WHERE r.matter_id = $1 AND r.status = 'pending'`,
+        [req.params.id]
+      ),
+      canSignOff(req.user, req.params.id),
+      firmRequiresSignoff(req.user.firmId),
+    ]);
+    res.json({
+      ...detail,
+      pendingStageRequest: pending.rows[0] || null,
+      canSignOffStages: canSign,
+      stageMovesNeedSignoff: requireSignoff && req.user.role === "fee_earner",
+    });
   })
 );
 
@@ -438,17 +515,148 @@ router.post(
       return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
     }
 
+    if (req.user.role === "fee_earner" && (await firmRequiresSignoff(req.user.firmId))) {
+      return res.status(403).json({
+        error: "Moving a matter to another stage needs sign-off from a supervisor or admin. Send a sign-off request instead.",
+        needsSignoff: true,
+      });
+    }
+
     const result = await query(
       `UPDATE matters SET current_stage_index = $1 WHERE id = $2 RETURNING *`,
       [stageIndex, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Matter not found." });
 
+    // A direct move by a supervisor/admin supersedes any waiting request.
+    await query(
+      `UPDATE stage_requests SET status = 'withdrawn', decided_by = $2, decided_at = now(),
+         decision_note = 'Superseded by a direct stage change'
+       WHERE matter_id = $1 AND status = 'pending'`,
+      [req.params.id, req.user.id]
+    );
     await query(
       `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage',$3)`,
       [req.params.id, req.user.id, `Moved to ${STAGE_NAMES[stageIndex]}`]
     );
     res.json(result.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Stage sign-off requests
+// -----------------------------------------------------------------------
+
+/** Ask for sign-off to move the matter to another stage. Replaces any request already waiting. */
+router.post(
+  "/:id/stage-requests",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { stageIndex, note = "" } = req.body;
+    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= STAGE_COUNT) {
+      return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
+    }
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const matter = (await client_.query(`SELECT current_stage_index FROM matters WHERE id = $1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (matter.current_stage_index === stageIndex) {
+        await client_.query("ROLLBACK");
+        return res.status(400).json({ error: "The matter is already at that stage." });
+      }
+      await client_.query(
+        `UPDATE stage_requests SET status = 'withdrawn', decided_by = $2, decided_at = now(), decision_note = 'Replaced by a new request'
+         WHERE matter_id = $1 AND status = 'pending'`,
+        [req.params.id, req.user.id]
+      );
+      const created = await client_.query(
+        `INSERT INTO stage_requests (matter_id, from_stage, to_stage, note, requested_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, matter.current_stage_index, stageIndex, String(note).trim(), req.user.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "signoff",
+        `Sign-off requested to move to ${STAGE_NAMES[stageIndex]}${String(note).trim() ? ` — ${String(note).trim()}` : ""}`);
+      await client_.query("COMMIT");
+      res.status(201).json(created.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Approve (moves the stage) or decline a waiting request. Supervisor of the matter or admin only. */
+router.post(
+  "/:id/stage-requests/:requestId/decision",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { approve, note = "" } = req.body;
+    if (typeof approve !== "boolean") return res.status(400).json({ error: "approve must be true or false." });
+    if (!approve && !String(note).trim()) return res.status(400).json({ error: "Please give a reason for declining." });
+    if (!(await canSignOff(req.user, req.params.id))) {
+      return res.status(403).json({ error: "Only the matter's supervisor or an admin can sign off stage moves." });
+    }
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const request = (await client_.query(
+        `SELECT * FROM stage_requests WHERE id = $1 AND matter_id = $2 FOR UPDATE`,
+        [req.params.requestId, req.params.id]
+      )).rows[0];
+      if (!request) {
+        await client_.query("ROLLBACK");
+        return res.status(404).json({ error: "Sign-off request not found." });
+      }
+      if (request.status !== "pending") {
+        await client_.query("ROLLBACK");
+        return res.status(409).json({ error: "That request has already been dealt with." });
+      }
+      if (request.requested_by === req.user.id) {
+        await client_.query("ROLLBACK");
+        return res.status(403).json({ error: "You can't sign off your own request." });
+      }
+
+      await client_.query(
+        `UPDATE stage_requests SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
+        [approve ? "approved" : "declined", req.user.id, String(note).trim(), request.id]
+      );
+      const stageName = STAGE_NAMES[request.to_stage];
+      if (approve) {
+        await client_.query(`UPDATE matters SET current_stage_index = $1 WHERE id = $2`, [request.to_stage, req.params.id]);
+        await logActivity(client_, req.params.id, req.user.id, "stage", `Moved to ${stageName}`);
+        await logActivity(client_, req.params.id, req.user.id, "signoff",
+          `Move to ${stageName} signed off by ${req.user.name}${String(note).trim() ? ` — ${String(note).trim()}` : ""}`);
+      } else {
+        await logActivity(client_, req.params.id, req.user.id, "signoff",
+          `Move to ${stageName} declined by ${req.user.name} — ${String(note).trim()}`);
+      }
+      await client_.query("COMMIT");
+      res.json({ status: approve ? "approved" : "declined" });
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** The requester withdraws their own waiting request. */
+router.delete(
+  "/:id/stage-requests/:requestId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const result = await query(
+      `UPDATE stage_requests SET status = 'withdrawn', decided_by = $3, decided_at = now(), decision_note = 'Withdrawn by requester'
+       WHERE id = $1 AND matter_id = $2 AND status = 'pending' AND requested_by = $3 RETURNING to_stage`,
+      [req.params.requestId, req.params.id, req.user.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "No waiting request of yours to withdraw." });
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'signoff',$3)`,
+      [req.params.id, req.user.id, `Sign-off request to move to ${STAGE_NAMES[result.rows[0].to_stage]} withdrawn`]);
+    res.status(204).send();
   })
 );
 
@@ -638,13 +846,17 @@ function parseEnquiryReplies(body) {
   return found;
 }
 
-async function matchEmailToEnquiries(client_, matterId, email) {
+async function matchEmailToEnquiries(client_, matterId, email, userId) {
   const replies = parseEnquiryReplies(email.body);
   if (!Object.keys(replies).length) return 0;
 
+  // Outstanding enquiries that don't already have a reply logged from this email
+  // (so re-running the match on the same email doesn't log it twice).
   const outstanding = await client_.query(
-    `SELECT id, number FROM enquiries WHERE matter_id = $1 AND status = 'Outstanding'`,
-    [matterId]
+    `SELECT e.id, e.number FROM enquiries e
+     WHERE e.matter_id = $1 AND e.status = 'Outstanding'
+       AND NOT EXISTS (SELECT 1 FROM enquiry_replies r WHERE r.enquiry_id = e.id AND r.source_email_id = $2)`,
+    [matterId, email.id]
   );
 
   let matched = 0;
@@ -655,6 +867,10 @@ async function matchEmailToEnquiries(client_, matterId, email) {
            auto_filled = true, source_email_id = $3, follow_up_notes = ''
          WHERE id = $4`,
         [replies[enquiry.number], email.email_date, email.id, enquiry.id]
+      );
+      await client_.query(
+        `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, source_email_id, created_by) VALUES ($1,$2,$3,$4,$5)`,
+        [enquiry.id, replies[enquiry.number], email.email_date, email.id, userId]
       );
       matched++;
     }
@@ -682,7 +898,7 @@ router.post(
 
       let matched = 0;
       if (direction === "in") {
-        matched = await matchEmailToEnquiries(client_, req.params.id, email);
+        matched = await matchEmailToEnquiries(client_, req.params.id, email, req.user.id);
         if (matched > 0) {
           await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} auto-filled from this email — pending review`);
         }
@@ -712,7 +928,7 @@ router.post(
         await client_.query("ROLLBACK");
         return res.status(404).json({ error: "Email not found." });
       }
-      const matched = await matchEmailToEnquiries(client_, req.params.id, emailResult.rows[0]);
+      const matched = await matchEmailToEnquiries(client_, req.params.id, emailResult.rows[0], req.user.id);
       if (matched > 0) {
         await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} matched from "${emailResult.rows[0].subject}" — pending review`);
       }
@@ -809,6 +1025,10 @@ router.patch(
     );
     if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
 
+    await query(
+      `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, created_by) VALUES ($1,$2,$3,$4)`,
+      [req.params.enquiryId, answer.trim(), result.rows[0].date_answered, req.user.id]
+    );
     await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
       [req.params.id, req.user.id, `Enquiry ${result.rows[0].number} answered`]);
     res.json(result.rows[0]);
@@ -842,12 +1062,118 @@ router.patch(
         [followUpNote.trim(), req.params.enquiryId, req.params.id]
       );
       if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
+      await query(`INSERT INTO enquiry_comments (enquiry_id, comment, created_by) VALUES ($1,$2,$3)`,
+        [req.params.enquiryId, `Follow-up needed: ${followUpNote.trim()}`, req.user.id]);
       await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
         [req.params.id, req.user.id, `Follow-up needed on enquiry ${result.rows[0].number}: ${followUpNote.trim()}`]);
       return res.json(result.rows[0]);
     }
 
     res.status(400).json({ error: "outcome must be 'confirm' or 'follow_up'." });
+  })
+);
+
+// Status labels as staff see them (the stored values predate the wording).
+const ENQUIRY_STATUS_LABELS = { Outstanding: "Raised", "Pending Review": "Response received", Answered: "Satisfactory" };
+
+/** Loads an enquiry, checking it belongs to the matter. */
+async function findEnquiry(db, matterId, enquiryId) {
+  const result = await db.query(`SELECT * FROM enquiries WHERE id = $1 AND matter_id = $2`, [enquiryId, matterId]);
+  return result.rows[0] || null;
+}
+
+/** Set an enquiry's status by hand: Raised / Response received / Satisfactory. */
+router.patch(
+  "/:id/enquiries/:enquiryId/status",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { status } = req.body;
+    if (!ENQUIRY_STATUS_LABELS[status]) {
+      return res.status(400).json({ error: "status must be Outstanding, Pending Review or Answered." });
+    }
+    const enquiry = await findEnquiry({ query }, req.params.id, req.params.enquiryId);
+    if (!enquiry) return res.status(404).json({ error: "Enquiry not found." });
+    if (enquiry.status === status) return res.json(enquiry);
+
+    const result = await query(`UPDATE enquiries SET status = $1 WHERE id = $2 RETURNING *`, [status, enquiry.id]);
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
+      [req.params.id, req.user.id, `Enquiry ${enquiry.number} marked ${ENQUIRY_STATUS_LABELS[status]}`]);
+    res.json(result.rows[0]);
+  })
+);
+
+/**
+ * Log a reply against an enquiry — typed/pasted, or linked to an email
+ * already on the matter (emailId). Becomes the enquiry's latest answer and
+ * moves it to "Response received" unless a status is given.
+ */
+router.post(
+  "/:id/enquiries/:enquiryId/replies",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { reply, dateReceived, emailId, status = "Pending Review" } = req.body;
+    if (!ENQUIRY_STATUS_LABELS[status]) return res.status(400).json({ error: "Unknown status." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const enquiry = await findEnquiry(client_, req.params.id, req.params.enquiryId);
+      if (!enquiry) {
+        await client_.query("ROLLBACK");
+        return res.status(404).json({ error: "Enquiry not found." });
+      }
+      let email = null;
+      if (emailId) {
+        email = (await client_.query(`SELECT * FROM emails WHERE id = $1 AND matter_id = $2`, [emailId, req.params.id])).rows[0];
+        if (!email) {
+          await client_.query("ROLLBACK");
+          return res.status(404).json({ error: "That email isn't on this matter." });
+        }
+      }
+      const text = (reply && reply.trim()) || (email && (email.body || "").trim());
+      if (!text) {
+        await client_.query("ROLLBACK");
+        return res.status(400).json({ error: "The reply is empty." });
+      }
+      const date = dateReceived || (email && email.email_date) || new Date().toISOString().slice(0, 10);
+
+      const inserted = await client_.query(
+        `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, source_email_id, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [enquiry.id, text, date, email ? email.id : null, req.user.id]
+      );
+      await client_.query(
+        `UPDATE enquiries SET answer = $1, date_answered = $2, status = $3, source_email_id = coalesce($4, source_email_id)
+         WHERE id = $5`,
+        [text, date, status, email ? email.id : null, enquiry.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "enquiry",
+        `Reply logged on enquiry ${enquiry.number}${email ? ` from email "${email.subject}"` : ""}`);
+      await client_.query("COMMIT");
+      res.status(201).json(inserted.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Add an internal comment to an enquiry. */
+router.post(
+  "/:id/enquiries/:enquiryId/comments",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { comment } = req.body;
+    if (!comment || !comment.trim()) return res.status(400).json({ error: "The comment is empty." });
+    const enquiry = await findEnquiry({ query }, req.params.id, req.params.enquiryId);
+    if (!enquiry) return res.status(404).json({ error: "Enquiry not found." });
+    const result = await query(
+      `INSERT INTO enquiry_comments (enquiry_id, comment, created_by) VALUES ($1,$2,$3) RETURNING *`,
+      [enquiry.id, comment.trim(), req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
   })
 );
 
@@ -972,6 +1298,41 @@ router.post(
       await logActivity(client_, req.params.id, req.user.id, "task", `Task added: ${description.trim()}`);
       await client_.query("COMMIT");
       res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Bulk-add tasks (e.g. from the standard task list). All or nothing. */
+router.post(
+  "/:id/tasks/bulk",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { tasks } = req.body;
+    if (!Array.isArray(tasks) || !tasks.length || tasks.length > 200) {
+      return res.status(400).json({ error: "tasks must be a list of 1–200 tasks." });
+    }
+    if (!tasks.every((t) => t && typeof t.description === "string" && t.description.trim())) {
+      return res.status(400).json({ error: "Every task needs a description." });
+    }
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const inserted = [];
+      for (const t of tasks) {
+        const result = await client_.query(
+          `INSERT INTO tasks (matter_id, description, due_date, status, created_by) VALUES ($1,$2,$3,'Open',$4) RETURNING *`,
+          [req.params.id, t.description.trim(), t.dueDate || null, req.user.id]
+        );
+        inserted.push(result.rows[0]);
+      }
+      await logActivity(client_, req.params.id, req.user.id, "task", `${inserted.length} standard task${inserted.length === 1 ? "" : "s"} added`);
+      await client_.query("COMMIT");
+      res.status(201).json(inserted);
     } catch (err) {
       await client_.query("ROLLBACK");
       throw err;

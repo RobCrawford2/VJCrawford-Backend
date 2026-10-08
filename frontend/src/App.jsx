@@ -57,6 +57,13 @@ const PRE_COMPLETION_CHECKLIST = [
 
 const TYPES = ["Sale", "Purchase", "Remortgage"];
 const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
+// Stored enquiry statuses and the wording staff see.
+const ENQUIRY_STATUSES = [
+  { value: "Outstanding", label: "Raised", pill: "critical" },
+  { value: "Pending Review", label: "Response received", pill: "progress" },
+  { value: "Answered", label: "Satisfactory", pill: "closed" },
+];
+const enquiryStatus = (value) => ENQUIRY_STATUSES.find((s) => s.value === value) || ENQUIRY_STATUSES[0];
 const isLeasehold = (tenure) => tenure === "Leasehold" || tenure === "Share of freehold";
 
 const DOC_CATEGORIES = [
@@ -148,6 +155,48 @@ const STANDARD_ENQUIRIES = [
     ],
   },
 ];
+
+// Standard conveyancing tasks, by matter type and stage index (see STAGES).
+// A starting point to be reviewed against the firm's own procedures.
+const STANDARD_TASKS = {
+  Purchase: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account", "Record source of instruction / referral arrangements"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Obtain evidence of source of funds and source of wealth", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Request contract pack from seller's solicitors", "Review draft contract, title register and title plan", "Review Property Information Form (TA6) and Fittings & Contents Form (TA10)", "Leasehold: review lease and Leasehold Information Form (TA7)"],
+    3: ["Order local authority, water & drainage and environmental searches", "Consider additional searches (coal mining, flood, chancel, highways)", "Review search results and note issues for the report"],
+    4: ["Raise pre-contract enquiries with seller's solicitors", "Chase outstanding enquiry replies", "Review enquiry replies and decide whether satisfactory"],
+    5: ["Receive and review mortgage offer and special conditions", "Check mortgage offer expiry against the proposed completion date", "Report any issues to the lender (UK Finance Mortgage Lenders' Handbook)"],
+    6: ["Send Report on Title to client", "Obtain signed contract, transfer (TR1) and mortgage deed", "Calculate SDLT and prepare completion statement"],
+    7: ["Complete the pre-exchange review checklist", "Receive deposit funds (cleared) into client account", "Confirm buildings insurance will be in place from exchange", "Agree completion date with all parties in the chain"],
+    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client, estate agent and lender", "Send certificate of title and request mortgage advance", "Carry out pre-completion searches (OS1 / bankruptcy)"],
+    9: ["Receive mortgage advance and balance of funds from client", "Send completion monies to seller's solicitors", "Confirm completion to client and agent; arrange release of keys"],
+    10: ["Submit SDLT return and pay SDLT (within 14 days of completion)", "Discharge any undertakings given", "Apply to register at HM Land Registry (AP1)", "Send title information document to client and lender"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+  Sale: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Confirm client's name matches the registered proprietor", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Obtain official copies of the title register and plan", "Client to complete TA6, TA10 (and TA7 if leasehold)", "Draft contract and send contract pack to buyer's solicitors", "Leasehold: request management pack from managing agent"],
+    4: ["Receive buyer's enquiries", "Answer buyer's enquiries with the client"],
+    5: ["Obtain redemption statement for the existing mortgage"],
+    7: ["Obtain signed contract and transfer (TR1) from client", "Agree completion date with all parties in the chain"],
+    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client and estate agent", "Obtain final redemption figure for completion day"],
+    9: ["Receive completion monies from buyer's solicitors", "Redeem the seller's mortgage", "Authorise release of keys and confirm completion to client"],
+    10: ["Send DS1 / evidence of discharge to buyer's solicitors", "Pay estate agent's invoice", "Account to client for net sale proceeds", "Discharge any undertakings given"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+  Remortgage: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Obtain official copies of the title register and plan", "Check title for restrictions and other charges"],
+    3: ["Order searches, or search indemnity insurance where the lender allows"],
+    5: ["Receive and review mortgage offer and special conditions", "Obtain redemption statement from the existing lender"],
+    6: ["Report to the lender / send certificate of title", "Obtain signed mortgage deed"],
+    9: ["Draw down the new mortgage advance", "Redeem the existing mortgage", "Account to client for any surplus funds"],
+    10: ["Apply to register the new charge at HM Land Registry (AP1 with DS1)", "Send title information document to client and lender"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+};
 
 const STANDARD_SEARCHES = [
   {
@@ -248,8 +297,8 @@ function needsAttention(matter, staleDays = 14) {
   const reasons = [];
   if (matter.searches.some((s) => s.issue)) reasons.push("Search issue flagged");
   if (matter.searches.some((s) => searchStatus(s) === "overdue")) reasons.push("A search is overdue");
-  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries outstanding");
-  if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry replies awaiting review");
+  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries raised and not yet answered");
+  if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry responses received — check whether they're satisfactory");
   if (matter.undertakings.some((u) => u.status === "Outstanding")) reasons.push("Undertaking not yet discharged");
   const today = new Date();
   if (matter.keyDates.targetExchange && !matter.keyDates.actualExchange && new Date(matter.keyDates.targetExchange) < today && matter.currentStageIndex < EXCHANGE_INDEX) {
@@ -364,6 +413,14 @@ export default function App() {
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
+  const [stageRequestDraft, setStageRequestDraft] = useState(null);
+  const [showStandardTasks, setShowStandardTasks] = useState(false);
+  const [pendingSignoffs, setPendingSignoffs] = useState([]);
+  const refreshSignoffs = useCallback(() => {
+    if (!authUser || authUser.role === "fee_earner") return setPendingSignoffs([]);
+    api.getPendingSignoffs().then(setPendingSignoffs).catch(() => {});
+  }, [authUser]);
+  useEffect(() => { refreshSignoffs(); }, [refreshSignoffs]);
   // The case list folds away when a matter is opened, so the matter gets the full width.
   const [listOpen, setListOpen] = useState(true);
   const [showEditMatter, setShowEditMatter] = useState(false);
@@ -373,8 +430,6 @@ export default function App() {
   const [showAddEmail, setShowAddEmail] = useState(false);
   const [showAddEnquiry, setShowAddEnquiry] = useState(false);
   const [showStandardEnquiries, setShowStandardEnquiries] = useState(false);
-  const [answeringEnquiry, setAnsweringEnquiry] = useState(null);
-  const [reviewingEnquiry, setReviewingEnquiry] = useState(null);
   const [showEmailEnquiries, setShowEmailEnquiries] = useState(false);
   const [showAddSearch, setShowAddSearch] = useState(false);
   const [showStandardSearches, setShowStandardSearches] = useState(false);
@@ -397,6 +452,7 @@ export default function App() {
           ...prev,
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
+          requireStageSignoff: s.require_stage_signoff ?? true,
           currentUser: authUser.name,
         }))
       )
@@ -411,6 +467,7 @@ export default function App() {
     const firmPatch = {};
     if ("domain" in patch) firmPatch.domain = patch.domain;
     if ("staleDays" in patch) firmPatch.staleDays = patch.staleDays;
+    if ("requireStageSignoff" in patch) firmPatch.requireStageSignoff = patch.requireStageSignoff;
     if (Object.keys(firmPatch).length) {
       api.updateFirmSettings(firmPatch).catch(() => {});
     }
@@ -501,11 +558,38 @@ export default function App() {
       );
       if (!proceed) return;
     }
+    if (matter && matter.stageMovesNeedSignoff) {
+      if (idx === matter.currentStageIndex) return;
+      setStageRequestDraft({ matterId: id, stageIndex: idx });
+      return;
+    }
     try {
       await api.setStage(id, idx);
       await afterMutation();
     } catch (err) {
       window.alert(err.message || "Couldn't update the stage.");
+    }
+  }
+
+  async function requestStage(id, idx, note) {
+    await api.requestStage(id, idx, note);
+    setStageRequestDraft(null);
+    await afterMutation();
+    refreshSignoffs();
+  }
+
+  async function decideStageRequest(id, requestId, approve, note) {
+    await api.decideStageRequest(id, requestId, approve, note);
+    await afterMutation();
+    refreshSignoffs();
+  }
+
+  async function withdrawStageRequest(id, requestId) {
+    try {
+      await api.withdrawStageRequest(id, requestId);
+      await afterMutation();
+    } catch (err) {
+      window.alert(err.message || "Couldn't withdraw the request.");
     }
   }
 
@@ -663,34 +747,24 @@ export default function App() {
     }
   }
 
-  async function answerEnquiry(id, enquiryId, answer, dateAnswered) {
+  async function setEnquiryStatus(id, enquiryId, status) {
     try {
-      await api.answerEnquiry(id, enquiryId, answer, dateAnswered);
+      await api.setEnquiryStatus(id, enquiryId, status);
       await afterMutation();
-      setAnsweringEnquiry(null);
     } catch (err) {
-      window.alert(err.message || "Couldn't save the answer.");
+      window.alert(err.message || "Couldn't change the status.");
     }
   }
 
-  async function confirmEnquiryReview(id, enquiryId, finalAnswer) {
-    try {
-      await api.reviewEnquiry(id, enquiryId, { outcome: "confirm", finalAnswer });
-      await afterMutation();
-      setReviewingEnquiry(null);
-    } catch (err) {
-      window.alert(err.message || "Couldn't confirm the reply.");
-    }
+  // Throws on failure so the inline form can show the error and keep what was typed.
+  async function logEnquiryReply(id, enquiryId, payload) {
+    await api.addEnquiryReply(id, enquiryId, payload);
+    await afterMutation();
   }
 
-  async function flagEnquiryFollowUp(id, enquiryId, followUpNote) {
-    try {
-      await api.reviewEnquiry(id, enquiryId, { outcome: "follow_up", followUpNote });
-      await afterMutation();
-      setReviewingEnquiry(null);
-    } catch (err) {
-      window.alert(err.message || "Couldn't flag the follow-up.");
-    }
+  async function addEnquiryComment(id, enquiryId, comment) {
+    await api.addEnquiryComment(id, enquiryId, comment);
+    await afterMutation();
   }
 
   async function emailEnquiries(id, { to, subject, body, count }) {
@@ -932,6 +1006,25 @@ export default function App() {
           font-size: 11.5px; color: var(--slate); margin-bottom: 10px;
         }
         .ac-hidelist:hover { color: var(--ink); }
+        .ac-enq-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--slate); margin-bottom: 12px; align-items: center; }
+        .ac-enq { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 12px 14px; margin-bottom: 10px; }
+        .ac-enq-head { display: flex; gap: 12px; align-items: flex-start; }
+        .ac-enq-num { font-family: var(--font-mono); font-size: 13px; color: var(--slate); min-width: 22px; padding-top: 1px; }
+        .ac-enq-q { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+        .ac-enq-meta { font-size: 11.5px; color: var(--slate); margin-top: 3px; }
+        .ac-enq-status {
+          border: none; border-radius: 10px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer; flex-shrink: 0;
+        }
+        .ac-enq-log { margin: 10px 0 0 34px; border-left: 2px solid var(--line); padding-left: 12px; display: flex; flex-direction: column; gap: 8px; }
+        .ac-enq-entry-meta { font-size: 11px; color: var(--slate); }
+        .ac-enq-entry-text { font-size: 13px; color: var(--ink-soft); white-space: pre-wrap; margin-top: 2px; }
+        .ac-enq-entry.comment .ac-enq-entry-text { font-style: italic; }
+        .ac-enq-actions { display: flex; gap: 6px; margin: 10px 0 0 34px; }
+        .ac-enq-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
+        .ac-tablebtn.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+        .ac-enq-form { margin: 10px 0 0 34px; padding: 10px 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 3px; }
+        .ac-enq-form .ac-enq-actions { margin-left: 0; }
+        @media (max-width: 700px) { .ac-enq-log, .ac-enq-actions, .ac-enq-form { margin-left: 0; } }
         .ac-linked-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--slate); }
         .ac-linked-chip {
           display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line);
@@ -1094,6 +1187,13 @@ export default function App() {
         .ac-tl-step.done .ac-tl-label { color: var(--ink-soft); }
         .ac-tl-step.current .ac-tl-label { color: var(--ink); }
         .ac-tl-date { font-size: 10px; font-family: var(--font-mono); color: var(--slate); }
+        .ac-tl-step.requested .ac-stamp { border: 2px dashed var(--brass); }
+        .ac-signoff-banner {
+          grid-column: 1 / -1; min-width: 0; background: var(--brass-bg); border: 1px solid var(--brass); border-radius: 3px;
+          padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+        }
+        .ac-signoff-banner .txt { font-size: 13px; color: var(--ink); }
+        .ac-signoff-banner .note { font-size: 12px; color: var(--ink-soft); font-style: italic; margin-top: 2px; }
 
         /* cards */
         .ac-card { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04); }
@@ -1369,6 +1469,24 @@ export default function App() {
                 </button>
               </div>
 
+              {pendingSignoffs.length > 0 && (
+                <div className="ac-card" style={{ borderColor: "var(--brass)", background: "var(--brass-bg)" }}>
+                  <h3><ShieldCheck size={12} /> Awaiting your sign-off ({pendingSignoffs.length})</h3>
+                  {pendingSignoffs.map((r) => (
+                    <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px dashed var(--line)" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{r.reference} — {r.address}</div>
+                        <div style={{ fontSize: 12, color: "var(--slate)" }}>
+                          {r.requested_by_name} asks to move from {r.from_stage_name} to <strong>{r.to_stage_name}</strong>
+                          {r.note && <> · “{r.note}”</>}
+                        </div>
+                      </div>
+                      <button className="ac-tablebtn" onClick={() => { setSelectedId(r.matter_id); setActiveTab("overview"); }}>Open</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {(() => {
                 const openTasks = allOpenTasks(matters);
                 const stale = staleFiles(matters, settings.staleDays);
@@ -1448,6 +1566,10 @@ export default function App() {
               onOpenSettings={() => setShowSettings(true)}
               onBack={() => setSelectedId(null)}
               onSetStage={(idx) => setStage(selected.id, idx)}
+              onDecideStageRequest={(requestId, approve, note) => decideStageRequest(selected.id, requestId, approve, note)}
+              onWithdrawStageRequest={(requestId) => withdrawStageRequest(selected.id, requestId)}
+              currentUserId={authUser.id}
+              onLoadStandardTasks={() => setShowStandardTasks(true)}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onAddDoc={() => setShowAddDoc(true)}
@@ -1459,8 +1581,9 @@ export default function App() {
               onEdit={() => setShowEditMatter(true)}
               onAddEnquiry={() => setShowAddEnquiry(true)}
               onLoadStandardEnquiries={() => setShowStandardEnquiries(true)}
-              onAnswerEnquiry={(q) => setAnsweringEnquiry(q)}
-              onReviewEnquiry={(q) => setReviewingEnquiry(q)}
+              onSetEnquiryStatus={(enquiryId, status) => setEnquiryStatus(selected.id, enquiryId, status)}
+              onLogEnquiryReply={(enquiryId, payload) => logEnquiryReply(selected.id, enquiryId, payload)}
+              onAddEnquiryComment={(enquiryId, comment) => addEnquiryComment(selected.id, enquiryId, comment)}
               onMatchEmail={(emailId) => matchEmailManually(selected.id, emailId)}
               onEmailEnquiries={() => setShowEmailEnquiries(true)}
               onAddSearch={() => setShowAddSearch(true)}
@@ -1490,15 +1613,6 @@ export default function App() {
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
       {showAddEnquiry && selected && <AddEnquiryForm onClose={() => setShowAddEnquiry(false)} onAdd={(q) => addEnquiry(selected.id, q)} />}
       {showStandardEnquiries && selected && <StandardEnquiriesModal onClose={() => setShowStandardEnquiries(false)} onAdd={(qs) => addStandardEnquiries(selected.id, qs)} />}
-      {answeringEnquiry && selected && <AnswerEnquiryForm enquiry={answeringEnquiry} onClose={() => setAnsweringEnquiry(null)} onSave={(answer, date) => answerEnquiry(selected.id, answeringEnquiry.id, answer, date)} />}
-      {reviewingEnquiry && selected && (
-        <ReviewEnquiryForm
-          enquiry={reviewingEnquiry}
-          onClose={() => setReviewingEnquiry(null)}
-          onConfirm={(finalAnswer) => confirmEnquiryReview(selected.id, reviewingEnquiry.id, finalAnswer)}
-          onFlagFollowUp={(note) => flagEnquiryFollowUp(selected.id, reviewingEnquiry.id, note)}
-        />
-      )}
       {showEmailEnquiries && selected && <EmailEnquiriesModal matter={selected} onClose={() => setShowEmailEnquiries(false)} onSend={(payload) => emailEnquiries(selected.id, payload)} />}
       {showAddSearch && selected && <AddSearchForm onClose={() => setShowAddSearch(false)} onAdd={(s) => addSearch(selected.id, s)} />}
       {showStandardSearches && selected && <StandardSearchesModal onClose={() => setShowStandardSearches(false)} onAdd={(types) => addStandardSearches(selected.id, types)} />}
@@ -1525,6 +1639,7 @@ export default function App() {
       )}
       {showSettings && (
         <SettingsPanel
+          isAdmin={authUser.role === "admin"}
           settings={settings}
           matters={matters}
           onClose={() => setShowSettings(false)}
@@ -1534,6 +1649,20 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {stageRequestDraft && (
+        <StageRequestForm
+          stageIndex={stageRequestDraft.stageIndex}
+          onClose={() => setStageRequestDraft(null)}
+          onSubmit={(note) => requestStage(stageRequestDraft.matterId, stageRequestDraft.stageIndex, note)}
+        />
+      )}
+      {showStandardTasks && selected && (
+        <StandardTasksForm
+          matter={selected}
+          onClose={() => setShowStandardTasks(false)}
+          onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
+        />
+      )}
       {showStaff && (
         <StaffPanel
           users={users}
@@ -1585,7 +1714,7 @@ function ReportOnTitleCard({ matter, onGenerate }) {
     <div className="ac-card" style={{ marginBottom: 18 }}>
       <h3 style={{ marginBottom: 10 }}><FileSignature size={12} /> Report on Title</h3>
       <div className="ac-kv"><span className="k">Searches back</span><span>{received} of {searches.length}{issues ? ` · ${issues} issue${issues === 1 ? "" : "s"}` : ""}</span></div>
-      <div className="ac-kv"><span className="k">Enquiries answered</span><span>{answered} of {matter.enquiries.length}{pendingReview ? ` · ${pendingReview} to review` : ""}</span></div>
+      <div className="ac-kv"><span className="k">Enquiries satisfactory</span><span>{answered} of {matter.enquiries.length}{pendingReview ? ` · ${pendingReview} to check` : ""}</span></div>
       <p style={{ fontSize: 12, color: ready ? "var(--success)" : "var(--slate)", margin: "8px 0 10px" }}>
         {ready
           ? "All searches and enquiries are in — ready to report."
@@ -1604,6 +1733,82 @@ function ReportOnTitleCard({ matter, onGenerate }) {
       <p style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 0" }}>
         Pulls in the client, property, searches and enquiry replies. Highlighted parts need completing before it's sent.
       </p>
+    </div>
+  );
+}
+
+function StageRequestForm({ stageIndex, onClose, onSubmit }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try { await onSubmit(note); } catch (err) { setError(err.message || "Couldn't send the request."); setBusy(false); }
+  }
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="ac-modal-head">
+          <h2>Request sign-off</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 13.5, marginTop: 0 }}>
+          Ask your supervisor to sign off moving this matter to <strong>{STAGES[stageIndex].name}</strong>. It moves once they approve.
+        </p>
+        <div className="ac-field">
+          <label>Note for your supervisor (optional)</label>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
+        </div>
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        <button className="ac-submit" type="submit" disabled={busy}><Send size={14} /> {busy ? "Sending…" : "Send for sign-off"}</button>
+      </form>
+    </div>
+  );
+}
+
+function StageRequestBanner({ matter, currentUserId, onDecide, onWithdraw }) {
+  const r = matter.pendingStageRequest;
+  const [declining, setDeclining] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const mine = r.requestedBy === currentUserId;
+  const canDecide = matter.canSignOffStages && !mine;
+
+  async function decide(approve) {
+    setBusy(true);
+    try { await onDecide(r.id, approve, note); setDeclining(false); setNote(""); }
+    catch (err) { window.alert(err.message || "Couldn't record the decision."); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-signoff-banner">
+      <div style={{ minWidth: 0 }}>
+        <div className="txt">
+          <ShieldCheck size={13} style={{ verticalAlign: -2 }} /> <strong>Sign-off requested</strong>
+          {" "}by {mine ? "you" : r.requestedByName} to move from <strong>{STAGES[r.fromStage]?.name}</strong> to <strong>{STAGES[r.toStage].name}</strong>
+          {" "}· {new Date(r.requestedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </div>
+        {r.note && <div className="note">“{r.note}”</div>}
+        {!canDecide && !mine && <div className="note" style={{ fontStyle: "normal" }}>Waiting for the matter's supervisor or an admin.</div>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {canDecide && !declining && (
+          <>
+            <button className="ac-tablebtn primary" disabled={busy} onClick={() => decide(true)}><Check size={12} /> Approve &amp; move</button>
+            <button className="ac-tablebtn" disabled={busy} onClick={() => setDeclining(true)}>Decline…</button>
+          </>
+        )}
+        {canDecide && declining && (
+          <>
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason (required)" style={{ minWidth: 220 }} autoFocus />
+            <button className="ac-tablebtn" disabled={busy || !note.trim()} onClick={() => decide(false)}>Decline</button>
+            <button className="ac-tablebtn" onClick={() => { setDeclining(false); setNote(""); }}>Cancel</button>
+          </>
+        )}
+        {mine && <button className="ac-tablebtn" onClick={() => onWithdraw(r.id)}>Withdraw request</button>}
+      </div>
     </div>
   );
 }
@@ -1645,13 +1850,16 @@ function StageTimeline({ matter, onSetStage }) {
       <div className="ac-timeline-track" ref={trackRef}>
         {STAGES.map((s, idx) => {
           const state = idx < currentIdx ? "done" : idx === currentIdx ? "current" : "todo";
+          const requested = matter.pendingStageRequest?.toStage === idx;
           const date = idx <= currentIdx ? reached[idx] : null;
           return (
-            <button key={s.name} type="button" className={`ac-tl-step ${state}`} onClick={() => onSetStage(idx)} title={`${s.name} — ${s.hint}`}>
+            <button key={s.name} type="button" className={`ac-tl-step ${state} ${requested ? "requested" : ""}`} onClick={() => onSetStage(idx)}
+              title={requested ? `${s.name} — awaiting sign-off` : matter.stageMovesNeedSignoff && idx !== currentIdx ? `${s.name} — click to request sign-off to move here` : `${s.name} — ${s.hint}`}>
               <span className={`ac-stamp ${state === "todo" ? "" : state}`}>
                 {state === "done" ? <Check size={12} /> : state === "current" ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
               </span>
               <span className="ac-tl-label">{s.name}</span>
+              {requested && <span className="ac-tl-date" style={{ color: "var(--brass)", fontWeight: 600 }}>awaiting sign-off</span>}
               {date && <span className="ac-tl-date" title={formatDate(date)}>{new Date(date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
             </button>
           );
@@ -1661,7 +1869,136 @@ function StageTimeline({ matter, onSetStage }) {
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAddComment }) {
+  const [mode, setMode] = useState(null); // "reply" | "comment" | null
+  const [reply, setReply] = useState({ text: "", date: new Date().toISOString().slice(0, 10), emailId: "", status: "Pending Review" });
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const st = enquiryStatus(q.status);
+
+  function close() {
+    setMode(null); setError("");
+    setReply({ text: "", date: new Date().toISOString().slice(0, 10), emailId: "", status: "Pending Review" });
+    setComment("");
+  }
+
+  async function run(fn) {
+    setBusy(true); setError("");
+    try { await fn(); close(); } catch (err) { setError(err.message || "Couldn't save."); } finally { setBusy(false); }
+  }
+
+  const chosenEmail = incomingEmails.find((e) => e.id === reply.emailId);
+
+  return (
+    <div className="ac-enq">
+      <div className="ac-enq-head">
+        <span className="ac-enq-num">{q.number}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="ac-enq-q">{q.question}</div>
+          <div className="ac-enq-meta">
+            Raised {formatDate(q.dateRaised)}
+            {q.replies.length > 0 && ` · ${q.replies.length} repl${q.replies.length === 1 ? "y" : "ies"}`}
+            {q.comments.length > 0 && ` · ${q.comments.length} comment${q.comments.length === 1 ? "" : "s"}`}
+          </div>
+        </div>
+        <select className={`ac-enq-status ac-pill--${st.pill}`} value={q.status} onChange={(e) => onSetStatus(e.target.value)} title="Change status">
+          {ENQUIRY_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+      </div>
+
+      {(q.replies.length > 0 || q.comments.length > 0) && (
+        <div className="ac-enq-log">
+          {[
+            // Chronological: replies by the day they were received, comments by the day written;
+            // within a day, the order they were logged.
+            ...q.replies.map((r) => ({ kind: "reply", sort: `${String(r.date).slice(0, 10)}|${new Date(r.createdAt).toISOString()}`, ...r })),
+            ...q.comments.map((c) => ({ kind: "comment", sort: `${new Date(c.at).toISOString().slice(0, 10)}|${new Date(c.at).toISOString()}`, ...c })),
+          ]
+            .sort((a, b) => a.sort.localeCompare(b.sort))
+            .map((item) => (
+              <div key={`${item.kind}-${item.id}`} className={`ac-enq-entry ${item.kind}`}>
+                <div className="ac-enq-entry-meta">
+                  {item.kind === "reply" ? (
+                    <>
+                      <strong>Reply</strong> · received {formatDate(item.date)}
+                      {item.emailSubject && <> · from email “{item.emailSubject}”</>}
+                      {item.by && <> · logged by {item.by}</>}
+                    </>
+                  ) : (
+                    <>
+                      <strong>Comment</strong> · {item.by || "—"} · {new Date(item.at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </>
+                  )}
+                </div>
+                <div className="ac-enq-entry-text">{item.text}</div>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {mode === null && (
+        <div className="ac-enq-actions">
+          <button className="ac-tablebtn" onClick={() => setMode("reply")}><Mail size={12} /> Log reply</button>
+          <button className="ac-tablebtn" onClick={() => setMode("comment")}><StickyNote size={12} /> Add comment</button>
+        </div>
+      )}
+
+      {mode === "reply" && (
+        <form className="ac-enq-form" onSubmit={(e) => { e.preventDefault(); run(() => onLogReply({ reply: reply.text, dateReceived: reply.date, emailId: reply.emailId || undefined, status: reply.status })); }}>
+          <div className="ac-field">
+            <label>Link an email on this matter (optional)</label>
+            <select value={reply.emailId} onChange={(e) => {
+              const em = incomingEmails.find((x) => x.id === e.target.value);
+              setReply({ ...reply, emailId: e.target.value, date: em ? String(em.date).slice(0, 10) : reply.date });
+            }}>
+              <option value="">— None: type or paste the reply below —</option>
+              {incomingEmails.map((em) => <option key={em.id} value={em.id}>{formatDate(em.date)} — {em.subject}</option>)}
+            </select>
+          </div>
+          <div className="ac-field">
+            <label>Reply</label>
+            <textarea value={reply.text} onChange={(e) => setReply({ ...reply, text: e.target.value })}
+              placeholder={chosenEmail ? "Leave blank to use the email's text, or paste just the relevant part" : "Paste or type the other side's reply"} style={{ minHeight: 70 }} autoFocus />
+          </div>
+          <div className="ac-row2">
+            <div className="ac-field">
+              <label>Received</label>
+              <input type="date" value={reply.date} onChange={(e) => setReply({ ...reply, date: e.target.value })} />
+            </div>
+            <div className="ac-field">
+              <label>Status after this reply</label>
+              <select value={reply.status} onChange={(e) => setReply({ ...reply, status: e.target.value })}>
+                {ENQUIRY_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+          <div className="ac-enq-actions">
+            <button className="ac-tablebtn primary" type="submit" disabled={busy || (!reply.text.trim() && !reply.emailId)}><Check size={12} /> {busy ? "Saving…" : "Save reply"}</button>
+            <button className="ac-tablebtn" type="button" onClick={close}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {mode === "comment" && (
+        <form className="ac-enq-form" onSubmit={(e) => { e.preventDefault(); run(() => onAddComment(comment)); }}>
+          <div className="ac-field">
+            <label>Comment</label>
+            <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="e.g. Reply doesn't cover the extension — chase for building regs sign-off" style={{ minHeight: 60 }} autoFocus />
+          </div>
+          {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+          <div className="ac-enq-actions">
+            <button className="ac-tablebtn primary" type="submit" disabled={busy || !comment.trim()}><Check size={12} /> {busy ? "Saving…" : "Save comment"}</button>
+            <button className="ac-tablebtn" type="button" onClick={close}>Cancel</button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1714,6 +2051,14 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
       {activeTab === "overview" && (
         <div className="ac-detail-body">
+          {matter.pendingStageRequest && (
+            <StageRequestBanner
+              matter={matter}
+              currentUserId={currentUserId}
+              onDecide={onDecideStageRequest}
+              onWithdraw={onWithdrawStageRequest}
+            />
+          )}
           <StageTimeline matter={matter} onSetStage={onSetStage} />
           <div className="ac-col-main">
             {(() => {
@@ -1947,7 +2292,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   onClick={onEmailEnquiries}
                   disabled={!matter.enquiries.some((q) => q.status === "Outstanding")}
                 >
-                  <Send size={13} /> Email outstanding to other side
+                  <Send size={13} /> Email raised enquiries to other side
                 </button>
               </div>
             </div>
@@ -1955,57 +2300,22 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {matter.enquiries.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No enquiries raised yet.</p>}
 
             {matter.enquiries.length > 0 && (
-              <table className="ac-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 34 }}>No.</th>
-                    <th>Question</th>
-                    <th style={{ width: 100 }}>Raised</th>
-                    <th style={{ width: 110 }}>Status</th>
-                    <th>Answer</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {matter.enquiries.map((q) => (
-                    <tr key={q.id}>
-                      <td className="mono">{q.number}</td>
-                      <td>{q.question}</td>
-                      <td className="mono">{formatDate(q.dateRaised)}</td>
-                      <td>
-                        <span className={`ac-pill ${q.status === "Answered" ? "ac-pill--closed" : q.status === "Pending Review" ? "ac-pill--progress" : "ac-pill--critical"}`}>{q.status}</span>
-                      </td>
-                      <td>
-                        {q.status === "Answered" && (
-                          <div>
-                            <div style={{ fontSize: 12.5 }}>{q.answer}</div>
-                            <div style={{ fontSize: 10.5, color: "var(--slate-light)", fontFamily: "var(--font-mono)", marginTop: 3 }}>{formatDate(q.dateAnswered)}{q.autoFilled ? " · auto-filled from email, confirmed" : ""}</div>
-                            <button className="ac-tablebtn" onClick={() => onAnswerEnquiry(q)}>Edit answer</button>
-                          </div>
-                        )}
-                        {q.status === "Pending Review" && (
-                          <div>
-                            <div style={{ fontSize: 12.5, fontStyle: "italic" }}>{q.answer}</div>
-                            <div style={{ fontSize: 10.5, color: "var(--brass)", fontWeight: 600, marginTop: 3 }}>Auto-filled from email received {formatDate(q.dateAnswered)} — needs review</div>
-                            <button className="ac-tablebtn" style={{ marginTop: 6, borderColor: "var(--brass)", color: "var(--brass)" }} onClick={() => onReviewEnquiry(q)}>Review reply</button>
-                          </div>
-                        )}
-                        {q.status === "Outstanding" && (
-                          <div>
-                            {q.followUpNotes && (
-                              <div style={{ fontSize: 11.5, color: "#8a3b1f", marginBottom: 5 }}>
-                                ⚠ Follow-up needed: {q.followUpNotes}
-                                {q.answer && <div style={{ fontStyle: "italic", color: "var(--slate)", marginTop: 3 }}>Previous reply: "{q.answer}"</div>}
-                              </div>
-                            )}
-                            <button className="ac-tablebtn" onClick={() => onAnswerEnquiry(q)}>Add answer</button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="ac-enq-summary">
+                {ENQUIRY_STATUSES.map((st) => (
+                  <span key={st.value}><span className={`ac-pill ac-pill--${st.pill}`}>{st.label}</span> {matter.enquiries.filter((q) => q.status === st.value).length}</span>
+                ))}
+              </div>
             )}
+            {matter.enquiries.map((q) => (
+              <EnquiryCard
+                key={q.id}
+                enquiry={q}
+                incomingEmails={matter.emails.filter((e) => e.direction === "in")}
+                onSetStatus={(status) => onSetEnquiryStatus(q.id, status)}
+                onLogReply={(payload) => onLogEnquiryReply(q.id, payload)}
+                onAddComment={(comment) => onAddEnquiryComment(q.id, comment)}
+              />
+            ))}
             {!matter.parties.otherSideSolicitorEmail && matter.enquiries.length > 0 && (
               <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 10 }}>
                 No email address is on file for the other side's solicitor — add one via "Edit details" before emailing enquiries.
@@ -2126,7 +2436,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           <div className="ac-col-main">
             <div className="ac-section-head">
               <h2>Tasks &amp; reminders</h2>
-              <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>
+                <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
+              </div>
             </div>
 
             {matter.tasks.filter((t) => t.status === "Open").length === 0 && matter.tasks.filter((t) => t.status === "Done").length === 0 && (
@@ -2249,11 +2562,39 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   <div className="ac-email-subject">{e.subject}</div>
                   <div className="ac-email-meta">{e.direction === "in" ? `From ${e.from}` : `To ${e.to}`} · {formatDate(e.date)}</div>
                   <div className="ac-email-body">{e.body}</div>
-                  {e.direction === "in" && matter.enquiries.some((q) => q.status === "Outstanding") && (
-                    <button className="ac-tablebtn" style={{ marginTop: 8 }} onClick={() => onMatchEmail(e.id)}>
-                      <FileSearch size={11} style={{ marginRight: 4, verticalAlign: -2 }} />Check for enquiry replies
-                    </button>
+                  {e.direction === "in" && matter.enquiries.length > 0 && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+                      {matter.enquiries.some((q) => q.status === "Outstanding") && (
+                        <button className="ac-tablebtn" onClick={() => onMatchEmail(e.id)}>
+                          <FileSearch size={11} style={{ marginRight: 4, verticalAlign: -2 }} />Check for numbered replies
+                        </button>
+                      )}
+                      <select
+                        className="ac-tablebtn"
+                        value=""
+                        onChange={(ev) => {
+                          if (!ev.target.value) return;
+                          onLogEnquiryReply(ev.target.value, { emailId: e.id }).catch((err) => window.alert(err.message || "Couldn't log the reply."));
+                        }}
+                        title="Log this whole email as the reply to one enquiry"
+                      >
+                        <option value="">Log as reply to enquiry…</option>
+                        {matter.enquiries.map((q) => (
+                          <option key={q.id} value={q.id}>
+                            {q.number}. {q.question.length > 60 ? `${q.question.slice(0, 60)}…` : q.question}{q.replies.some((r) => r.emailId === e.id) ? " (already logged)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   )}
+                  {e.direction === "in" && (() => {
+                    const linked = matter.enquiries.filter((q) => q.replies.some((r) => r.emailId === e.id));
+                    return linked.length > 0 && (
+                      <div style={{ fontSize: 11.5, color: "var(--success)", marginTop: 6 }}>
+                        <Check size={11} style={{ verticalAlign: -2 }} /> Logged as reply to enquir{linked.length === 1 ? "y" : "ies"} {linked.map((q) => q.number).join(", ")}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
@@ -2437,7 +2778,7 @@ function NewMatterForm({ onClose, onCreate, users }) {
 /* Settings & Outlook integration                                         */
 /* ---------------------------------------------------------------------- */
 
-function SettingsPanel({ settings, matters, onClose, onSave, onConnectOutlook, onDisconnectOutlook }) {
+function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectOutlook, onDisconnectOutlook }) {
   const [domain, setDomain] = useState(settings.domain);
   const [staleDays, setStaleDays] = useState(settings.staleDays);
   const [currentUser, setCurrentUser] = useState(settings.currentUser);
@@ -2518,6 +2859,19 @@ function SettingsPanel({ settings, matters, onClose, onSave, onConnectOutlook, o
             <label>Flag files inactive for more than (days)</label>
             <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} />
           </div>
+        </div>
+
+        <div className="ac-card">
+          <h3><ShieldCheck size={12} /> Stage sign-off</h3>
+          <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
+            When on, fee earners can't move a matter to another stage themselves — they send a sign-off request, which the matter's supervisor or an admin approves or declines. Supervisors and admins can always move stages directly.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, textTransform: "none", fontWeight: 500, color: "var(--ink)" }}>
+            <input type="checkbox" checked={settings.requireStageSignoff !== false} disabled={!isAdmin}
+              onChange={(e) => onSave({ requireStageSignoff: e.target.checked })} style={{ width: "auto" }} />
+            Fee earners need sign-off to move stages
+          </label>
+          {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
         </div>
 
         <p style={{ fontSize: 11, color: "var(--slate-light)" }}>
@@ -3104,111 +3458,6 @@ function AddEnquiryForm({ onClose, onAdd }) {
   );
 }
 
-function AnswerEnquiryForm({ enquiry, onClose, onSave }) {
-  const [answer, setAnswer] = useState(enquiry.answer || "");
-  const [date, setDate] = useState(enquiry.dateAnswered || new Date().toISOString().slice(0, 10));
-  const [error, setError] = useState("");
-
-  function submit(e) {
-    e.preventDefault();
-    if (!answer.trim()) {
-      setError("Enter the answer before saving.");
-      return;
-    }
-    onSave(answer.trim(), date);
-  }
-
-  return (
-    <div className="ac-overlay center" onClick={onClose}>
-      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <div className="ac-modal-head">
-          <h2>Enquiry {enquiry.number}</h2>
-          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
-        </div>
-        <p style={{ fontSize: 13, color: "var(--ink-soft)", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 6, padding: 10, marginBottom: 14 }}>{enquiry.question}</p>
-        <div className="ac-field">
-          <label>Answer</label>
-          <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} style={{ minHeight: 90 }} autoFocus />
-        </div>
-        <div className="ac-field">
-          <label>Date answered</label>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
-        {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><Check size={14} /> Save answer</button>
-      </form>
-    </div>
-  );
-}
-
-function ReviewEnquiryForm({ enquiry, onClose, onConfirm, onFlagFollowUp }) {
-  const [answer, setAnswer] = useState(enquiry.answer || "");
-  const [showFollowUp, setShowFollowUp] = useState(false);
-  const [followUpNote, setFollowUpNote] = useState("");
-  const [error, setError] = useState("");
-
-  function confirm(e) {
-    e.preventDefault();
-    if (!answer.trim()) {
-      setError("The answer can't be empty.");
-      return;
-    }
-    onConfirm(answer.trim());
-  }
-
-  function submitFollowUp(e) {
-    e.preventDefault();
-    if (!followUpNote.trim()) {
-      setError("Say what still needs chasing.");
-      return;
-    }
-    onFlagFollowUp(followUpNote.trim());
-  }
-
-  return (
-    <div className="ac-overlay center" onClick={onClose}>
-      <div className="ac-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="ac-modal-head">
-          <h2>Review reply — enquiry {enquiry.number}</h2>
-          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
-        </div>
-        <p style={{ fontSize: 13, color: "var(--ink-soft)", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 6, padding: 10, marginBottom: 10 }}>{enquiry.question}</p>
-        <p style={{ fontSize: 11, color: "var(--brass)", fontWeight: 600, marginTop: 0, marginBottom: 12 }}>
-          Auto-filled from an email received {formatDate(enquiry.dateAnswered)} — check the wording below before confirming.
-        </p>
-
-        {!showFollowUp ? (
-          <form onSubmit={confirm}>
-            <div className="ac-field">
-              <label>Reply (edit if needed)</label>
-              <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} style={{ minHeight: 100 }} autoFocus />
-            </div>
-            {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" className="ac-tablebtn" style={{ flex: 1, padding: "10px 0", color: "#8a3b1f", borderColor: "#e2a06a" }} onClick={() => { setError(""); setShowFollowUp(true); }}>
-                Needs follow-up
-              </button>
-              <button className="ac-submit" type="submit" style={{ flex: 2, marginTop: 0 }}><Check size={14} /> Confirm — this answers it</button>
-            </div>
-          </form>
-        ) : (
-          <form onSubmit={submitFollowUp}>
-            <div className="ac-field">
-              <label>What still needs chasing?</label>
-              <textarea value={followUpNote} onChange={(e) => setFollowUpNote(e.target.value)} placeholder="e.g. Reply doesn't confirm whether the parking space is registered — ask for title plan reference." style={{ minHeight: 80 }} autoFocus />
-            </div>
-            <p style={{ fontSize: 11, color: "var(--slate-light)", marginTop: -6, marginBottom: 12 }}>This enquiry will go back to Outstanding, with the reply above kept for reference, so you can chase again.</p>
-            {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" className="ac-tablebtn" style={{ flex: 1, padding: "10px 0" }} onClick={() => { setError(""); setShowFollowUp(false); }}>Back</button>
-              <button className="ac-submit" type="submit" style={{ flex: 2, marginTop: 0, background: "#8a3b1f" }}><AlertTriangle size={14} /> Flag for follow-up</button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function StandardEnquiriesModal({ onClose, onAdd }) {
   const allQuestions = STANDARD_ENQUIRIES.flatMap((g) => g.items);
@@ -3269,6 +3518,81 @@ function StandardEnquiriesModal({ onClose, onAdd }) {
           })}
         </div>
         <button className="ac-submit" type="submit" onClick={submit}><FileSearch size={14} /> Add {selected.size} enquir{selected.size === 1 ? "y" : "ies"}</button>
+      </form>
+    </div>
+  );
+}
+
+function StandardTasksForm({ matter, onClose, onAdd }) {
+  const groups = Object.entries(STANDARD_TASKS[matter.type] || {})
+    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items }))
+    .sort((a, b) => a.idx - b.idx);
+  const existing = new Set(matter.tasks.map((t) => t.description.trim().toLowerCase()));
+  const isExisting = (t) => existing.has(t.toLowerCase());
+  // Pre-tick everything from the current stage onwards that isn't already on the file.
+  const [selected, setSelected] = useState(
+    () => new Set(groups.filter((g) => g.idx >= matter.currentStageIndex).flatMap((g) => g.items).filter((t) => !isExisting(t)))
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function toggle(t) {
+    setSelected((prev) => { const next = new Set(prev); next.has(t) ? next.delete(t) : next.add(t); return next; });
+  }
+  function toggleGroup(items, allOn) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      items.filter((t) => !isExisting(t)).forEach((t) => (allOn ? next.delete(t) : next.add(t)));
+      return next;
+    });
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!selected.size) return;
+    setBusy(true); setError("");
+    try {
+      await onAdd(groups.flatMap((g) => g.items).filter((t) => selected.has(t)).map((description) => ({ description })));
+    } catch (err) {
+      setError(err.message || "Couldn't add the tasks.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit} style={{ width: 640 }}>
+        <div className="ac-modal-head">
+          <h2>Standard tasks — {matter.type.toLowerCase()}</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: -6, marginBottom: 14 }}>
+          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected. Tasks already on this file are greyed out. Add due dates afterwards where you need reminders.
+        </p>
+        <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
+          {groups.map((g) => {
+            const available = g.items.filter((t) => !isExisting(t));
+            const allOn = available.length > 0 && available.every((t) => selected.has(t));
+            return (
+              <div key={g.idx} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: g.idx === matter.currentStageIndex ? "var(--brass)" : "var(--slate)" }}>
+                    {g.idx + 1}. {g.stage}{g.idx === matter.currentStageIndex ? " (current)" : ""}
+                  </span>
+                  {available.length > 0 && <button type="button" className="ac-tablebtn" onClick={() => toggleGroup(g.items, allOn)}>{allOn ? "Deselect all" : "Select all"}</button>}
+                </div>
+                {g.items.map((t) => (
+                  <label key={t} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, textTransform: "none", color: isExisting(t) ? "var(--slate-light)" : "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4 }}>
+                    <input type="checkbox" disabled={isExisting(t)} checked={!isExisting(t) && selected.has(t)} onChange={() => toggle(t)} style={{ width: "auto", marginTop: 2, flexShrink: 0 }} />
+                    {t}{isExisting(t) ? " (already on file)" : ""}
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        <button className="ac-submit" type="submit" disabled={busy || !selected.size}><ListChecks size={14} /> {busy ? "Adding…" : `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`}</button>
       </form>
     </div>
   );

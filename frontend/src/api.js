@@ -72,6 +72,11 @@ export const api = {
   importMatters: (rows, dryRun) => request("/matters/import", { method: "POST", body: { rows, dryRun } }),
   updateMatter: (id, patch) => request(`/matters/${id}`, { method: "PATCH", body: patch }),
   setStage: (id, stageIndex) => request(`/matters/${id}/stage`, { method: "POST", body: { stageIndex } }),
+  requestStage: (id, stageIndex, note) => request(`/matters/${id}/stage-requests`, { method: "POST", body: { stageIndex, note } }),
+  decideStageRequest: (id, requestId, approve, note) =>
+    request(`/matters/${id}/stage-requests/${requestId}/decision`, { method: "POST", body: { approve, note } }),
+  withdrawStageRequest: (id, requestId) => request(`/matters/${id}/stage-requests/${requestId}`, { method: "DELETE" }),
+  getPendingSignoffs: () => request("/matters/sign-offs/pending"),
   addNote: (id, text) => request(`/matters/${id}/notes`, { method: "POST", body: { text } }),
 
   addDocument: (id, doc) => request(`/matters/${id}/documents`, { method: "POST", body: doc }),
@@ -87,10 +92,12 @@ export const api = {
 
   addEnquiry: (id, question) => request(`/matters/${id}/enquiries`, { method: "POST", body: { question } }),
   addStandardEnquiries: (id, questions) => request(`/matters/${id}/enquiries/bulk`, { method: "POST", body: { questions } }),
-  answerEnquiry: (id, enquiryId, answer, dateAnswered) =>
-    request(`/matters/${id}/enquiries/${enquiryId}/answer`, { method: "PATCH", body: { answer, dateAnswered } }),
-  reviewEnquiry: (id, enquiryId, payload) =>
-    request(`/matters/${id}/enquiries/${enquiryId}/review`, { method: "PATCH", body: payload }),
+  setEnquiryStatus: (id, enquiryId, status) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/status`, { method: "PATCH", body: { status } }),
+  addEnquiryReply: (id, enquiryId, payload) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/replies`, { method: "POST", body: payload }),
+  addEnquiryComment: (id, enquiryId, comment) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/comments`, { method: "POST", body: { comment } }),
 
   addSearch: (id, search) => request(`/matters/${id}/searches`, { method: "POST", body: search }),
   updateSearch: (id, searchId, patch) => request(`/matters/${id}/searches/${searchId}`, { method: "PATCH", body: patch }),
@@ -100,6 +107,7 @@ export const api = {
     request(`/matters/${id}/undertakings/${undertakingId}/discharge`, { method: "PATCH", body: { dateDischarged } }),
 
   addTask: (id, task) => request(`/matters/${id}/tasks`, { method: "POST", body: task }),
+  addTasks: (id, tasks) => request(`/matters/${id}/tasks/bulk`, { method: "POST", body: { tasks } }),
   completeTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/complete`, { method: "PATCH" }),
   reopenTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/reopen`, { method: "PATCH" }),
 

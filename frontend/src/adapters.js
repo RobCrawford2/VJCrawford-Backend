@@ -25,6 +25,11 @@ function adaptEnquiry(q) {
     id: q.id, number: q.number, question: q.question, dateRaised: q.date_raised, status: q.status,
     answer: q.answer || "", dateAnswered: q.date_answered || "", autoFilled: q.auto_filled,
     sourceEmailId: q.source_email_id, followUpNotes: q.follow_up_notes || "",
+    replies: (q.replies || []).map((r) => ({
+      id: r.id, text: r.reply, date: r.date_received, by: r.created_by_name || "",
+      emailId: r.source_email_id, emailSubject: r.source_email_subject || "", createdAt: r.created_at,
+    })),
+    comments: (q.comments || []).map((c) => ({ id: c.id, text: c.comment, at: c.created_at, by: c.created_by_name || "" })),
   };
 }
 function adaptSearch(s) {
@@ -122,6 +127,16 @@ export function adaptMatter(m, users) {
       id: l.id, reference: l.reference, address: l.address, client: l.client, type: l.type,
       currentStageIndex: l.current_stage_index, targetCompletion: l.target_completion || "",
     })),
+    // Stage sign-off (only on the detail endpoint's response).
+    pendingStageRequest: m.pendingStageRequest
+      ? {
+          id: m.pendingStageRequest.id, toStage: m.pendingStageRequest.to_stage, fromStage: m.pendingStageRequest.from_stage,
+          note: m.pendingStageRequest.note || "", requestedBy: m.pendingStageRequest.requested_by,
+          requestedByName: m.pendingStageRequest.requested_by_name || "", requestedAt: m.pendingStageRequest.requested_at,
+        }
+      : null,
+    canSignOffStages: !!m.canSignOffStages,
+    stageMovesNeedSignoff: !!m.stageMovesNeedSignoff,
     preCompletionReview: {
       checkedItems: Array.isArray(m.pre_exchange_checklist) ? m.pre_exchange_checklist : [],
       confirmedBy: m.pre_exchange_confirmed_by || "",
