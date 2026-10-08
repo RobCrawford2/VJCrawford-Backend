@@ -386,3 +386,65 @@ test("report on title: a Word draft is built from the matter's searches and enqu
   const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
   assert.equal((await request(app).get(`/matters/${purchase.id}/report-on-title`).set(marcus)).status, 404);
 });
+
+test("client, title and money details are stored, cleared, and used in the report", async () => {
+  const JSZip = require("jszip");
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const purchase = (await request(app).get("/matters?limit=100").set(sarah)).body.matters.find((m) => m.type === "Purchase");
+
+  const patch = {
+    clientAddress: "1 Old Road, Bath, BA1 1AA", clientEmail: "client@example.com", clientPhone: "07700 900000",
+    clientSalutation: "Ms Tester", tenure: "Leasehold", titleNumber: "AV999", registeredProprietor: "Seller Person",
+    leaseTerm: "125 years from 2005", groundRent: "£100 a year", serviceCharge: "£900 a year",
+    deposit: 30000, sdlt: 0, mortgageConditions: "None",
+  };
+  const saved = await request(app).patch(`/matters/${purchase.id}`).set(sarah).send(patch);
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.title_number, "AV999");
+  assert.equal(Number(saved.body.deposit), 30000);
+
+  const res = await request(app).get(`/matters/${purchase.id}/report-on-title`).set(sarah)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  const text = (await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string"))
+    .replace(/<[^>]+>/g, "").replace(/&amp;/g, "&");
+  for (const expected of ["1 Old Road", "Dear Ms Tester", "Leasehold", "AV999", "Seller Person", "125 years from 2005",
+    "£100 a year", "£900 a year", "£30,000", "none is payable"]) {
+    assert.ok(text.includes(expected), `report is missing: ${expected}`);
+  }
+  assert.ok(!text.includes("[title number]"));
+
+  assert.equal((await request(app).patch(`/matters/${purchase.id}`).set(sarah).send({ tenure: "Rented" })).status, 400);
+
+  // Clearing optional fields (as the Edit form does with blank inputs) must work — dates included.
+  const cleared = await request(app).patch(`/matters/${purchase.id}`).set(sarah)
+    .send({ deposit: "", titleNumber: "", targetExchange: "", actualExchange: "", notes: "" });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.deposit, null);
+  assert.equal(cleared.body.target_exchange, null);
+  assert.equal(cleared.body.notes, "");
+
+  const created = await request(app).post("/matters").set(sarah)
+    .send({ address: "10 New Road", client: "New Client", type: "Purchase", clientEmail: "new@example.com", tenure: "Freehold" });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.client_email, "new@example.com");
+  assert.equal(created.body.tenure, "Freehold");
+});
+
+test("import: client and title columns are brought across", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const rows = [{ Address: "11 Import Lane", Client: "Imp Client", Type: "Purchase", "Client Email": "imp@example.com",
+    Tenure: "leasehold", "Title Number": "XY1", Deposit: "£25,000", SDLT: "0", Salutation: "Mr Imp" }];
+  const done = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(done.status, 201);
+  const m = (await request(app).get("/matters?search=Import Lane").set(david)).body.matters[0];
+  assert.equal(m.client_email, "imp@example.com");
+  assert.equal(m.tenure, "Leasehold");
+  assert.equal(m.title_number, "XY1");
+  assert.equal(Number(m.deposit), 25000);
+  assert.equal(Number(m.sdlt), 0);
+  assert.equal(m.client_salutation, "Mr Imp");
+
+  const bad = await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "x", Client: "y", Type: "Sale", Tenure: "Rented", Deposit: "lots" }], dryRun: true });
+  assert.equal(bad.body.errors[0].messages.length, 2);
+});

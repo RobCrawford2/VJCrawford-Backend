@@ -33,7 +33,23 @@ const FIELDS = {
   actualCompletion: ["actualcompletion", "actualcompletiondate", "completed", "datecompleted"],
   mortgageOfferExpiry: ["mortgageofferexpiry", "mortgageexpiry", "offerexpiry", "mortgageofferexpirydate"],
   notes: ["notes", "note", "comments", "comment"],
+  clientAddress: ["clientaddress", "correspondenceaddress", "clientcorrespondenceaddress", "clienthomeaddress"],
+  // Bare "Email" / "Phone" aren't guessed at — they could be anyone's.
+  clientEmail: ["clientemail", "clientemailaddress"],
+  clientPhone: ["clientphone", "clienttelephone", "clientmobile", "clientphonenumber"],
+  clientSalutation: ["salutation", "clientsalutation", "dear"],
+  tenure: ["tenure"],
+  titleNumber: ["titlenumber", "titleno"],
+  registeredProprietor: ["registeredproprietor", "registeredowner", "proprietor"],
+  leaseTerm: ["leaseterm", "leaselength", "lease"],
+  groundRent: ["groundrent"],
+  serviceCharge: ["servicecharge"],
+  deposit: ["deposit", "depositamount"],
+  sdlt: ["sdlt", "stampduty", "stampdutylandtax"],
+  mortgageConditions: ["mortgageconditions", "specialconditions", "mortgagespecialconditions"],
 };
+
+const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
 
 const DATE_FIELDS = ["dateInstructed", "targetExchange", "targetCompletion", "actualExchange", "actualCompletion", "mortgageOfferExpiry"];
 
@@ -152,6 +168,19 @@ function validateRows(rows, { users, existingReferences }) {
       const price = parsePrice(m.price);
       if (price === null) messages.push(`Price "${m.price}" isn't a number.`);
       else m.price = price;
+    }
+
+    for (const field of ["deposit", "sdlt"]) {
+      if (m[field] === undefined) continue;
+      const amount = parsePrice(m[field]);
+      if (amount === null) messages.push(`${headerFor[field]} "${m[field]}" isn't an amount.`);
+      else m[field] = amount;
+    }
+
+    if (m.tenure !== undefined) {
+      const tenure = TENURES.find((t) => t.toLowerCase() === m.tenure.toLowerCase());
+      if (!tenure) messages.push(`Tenure "${m.tenure}" must be one of: ${TENURES.join(", ")}.`);
+      else m.tenure = tenure;
     }
 
     if (m.stage !== undefined) {

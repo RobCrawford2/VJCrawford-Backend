@@ -87,6 +87,14 @@ async function runSeed(pool, { password = "password123" } = {}) {
     });
     await client.query(`INSERT INTO matter_links (matter_id, linked_matter_id) VALUES ($1,$2), ($2,$1)`, [faulknerPurchaseId, faulknerSaleId]);
 
+    await client.query(
+      `UPDATE matters SET client_address = $1, client_email = $2, client_phone = $3, client_salutation = $4,
+         tenure = 'Freehold', title_number = 'GR412873', registered_proprietor = 'Helen Margaret Carver',
+         deposit = 46500, sdlt = 10750, mortgage_conditions = 'Retention of £2,500 pending replacement of the rear roof covering.'
+       WHERE id = $5`,
+      ["6 Orchard Terrace, Cheltenham, GL50 2QF", "faulkners@example.com", "07700 900456", "Mr and Mrs Faulkner", faulknerPurchaseId]
+    );
+
     await insertMatter({
       reference: "CV-2026-0038", address: "Flat 3, Ashworth Court, 22 Grove Road, Bristol, BS6 6UN", client: "Priya Shah",
       type: "Sale", price: 245000, stage: 11, feeEarner: marcus.id,

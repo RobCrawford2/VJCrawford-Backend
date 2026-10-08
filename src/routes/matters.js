@@ -176,6 +176,9 @@ router.post(
     if (!["Sale", "Purchase", "Remortgage"].includes(type)) {
       return res.status(400).json({ error: "type must be Sale, Purchase or Remortgage." });
     }
+    if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
+      return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
 
     // Reference generation: CV-<year>-<next number for the firm>. Two staff
     // opening a matter at the same instant could pick the same number; the
@@ -198,7 +201,16 @@ router.post(
          otherSideSolicitor || null, otherSideSolicitorEmail || null, estateAgent || null, lender || null,
          targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null]
       );
-      const matter = result.rows[0];
+      let matter = result.rows[0];
+      const extras = EXTRA_CREATE_FIELDS.filter((k) => req.body[k] !== undefined && req.body[k] !== "");
+      if (extras.length) {
+        const updated = await client_.query(
+          `UPDATE matters SET ${extras.map((k, i) => `${PATCHABLE_FIELDS[k]} = $${i + 1}`).join(", ")}
+           WHERE id = $${extras.length + 1} RETURNING *`,
+          [...extras.map((k) => req.body[k]), matter.id]
+        );
+        matter = updated.rows[0];
+      }
       await logActivity(client_, matter.id, req.user.id, "stage", "Matter opened at Instructed");
       await client_.query("COMMIT");
       res.status(201).json(matter);
@@ -265,13 +277,19 @@ router.post(
              firm_id, reference, address, client, type, price, current_stage_index,
              fee_earner_id, supervisor_id, other_side_solicitor, other_side_solicitor_email,
              estate_agent, lender, date_instructed, target_exchange, target_completion,
-             actual_exchange, actual_completion, mortgage_offer_expiry, notes
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14::date, CURRENT_DATE),$15,$16,$17,$18,$19,$20)
+             actual_exchange, actual_completion, mortgage_offer_expiry, notes,
+             client_address, client_email, client_phone, client_salutation, tenure, title_number,
+             registered_proprietor, lease_term, ground_rent, service_charge, deposit, sdlt, mortgage_conditions
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14::date, CURRENT_DATE),$15,$16,$17,$18,$19,$20,
+                     $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
            RETURNING id`,
           [req.user.firmId, reference, m.address, m.client, m.type, m.price ?? null, m.stage,
            m.feeEarnerId || null, m.supervisorId || null, m.otherSideSolicitor || null, m.otherSideSolicitorEmail || null,
            m.estateAgent || null, m.lender || null, m.dateInstructed || null, m.targetExchange || null, m.targetCompletion || null,
-           m.actualExchange || null, m.actualCompletion || null, m.mortgageOfferExpiry || null, m.notes || ""]
+           m.actualExchange || null, m.actualCompletion || null, m.mortgageOfferExpiry || null, m.notes || "",
+           m.clientAddress || null, m.clientEmail || null, m.clientPhone || null, m.clientSalutation || null, m.tenure || null,
+           m.titleNumber || null, m.registeredProprietor || null, m.leaseTerm || null, m.groundRent || null,
+           m.serviceCharge || null, m.deposit ?? null, m.sdlt ?? null, m.mortgageConditions || null]
         );
         await logActivity(client_, result.rows[0].id, req.user.id, "stage", `Matter imported at ${STAGE_NAMES[m.stage]}`);
       }
@@ -351,7 +369,24 @@ const PATCHABLE_FIELDS = {
   preExchangeChecklist: "pre_exchange_checklist",
   preExchangeConfirmedBy: "pre_exchange_confirmed_by",
   preExchangeConfirmedDate: "pre_exchange_confirmed_date",
+  clientAddress: "client_address", clientEmail: "client_email", clientPhone: "client_phone",
+  clientSalutation: "client_salutation",
+  tenure: "tenure", titleNumber: "title_number", registeredProprietor: "registered_proprietor",
+  leaseTerm: "lease_term", groundRent: "ground_rent", serviceCharge: "service_charge",
+  deposit: "deposit", sdlt: "sdlt", mortgageConditions: "mortgage_conditions",
 };
+
+// Fields that can also be supplied when a matter is first opened (POST /matters).
+const EXTRA_CREATE_FIELDS = [
+  "clientAddress", "clientEmail", "clientPhone", "clientSalutation",
+  "tenure", "titleNumber", "registeredProprietor", "leaseTerm", "groundRent", "serviceCharge",
+  "deposit", "sdlt", "mortgageConditions",
+];
+const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
+// Empty strings from cleared optional form fields are stored as NULL (date and
+// numeric columns reject ""). address/client/type/notes are NOT NULL text.
+const KEEP_BLANK = new Set(["address", "client", "type", "notes"]);
+const blankToNull = (key, v) => (v === "" && !KEEP_BLANK.has(key) ? null : v);
 
 // JSONB columns need their JS value serialized before going to Postgres —
 // everything else in PATCHABLE_FIELDS is a plain scalar and passes through as-is.
@@ -364,9 +399,12 @@ router.patch(
 
     const setClauses = [];
     const params = [];
+    if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
+      return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
     for (const [bodyKey, column] of Object.entries(PATCHABLE_FIELDS)) {
       if (bodyKey in req.body) {
-        params.push(JSON_FIELDS.has(bodyKey) ? JSON.stringify(req.body[bodyKey]) : req.body[bodyKey]);
+        params.push(JSON_FIELDS.has(bodyKey) ? JSON.stringify(req.body[bodyKey]) : blankToNull(bodyKey, req.body[bodyKey]));
         setClauses.push(`${column} = $${params.length}`);
       }
     }

@@ -88,6 +88,25 @@ export function adaptMatter(m, users) {
       actualCompletion: m.actual_completion || "",
       mortgageOfferExpiry: m.mortgage_offer_expiry || "",
     },
+    clientDetails: {
+      address: m.client_address || "",
+      email: m.client_email || "",
+      phone: m.client_phone || "",
+      salutation: m.client_salutation || "",
+    },
+    property: {
+      tenure: m.tenure || "",
+      titleNumber: m.title_number || "",
+      registeredProprietor: m.registered_proprietor || "",
+      leaseTerm: m.lease_term || "",
+      groundRent: m.ground_rent || "",
+      serviceCharge: m.service_charge || "",
+    },
+    money: {
+      deposit: m.deposit !== null && m.deposit !== undefined ? Number(m.deposit) : "",
+      sdlt: m.sdlt !== null && m.sdlt !== undefined ? Number(m.sdlt) : "",
+      mortgageConditions: m.mortgage_conditions || "",
+    },
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
     emails: (m.emails || []).map(adaptEmail),
@@ -105,6 +124,32 @@ export function adaptMatter(m, users) {
   };
 }
 
+
+/** Flattens the clientDetails / property / money groups into API field names. */
+function detailFields(f) {
+  const out = {};
+  if (f.clientDetails) {
+    out.clientAddress = f.clientDetails.address;
+    out.clientEmail = f.clientDetails.email;
+    out.clientPhone = f.clientDetails.phone;
+    out.clientSalutation = f.clientDetails.salutation;
+  }
+  if (f.property) {
+    out.tenure = f.property.tenure;
+    out.titleNumber = f.property.titleNumber;
+    out.registeredProprietor = f.property.registeredProprietor;
+    out.leaseTerm = f.property.leaseTerm;
+    out.groundRent = f.property.groundRent;
+    out.serviceCharge = f.property.serviceCharge;
+  }
+  if (f.money) {
+    out.deposit = f.money.deposit;
+    out.sdlt = f.money.sdlt;
+    out.mortgageConditions = f.money.mortgageConditions;
+  }
+  return out;
+}
+
 /** Converts the New Matter form's payload into the shape POST /matters expects. */
 export function toApiNewMatter(f) {
   return {
@@ -114,6 +159,7 @@ export function toApiNewMatter(f) {
     estateAgent: f.parties?.estateAgent, lender: f.parties?.lender,
     targetExchange: f.keyDates?.targetExchange, targetCompletion: f.keyDates?.targetCompletion,
     mortgageOfferExpiry: f.keyDates?.mortgageOfferExpiry,
+    ...detailFields(f),
   };
 }
 
@@ -140,5 +186,6 @@ export function toApiMatterPatch(patch) {
     out.actualCompletion = patch.keyDates.actualCompletion;
     out.mortgageOfferExpiry = patch.keyDates.mortgageOfferExpiry;
   }
+  Object.assign(out, detailFields(patch));
   return out;
 }

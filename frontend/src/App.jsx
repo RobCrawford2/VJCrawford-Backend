@@ -56,6 +56,8 @@ const PRE_COMPLETION_CHECKLIST = [
 ];
 
 const TYPES = ["Sale", "Purchase", "Remortgage"];
+const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
+const isLeasehold = (tenure) => tenure === "Leasehold" || tenure === "Share of freehold";
 
 const DOC_CATEGORIES = [
   "Contract", "Title", "Search", "ID / AML", "Mortgage", "Correspondence", "SDLT / LR", "Other"
@@ -1506,6 +1508,16 @@ function ReportOnTitleCard({ matter, onGenerate }) {
   const answered = matter.enquiries.filter((q) => q.status === "Answered").length;
   const pendingReview = matter.enquiries.filter((q) => q.status === "Pending Review").length;
   const ready = searches.length > 0 && received === searches.length && answered === matter.enquiries.length;
+  const missing = [
+    !matter.clientDetails.address && "client address",
+    !matter.clientDetails.salutation && "\u201cDear \u2026\u201d",
+    !matter.property.tenure && "tenure",
+    !matter.property.titleNumber && "title number",
+    !matter.property.registeredProprietor && "registered owner",
+    isLeasehold(matter.property.tenure) && !matter.property.leaseTerm && "lease term",
+    matter.type === "Purchase" && matter.money.deposit === "" && "deposit",
+    matter.type === "Purchase" && matter.money.sdlt === "" && "SDLT",
+  ].filter(Boolean);
 
   async function generate() {
     setBusy(true);
@@ -1524,6 +1536,11 @@ function ReportOnTitleCard({ matter, onGenerate }) {
             ? "No searches recorded yet. You can still produce a draft; gaps are highlighted in it."
             : "Not everything is in yet. You can still produce a draft; anything outstanding is highlighted in it."}
       </p>
+      {missing.length > 0 && (
+        <p style={{ fontSize: 12, color: "var(--slate)", margin: "0 0 10px" }}>
+          Details not filled in yet (they'll be highlighted in the report): {missing.join(", ")}. Add them with <em>Edit details</em>.
+        </p>
+      )}
       <button className="ac-submit" type="button" onClick={generate} disabled={busy} style={{ width: "100%" }}>
         <Download size={14} /> {busy ? "Preparing…" : "Download draft (Word)"}
       </button>
@@ -1669,6 +1686,38 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                 })}
               </div>
             )}
+
+            <div className="ac-card">
+              <h3><Users size={12} /> Client</h3>
+              <div className="ac-kv"><span className="k">Name</span><span className="v">{matter.client}</span></div>
+              <div className="ac-kv"><span className="k">Correspondence address</span><span className="v" style={{ whiteSpace: "pre-line", textAlign: "right" }}>{matter.clientDetails.address || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Email</span><span className="v mono">{matter.clientDetails.email || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Phone</span><span className="v mono">{matter.clientDetails.phone || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Letters start</span><span className="v">{matter.clientDetails.salutation ? `Dear ${matter.clientDetails.salutation}` : "—"}</span></div>
+            </div>
+
+            <div className="ac-card">
+              <h3><Building2 size={12} /> Property &amp; title</h3>
+              <div className="ac-kv"><span className="k">Tenure</span><span className="v">{matter.property.tenure || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Title number</span><span className="v mono">{matter.property.titleNumber || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Registered owner</span><span className="v">{matter.property.registeredProprietor || "—"}</span></div>
+              {isLeasehold(matter.property.tenure) && (
+                <>
+                  <div className="ac-kv"><span className="k">Lease term</span><span className="v">{matter.property.leaseTerm || "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Ground rent</span><span className="v">{matter.property.groundRent || "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Service charge</span><span className="v">{matter.property.serviceCharge || "—"}</span></div>
+                </>
+              )}
+              {matter.type !== "Sale" && (
+                <>
+                  <div className="ac-kv"><span className="k">Deposit</span><span className="v mono">{matter.money.deposit !== "" ? formatMoney(matter.money.deposit) : "—"}</span></div>
+                  <div className="ac-kv"><span className="k">SDLT payable</span><span className="v mono">{matter.money.sdlt !== "" ? formatMoney(matter.money.sdlt) : "—"}</span></div>
+                </>
+              )}
+              {matter.parties.lender && (
+                <div className="ac-kv"><span className="k">Mortgage conditions</span><span className="v" style={{ textAlign: "right" }}>{matter.money.mortgageConditions || "—"}</span></div>
+              )}
+            </div>
 
             <div className="ac-card">
               <h3><Users size={12} /> Parties &amp; team</h3>
@@ -2178,9 +2227,12 @@ function NewMatterForm({ onClose, onCreate, users }) {
     address: "", client: "", type: "Purchase", price: "",
     otherSideSolicitor: "", otherSideSolicitorEmail: "", estateAgent: "", lender: "",
     targetExchange: "", targetCompletion: "", feeEarnerId: "", supervisorId: "", mortgageOfferExpiry: "",
+    clientDetails: { address: "", email: "", phone: "", salutation: "" },
+    property: { tenure: "", titleNumber: "", registeredProprietor: "", leaseTerm: "", groundRent: "", serviceCharge: "" },
   });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
 
   function submit(e) {
     e.preventDefault();
@@ -2210,6 +2262,8 @@ function NewMatterForm({ onClose, onCreate, users }) {
         actualCompletion: "",
         mortgageOfferExpiry: f.mortgageOfferExpiry,
       },
+      clientDetails: f.clientDetails,
+      property: f.property,
     });
   }
 
@@ -2241,6 +2295,12 @@ function NewMatterForm({ onClose, onCreate, users }) {
           <label>Price</label>
           <input type="number" value={f.price} onChange={set("price")} placeholder="465000" />
         </div>
+
+        <div className="ac-fieldset-title">Client contact</div>
+        <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Property &amp; title</div>
+        <PropertyFields value={f.property} onChange={setIn} />
 
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
@@ -2576,6 +2636,73 @@ function AddEmailForm({ onClose, onAdd }) {
 /* Edit matter details                                                    */
 /* ---------------------------------------------------------------------- */
 
+function ClientDetailsFields({ value, onChange }) {
+  return (
+    <>
+      <div className="ac-field">
+        <label>Correspondence address</label>
+        <textarea value={value.address} onChange={onChange("clientDetails", "address")} placeholder="If different from the property" style={{ minHeight: 60 }} />
+      </div>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Email</label>
+          <input type="email" value={value.email} onChange={onChange("clientDetails", "email")} />
+        </div>
+        <div className="ac-field">
+          <label>Phone</label>
+          <input value={value.phone} onChange={onChange("clientDetails", "phone")} />
+        </div>
+      </div>
+      <div className="ac-field">
+        <label>Letters start "Dear …"</label>
+        <input value={value.salutation} onChange={onChange("clientDetails", "salutation")} placeholder="e.g. Mr and Mrs Faulkner" />
+      </div>
+    </>
+  );
+}
+
+function PropertyFields({ value, onChange }) {
+  return (
+    <>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Tenure</label>
+          <select value={value.tenure} onChange={onChange("property", "tenure")}>
+            <option value="">— Select —</option>
+            {TENURES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="ac-field">
+          <label>Title number</label>
+          <input value={value.titleNumber} onChange={onChange("property", "titleNumber")} placeholder="e.g. GR123456" />
+        </div>
+      </div>
+      <div className="ac-field">
+        <label>Registered owner</label>
+        <input value={value.registeredProprietor} onChange={onChange("property", "registeredProprietor")} />
+      </div>
+      {isLeasehold(value.tenure) && (
+        <>
+          <div className="ac-field">
+            <label>Lease term</label>
+            <input value={value.leaseTerm} onChange={onChange("property", "leaseTerm")} placeholder="e.g. 125 years from 1 January 2005 (104 remaining)" />
+          </div>
+          <div className="ac-row2">
+            <div className="ac-field">
+              <label>Ground rent</label>
+              <input value={value.groundRent} onChange={onChange("property", "groundRent")} placeholder="e.g. £250 a year, doubling every 25 years" />
+            </div>
+            <div className="ac-field">
+              <label>Service charge</label>
+              <input value={value.serviceCharge} onChange={onChange("property", "serviceCharge")} placeholder="e.g. £1,200 a year" />
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
   const [f, setF] = useState({
     address: matter.address,
@@ -2594,7 +2721,11 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
     actualCompletion: matter.keyDates.actualCompletion,
     mortgageOfferExpiry: matter.keyDates.mortgageOfferExpiry,
     linkedMatterIds: matter.linkedMatterIds,
+    clientDetails: { ...matter.clientDetails },
+    property: { ...matter.property },
+    money: { ...matter.money },
   });
+  const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -2633,6 +2764,13 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         actualCompletion: f.actualCompletion,
         mortgageOfferExpiry: f.mortgageOfferExpiry,
       },
+      clientDetails: f.clientDetails,
+      property: f.property,
+      money: {
+        ...f.money,
+        deposit: f.money.deposit === "" ? "" : Number(f.money.deposit),
+        sdlt: f.money.sdlt === "" ? "" : Number(f.money.sdlt),
+      },
     });
   }
 
@@ -2663,6 +2801,28 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         <div className="ac-field">
           <label>Price</label>
           <input type="number" value={f.price} onChange={set("price")} />
+        </div>
+
+        <div className="ac-fieldset-title">Client contact</div>
+        <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Property &amp; title</div>
+        <PropertyFields value={f.property} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Money</div>
+        <div className="ac-row2">
+          <div className="ac-field">
+            <label>Deposit (£)</label>
+            <input type="number" min="0" step="0.01" value={f.money.deposit} onChange={setIn("money", "deposit")} />
+          </div>
+          <div className="ac-field">
+            <label>SDLT payable (£)</label>
+            <input type="number" min="0" step="0.01" value={f.money.sdlt} onChange={setIn("money", "sdlt")} placeholder="0 if none due" />
+          </div>
+        </div>
+        <div className="ac-field">
+          <label>Mortgage offer special conditions</label>
+          <textarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
         </div>
 
         <div className="ac-fieldset-title">Our team</div>
@@ -3188,11 +3348,15 @@ const IMPORT_TEMPLATE_HEADERS = [
   "Other Side Solicitor", "Other Side Solicitor Email", "Estate Agent", "Lender",
   "Date Instructed", "Target Exchange", "Target Completion", "Actual Exchange", "Actual Completion",
   "Mortgage Offer Expiry", "Notes",
+  "Client Address", "Client Email", "Client Phone", "Salutation", "Tenure", "Title Number",
+  "Registered Proprietor", "Lease Term", "Ground Rent", "Service Charge", "Deposit", "SDLT", "Mortgage Conditions",
 ];
 const IMPORT_TEMPLATE_EXAMPLE = [
   "", "14 Example Road, Bath, BA1 1AA", "J & K Example", "Purchase", "£350,000", "Searches", "", "",
   "Smith & Co LLP", "conveyancing@smithco.example", "Example Estates", "Nationwide",
   "01/09/2026", "20/11/2026", "04/12/2026", "", "", "31/01/2027", "Imported from the old system",
+  "22 Current Street, Bath, BA2 2BB", "j.example@example.com", "07700 900123", "Mr and Mrs Example", "Freehold", "AV123456",
+  "Alan Seller", "", "", "", "£35,000", "£7,500", "",
 ];
 const MAX_IMPORT_ROWS = 1000;
 

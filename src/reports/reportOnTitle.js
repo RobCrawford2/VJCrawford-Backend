@@ -117,9 +117,12 @@ async function buildReportOnTitle({ matter, searches, enquiries, firm, feeEarner
     para(today, { alignment: AlignmentType.RIGHT }),
     new Paragraph({ children: runs(["PRIVATE & CONFIDENTIAL"], { bold: true }), spacing: { after: 160 } }),
     para([matter.client]),
-    para([{ ph: "Client's correspondence address" }]),
+    ...(matter.client_address
+      ? matter.client_address.split(/\r?\n|,\s*/).filter(Boolean).map((line) => new Paragraph({ children: runs([line.trim()]) }))
+      : [para([{ ph: "Client's correspondence address" }])]),
+    para(""),
     para([`Our ref: ${matter.reference}${signer ? ` / ${signer}` : ""}`]),
-    para([`Dear `, { ph: "client salutation" }, ","]),
+    para(["Dear ", orPh(matter.client_salutation, "client salutation"), ","]),
     new Paragraph({
       children: runs([`Report on Title — ${matter.address}`], { bold: true, size: 28 }),
       spacing: { before: 120, after: 200 },
@@ -143,9 +146,16 @@ async function buildReportOnTitle({ matter, searches, enquiries, firm, feeEarner
 
     heading("2. The property and its title"),
     para(["Property: ", matter.address]),
-    para(["Tenure: ", { ph: "Freehold / Leasehold — if leasehold, add lease length, ground rent and service charge" }]),
-    para(["Title number: ", { ph: "title number" }]),
-    para(["Registered owner: ", { ph: "registered proprietor" }]),
+    para(["Tenure: ", orPh(matter.tenure, "Freehold / Leasehold")]),
+    ...(matter.tenure === "Leasehold" || matter.tenure === "Share of freehold"
+      ? [
+          para(["Lease term: ", orPh(matter.lease_term, "length of lease remaining")]),
+          para(["Ground rent: ", orPh(matter.ground_rent, "ground rent and review terms")]),
+          para(["Service charge: ", orPh(matter.service_charge, "service charge and what it covers")]),
+        ]
+      : []),
+    para(["Title number: ", orPh(matter.title_number, "title number")]),
+    para(["Registered owner: ", orPh(matter.registered_proprietor, "registered proprietor")]),
     para(["Boundaries: ", { ph: "Describe boundaries by reference to the enclosed title plan; ask the client to check them against the property on the ground" }]),
     para(["Rights and covenants: ", { ph: "Summarise rights of way, easements and restrictive covenants affecting the property, or confirm there are none of concern" }]),
 
@@ -183,7 +193,7 @@ async function buildReportOnTitle({ matter, searches, enquiries, firm, feeEarner
           ? `It expires on ${formatDate(matter.mortgage_offer_expiry)}, and completion must take place before that date.`
           : { ph: "Offer expiry date" },
       ]),
-      para(["We are also acting for the lender. Special conditions in the offer: ", { ph: "summarise special conditions, or state there are none" }]),
+      para(["We are also acting for the lender. Special conditions in the offer: ", orPh(matter.mortgage_conditions, "summarise special conditions, or state there are none")]),
       para("We must report anything that affects the lender's security to them; please let us know if anything about the property or your circumstances has changed since you applied for the mortgage."),
     );
   }
@@ -195,8 +205,8 @@ async function buildReportOnTitle({ matter, searches, enquiries, firm, feeEarner
       para("Once you sign the contract and we exchange contracts with the seller's solicitors, you are legally bound to buy the property and the seller is bound to sell it. If you then withdraw, you are likely to lose your deposit and may be liable for further costs."),
       para(["Proposed exchange date: ", matter.target_exchange ? formatDate(matter.target_exchange) : { ph: "date" }]),
       para(["Proposed completion date: ", matter.target_completion ? formatDate(matter.target_completion) : { ph: "date" }]),
-      para(["Deposit payable on exchange: ", { ph: "amount (usually 10% of the price)" }]),
-      para(["Stamp Duty Land Tax: ", { ph: "SDLT payable, or confirm none is due" }, " — we will submit the return and pay this on your behalf after completion."]),
+      para(["Deposit payable on exchange: ", orPh(formatMoney(matter.deposit), "amount (usually 10% of the price)")]),
+      para(["Stamp Duty Land Tax: ", matter.sdlt === null || matter.sdlt === undefined ? { ph: "SDLT payable, or confirm none is due" } : Number(matter.sdlt) === 0 ? "none is payable" : formatMoney(matter.sdlt), " — we will submit the return", Number(matter.sdlt) > 0 || matter.sdlt === null || matter.sdlt === undefined ? " and pay this on your behalf" : "", " after completion."]),
       para("Buildings insurance: you should arrange buildings insurance to start from exchange of contracts."),
     );
   }
@@ -207,7 +217,7 @@ async function buildReportOnTitle({ matter, searches, enquiries, firm, feeEarner
       ? [
           bullet("Read this report and let us know if you have any questions or concerns."),
           bullet("Sign and return the contract, the transfer deed (TR1) and the mortgage deed, where enclosed."),
-          bullet(["Transfer the deposit of ", { ph: "amount" }, " to our client account in good time before exchange."]),
+          bullet(["Transfer the deposit of ", orPh(formatMoney(matter.deposit), "amount"), " to our client account in good time before exchange."]),
           bullet("Confirm you are happy for us to proceed to exchange on the dates above."),
         ]
       : [
