@@ -30,7 +30,20 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => res.json({ status: "ok" }));
+// Boot-time setup status (see server.js), shown on /health so a failed
+// database migration is visible without digging through host logs.
+app.locals.setup = { migrations: "pending" };
+
+app.get("/health", (req, res) => {
+  const { migrations, error } = app.locals.setup;
+  res.json({
+    status: migrations === "failed" ? "degraded" : "ok",
+    migrations,
+    ...(error ? { error } : {}),
+    // Render sets RENDER_GIT_COMMIT — shows which version is actually running.
+    version: (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || undefined,
+  });
+});
 
 app.use("/auth", authRoutes);
 app.use("/matters", matterRoutes);

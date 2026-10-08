@@ -35,7 +35,7 @@ after(() => pool.end());
 test("health check", async () => {
   const res = await request(app).get("/health");
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body, { status: "ok" });
+  assert.equal(res.body.status, "ok");
 });
 
 test("login succeeds with the right password and fails with the wrong one", async () => {
