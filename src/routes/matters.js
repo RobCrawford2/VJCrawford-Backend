@@ -3,20 +3,15 @@ const express = require("express");
 const multer = require("multer");
 const { query, pool } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, requireRole } = require("../middleware/auth");
 const { matterVisibilityClause } = require("../utils/permissions");
 
 const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
-// Must match STAGES in frontend/src/App.jsx.
-const STAGE_NAMES = [
-  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
-  "Mortgage Offer", "Report on Title", "Pre-Exchange Review", "Exchange", "Completion",
-  "Post-Completion", "Closed",
-];
-const STAGE_COUNT = STAGE_NAMES.length; // Instructed(0) .. Closed(11)
-const CLOSED_INDEX = STAGE_COUNT - 1;
+const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
+const { validateRows } = require("../utils/matterImport");
+const { buildReportOnTitle } = require("../reports/reportOnTitle");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -63,6 +58,22 @@ async function loadMatterDetail(matterId) {
     linkedMatters: links.rows,
   };
 }
+
+/**
+ * Next free number for CV-<year>-NNNN references in this firm. Uses the
+ * highest existing number rather than a count, so imported references (which
+ * can have gaps or start high) never collide with newly created ones.
+ */
+async function nextReferenceNumber(db, firmId, year) {
+  const result = await db.query(
+    `SELECT coalesce(max(substring(reference FROM '^CV-[0-9]{4}-([0-9]+)$')::int), 0) AS max
+     FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
+    [firmId, `CV-${year}-%`]
+  );
+  return result.rows[0].max + 1;
+}
+
+const formatReference = (year, n) => `CV-${year}-${String(n).padStart(4, "0")}`;
 
 /** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
 async function assertMatterVisible(req, res, matterId) {
@@ -165,18 +176,16 @@ router.post(
     if (!["Sale", "Purchase", "Remortgage"].includes(type)) {
       return res.status(400).json({ error: "type must be Sale, Purchase or Remortgage." });
     }
+    if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
+      return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
 
-    // Reference generation: CV-<year>-<next sequence for the firm>.
-    // In a high-concurrency firm this should move to a Postgres SEQUENCE per
-    // firm to fully rule out a race between two staff opening a matter at
-    // the same instant; fine as a straightforward count for phase 1.
+    // Reference generation: CV-<year>-<next number for the firm>. Two staff
+    // opening a matter at the same instant could pick the same number; the
+    // unique (firm_id, reference) constraint turns that into a 409 retry
+    // rather than a duplicate.
     const year = new Date().getFullYear();
-    const countResult = await query(
-      `SELECT count(*) FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
-      [req.user.firmId, `CV-${year}-%`]
-    );
-    const nextNum = parseInt(countResult.rows[0].count, 10) + 1;
-    const reference = `CV-${year}-${String(nextNum).padStart(4, "0")}`;
+    const reference = formatReference(year, await nextReferenceNumber({ query }, req.user.firmId, year));
 
     const client_ = await pool.connect();
     try {
@@ -192,10 +201,100 @@ router.post(
          otherSideSolicitor || null, otherSideSolicitorEmail || null, estateAgent || null, lender || null,
          targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null]
       );
-      const matter = result.rows[0];
+      let matter = result.rows[0];
+      const extras = EXTRA_CREATE_FIELDS.filter((k) => req.body[k] !== undefined && req.body[k] !== "");
+      if (extras.length) {
+        const updated = await client_.query(
+          `UPDATE matters SET ${extras.map((k, i) => `${PATCHABLE_FIELDS[k]} = $${i + 1}`).join(", ")}
+           WHERE id = $${extras.length + 1} RETURNING *`,
+          [...extras.map((k) => req.body[k]), matter.id]
+        );
+        matter = updated.rows[0];
+      }
       await logActivity(client_, matter.id, req.user.id, "stage", "Matter opened at Instructed");
       await client_.query("COMMIT");
       res.status(201).json(matter);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+// -----------------------------------------------------------------------
+// POST /matters/import — bulk import from a spreadsheet (admin only)
+//
+// Body: { rows: [{ <header>: <value> }...], dryRun: boolean }. Every row is
+// validated first; with dryRun (or if any row has a problem) nothing is
+// written and the per-row problems come back. Otherwise all rows are
+// inserted in one transaction — all or nothing.
+// -----------------------------------------------------------------------
+const MAX_IMPORT_ROWS = 1000;
+
+router.post(
+  "/import",
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const { rows, dryRun = true } = req.body;
+    if (!Array.isArray(rows) || !rows.length) {
+      return res.status(400).json({ error: "The file has no rows to import." });
+    }
+    if (rows.length > MAX_IMPORT_ROWS) {
+      return res.status(400).json({ error: `Import at most ${MAX_IMPORT_ROWS} rows at a time — split the file and import each part.` });
+    }
+    if (!rows.every((r) => r && typeof r === "object" && !Array.isArray(r))) {
+      return res.status(400).json({ error: "Rows must be objects keyed by column header." });
+    }
+
+    const [users, refs] = await Promise.all([
+      query(`SELECT id, name, email, active FROM users WHERE firm_id = $1`, [req.user.firmId]),
+      query(`SELECT lower(reference) AS reference FROM matters WHERE firm_id = $1`, [req.user.firmId]),
+    ]);
+    const { matters, errors, ignoredHeaders } = validateRows(rows, {
+      users: users.rows,
+      existingReferences: new Set(refs.rows.map((r) => r.reference)),
+    });
+
+    const summary = { valid: matters.length, errors, ignoredHeaders };
+    if (dryRun) return res.json(summary);
+    if (errors.length) return res.status(400).json({ error: "Some rows have problems — nothing was imported.", ...summary });
+    if (!matters.length) return res.status(400).json({ error: "The file has no rows to import." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      // Serialise imports/new-matter numbering for this firm within the transaction.
+      await client_.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`matter-refs:${req.user.firmId}`]);
+      const year = new Date().getFullYear();
+      let next = await nextReferenceNumber(client_, req.user.firmId, year);
+
+      for (const m of matters) {
+        const reference = m.reference || formatReference(year, next++);
+        const result = await client_.query(
+          `INSERT INTO matters (
+             firm_id, reference, address, client, type, price, current_stage_index,
+             fee_earner_id, supervisor_id, other_side_solicitor, other_side_solicitor_email,
+             estate_agent, lender, date_instructed, target_exchange, target_completion,
+             actual_exchange, actual_completion, mortgage_offer_expiry, notes,
+             client_address, client_email, client_phone, client_salutation, tenure, title_number,
+             registered_proprietor, lease_term, ground_rent, service_charge, deposit, sdlt, mortgage_conditions
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14::date, CURRENT_DATE),$15,$16,$17,$18,$19,$20,
+                     $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+           RETURNING id`,
+          [req.user.firmId, reference, m.address, m.client, m.type, m.price ?? null, m.stage,
+           m.feeEarnerId || null, m.supervisorId || null, m.otherSideSolicitor || null, m.otherSideSolicitorEmail || null,
+           m.estateAgent || null, m.lender || null, m.dateInstructed || null, m.targetExchange || null, m.targetCompletion || null,
+           m.actualExchange || null, m.actualCompletion || null, m.mortgageOfferExpiry || null, m.notes || "",
+           m.clientAddress || null, m.clientEmail || null, m.clientPhone || null, m.clientSalutation || null, m.tenure || null,
+           m.titleNumber || null, m.registeredProprietor || null, m.leaseTerm || null, m.groundRent || null,
+           m.serviceCharge || null, m.deposit ?? null, m.sdlt ?? null, m.mortgageConditions || null]
+        );
+        await logActivity(client_, result.rows[0].id, req.user.id, "stage", `Matter imported at ${STAGE_NAMES[m.stage]}`);
+      }
+      await client_.query("COMMIT");
+      res.status(201).json({ imported: matters.length });
     } catch (err) {
       await client_.query("ROLLBACK");
       throw err;
@@ -219,6 +318,44 @@ router.get(
 );
 
 // -----------------------------------------------------------------------
+// GET /matters/:id/report-on-title — draft Report on Title (.docx)
+// -----------------------------------------------------------------------
+router.get(
+  "/:id/report-on-title",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const [matter, searches, enquiries, firm] = await Promise.all([
+      query(`SELECT m.*, fe.name AS fee_earner_name FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id WHERE m.id = $1`, [req.params.id]),
+      query(`SELECT * FROM searches WHERE matter_id = $1 ORDER BY date_ordered ASC NULLS LAST, created_at ASC`, [req.params.id]),
+      query(`SELECT * FROM enquiries WHERE matter_id = $1 ORDER BY number ASC`, [req.params.id]),
+      query(`SELECT name FROM firms WHERE id = $1`, [req.user.firmId]),
+    ]);
+    const m = matter.rows[0];
+    if (!["Purchase", "Remortgage"].includes(m.type)) {
+      return res.status(400).json({ error: "A Report on Title is only produced for purchases and remortgages." });
+    }
+
+    const buffer = await buildReportOnTitle({
+      matter: m,
+      searches: searches.rows,
+      enquiries: enquiries.rows,
+      firm: firm.rows[0],
+      feeEarner: m.fee_earner_name ? { name: m.fee_earner_name } : null,
+    });
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'doc','Report on Title draft generated')`,
+      [req.params.id, req.user.id]);
+
+    const fileName = `Report on Title - ${m.reference}.docx`;
+    res.set({
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      "Cache-Control": "private, no-store",
+    });
+    res.send(buffer);
+  })
+);
+
+// -----------------------------------------------------------------------
 // PATCH /matters/:id — update core fields (address, parties, dates, notes, team, stage)
 // -----------------------------------------------------------------------
 const PATCHABLE_FIELDS = {
@@ -232,7 +369,24 @@ const PATCHABLE_FIELDS = {
   preExchangeChecklist: "pre_exchange_checklist",
   preExchangeConfirmedBy: "pre_exchange_confirmed_by",
   preExchangeConfirmedDate: "pre_exchange_confirmed_date",
+  clientAddress: "client_address", clientEmail: "client_email", clientPhone: "client_phone",
+  clientSalutation: "client_salutation",
+  tenure: "tenure", titleNumber: "title_number", registeredProprietor: "registered_proprietor",
+  leaseTerm: "lease_term", groundRent: "ground_rent", serviceCharge: "service_charge",
+  deposit: "deposit", sdlt: "sdlt", mortgageConditions: "mortgage_conditions",
 };
+
+// Fields that can also be supplied when a matter is first opened (POST /matters).
+const EXTRA_CREATE_FIELDS = [
+  "clientAddress", "clientEmail", "clientPhone", "clientSalutation",
+  "tenure", "titleNumber", "registeredProprietor", "leaseTerm", "groundRent", "serviceCharge",
+  "deposit", "sdlt", "mortgageConditions",
+];
+const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
+// Empty strings from cleared optional form fields are stored as NULL (date and
+// numeric columns reject ""). address/client/type/notes are NOT NULL text.
+const KEEP_BLANK = new Set(["address", "client", "type", "notes"]);
+const blankToNull = (key, v) => (v === "" && !KEEP_BLANK.has(key) ? null : v);
 
 // JSONB columns need their JS value serialized before going to Postgres —
 // everything else in PATCHABLE_FIELDS is a plain scalar and passes through as-is.
@@ -245,9 +399,12 @@ router.patch(
 
     const setClauses = [];
     const params = [];
+    if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
+      return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
     for (const [bodyKey, column] of Object.entries(PATCHABLE_FIELDS)) {
       if (bodyKey in req.body) {
-        params.push(JSON_FIELDS.has(bodyKey) ? JSON.stringify(req.body[bodyKey]) : req.body[bodyKey]);
+        params.push(JSON_FIELDS.has(bodyKey) ? JSON.stringify(req.body[bodyKey]) : blankToNull(bodyKey, req.body[bodyKey]));
         setClauses.push(`${column} = $${params.length}`);
       }
     }

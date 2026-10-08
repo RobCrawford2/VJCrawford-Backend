@@ -256,3 +256,239 @@ test("files can be attached to documents and downloaded again", async () => {
   // Re-seeding still works with files attached.
   await runSeed(pool);
 });
+
+test("import: values in everyday spreadsheet formats are understood", () => {
+  const { parseDate, parsePrice, parseStage } = require("../src/utils/matterImport");
+  assert.equal(parseDate("08/10/2026"), "2026-10-08");
+  assert.equal(parseDate("8-1-26"), "2026-01-08");
+  assert.equal(parseDate("2026-10-08"), "2026-10-08");
+  assert.equal(parseDate("31/02/2026"), null);
+  assert.equal(parseDate("next week"), null);
+  assert.equal(parsePrice("£465,000"), 465000);
+  assert.equal(parsePrice("250000.50"), 250000.5);
+  assert.equal(parsePrice("about 200k"), null);
+  assert.equal(parseStage("Searches"), 3);
+  assert.equal(parseStage("pre-exchange review"), 7);
+  assert.equal(parseStage("1"), 0);
+  assert.equal(parseStage("12"), 11);
+  assert.equal(parseStage("13"), null);
+});
+
+test("import: admins can bulk-import matters after checking them", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const before = (await request(app).get("/matters?limit=1").set(david)).body.pagination.total;
+
+  const rows = [
+    { "Property Address": "1 Test Street, Bath, BA1 1AA", "Client Name": "A Tester", "Matter Type": "purchase",
+      "Price": "£300,000", "Stage": "Searches", "Fee Earner": "Sarah Ncube", "Date Instructed": "01/09/2026",
+      "Target Completion": "15/12/2026", "Legacy ID": "X-1" },
+    { "Property Address": "2 Test Street, Bath, BA1 1AA", "Client Name": "B Tester", "Matter Type": "Sale",
+      "Reference": "OLD-0002", "Fee Earner": "marcus@vjcrawfordconveyancing.co.uk", "Stage": "12" },
+    { "Property Address": "", "Client Name": "", "Matter Type": "" }, // blank line — skipped
+  ];
+
+  const check = await request(app).post("/matters/import").set(david).send({ rows, dryRun: true });
+  assert.equal(check.status, 200);
+  assert.equal(check.body.valid, 2);
+  assert.deepEqual(check.body.errors, []);
+  assert.deepEqual(check.body.ignoredHeaders, ["Legacy ID"]);
+
+  const ambiguous = await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "x", Client: "y", Type: "Sale", "Completion Date": "01/01/2027" }], dryRun: true });
+  assert.deepEqual(ambiguous.body.ignoredHeaders, ["Completion Date"]);
+  assert.equal((await request(app).get("/matters?limit=1").set(david)).body.pagination.total, before, "dry run wrote data");
+
+  const done = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(done.status, 201);
+  assert.equal(done.body.imported, 2);
+
+  const list = (await request(app).get("/matters?limit=100&search=Test Street").set(david)).body.matters;
+  const first = list.find((m) => m.address.startsWith("1 Test"));
+  const second = list.find((m) => m.address.startsWith("2 Test"));
+  assert.equal(first.type, "Purchase");
+  assert.equal(Number(first.price), 300000);
+  assert.equal(first.current_stage_index, 3);
+  assert.match(first.reference, /^CV-\d{4}-\d{4}$/);
+  assert.equal(second.reference, "OLD-0002");
+  assert.equal(second.current_stage_index, 11);
+  assert.equal(second.fee_earner_name, "Marcus Webb");
+
+  // Re-importing the same reference is caught.
+  const again = await request(app).post("/matters/import").set(david).send({ rows: [rows[1]], dryRun: true });
+  assert.match(again.body.errors[0].messages[0], /already in the system/);
+});
+
+test("import: any bad row means nothing is imported", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const before = (await request(app).get("/matters?limit=1").set(david)).body.pagination.total;
+  const rows = [
+    { Address: "3 Good Road", Client: "Fine", Type: "Sale" },
+    { Address: "4 Bad Road", Client: "Wrong", Type: "Lease", Price: "lots", Stage: "Nearly done",
+      "Fee Earner": "Nobody Here", "Target Exchange": "31/02/2026" },
+    { Address: "5 Dup Road", Client: "Dup", Type: "Sale", Reference: "DUP-1" },
+    { Address: "6 Dup Road", Client: "Dup", Type: "Sale", Reference: "dup-1" },
+  ];
+  const res = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.valid, 2);
+  assert.deepEqual(res.body.errors.map((e) => e.row), [3, 5]);
+  assert.equal(res.body.errors[0].messages.length, 5);
+  assert.ok(res.body.errors[0].messages.includes(`Target Exchange "31/02/2026" isn't a valid date (use DD/MM/YYYY).`));
+  assert.match(res.body.errors[1].messages[0], /more than once/);
+  assert.equal((await request(app).get("/matters?limit=1").set(david)).body.pagination.total, before);
+});
+
+test("import: only admins can import, and new references continue after imported ones", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const rows = [{ Address: "7 Road", Client: "C", Type: "Sale" }];
+  assert.equal((await request(app).post("/matters/import").set(sarah).send({ rows, dryRun: true })).status, 403);
+
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const year = new Date().getFullYear();
+  await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "8 Road", Client: "C", Type: "Sale", Reference: `CV-${year}-0900` }], dryRun: false });
+  const created = await request(app).post("/matters").set(david).send({ address: "9 Road", client: "C", type: "Sale" });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.reference, `CV-${year}-0901`);
+});
+
+test("report on title: a Word draft is built from the matter's searches and enquiries", async () => {
+  const JSZip = require("jszip");
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matters = (await request(app).get("/matters?limit=100").set(sarah)).body.matters;
+  const purchase = matters.find((m) => m.type === "Purchase");
+  const sale = matters.find((m) => m.type === "Sale");
+
+  await request(app).post(`/matters/${purchase.id}/searches`).set(sarah).send({ type: "Local Authority Search", dateOrdered: "2026-07-01" });
+  const search = (await request(app).get(`/matters/${purchase.id}`).set(sarah)).body.searches.find((s) => s.type === "Local Authority Search");
+  await request(app).patch(`/matters/${purchase.id}/searches/${search.id}`).set(sarah)
+    .send({ dateReceived: "2026-07-20", issue: true, issueNotes: "Unapproved extension noted" });
+  const enquiry = (await request(app).post(`/matters/${purchase.id}/enquiries`).set(sarah).send({ question: "Please confirm vacant possession." })).body;
+  await request(app).patch(`/matters/${purchase.id}/enquiries/${enquiry.id}/answer`).set(sarah).send({ answer: "Confirmed by the seller." });
+
+  const res = await request(app).get(`/matters/${purchase.id}/report-on-title`).set(sarah)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  assert.equal(res.status, 200);
+  assert.match(res.headers["content-type"], /wordprocessingml/);
+  assert.match(res.headers["content-disposition"], /Report%20on%20Title/);
+
+  const xml = await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string");
+  const text = xml.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&apos;/g, "'");
+  for (const expected of [purchase.client, purchase.address, purchase.reference, "Unapproved extension noted",
+    "Please confirm vacant possession.", "Confirmed by the seller.", "Sarah Ncube", "[title number]"]) {
+    assert.ok(text.includes(expected), `report is missing: ${expected}`);
+  }
+
+  const log = (await request(app).get(`/matters/${purchase.id}`).set(sarah)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("Report on Title draft generated"));
+
+  assert.equal((await request(app).get(`/matters/${sale.id}/report-on-title`).set(sarah)).status, 400);
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/matters/${purchase.id}/report-on-title`).set(marcus)).status, 404);
+});
+
+test("client, title and money details are stored, cleared, and used in the report", async () => {
+  const JSZip = require("jszip");
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const purchase = (await request(app).get("/matters?limit=100").set(sarah)).body.matters.find((m) => m.type === "Purchase");
+
+  const patch = {
+    clientAddress: "1 Old Road, Bath, BA1 1AA", clientEmail: "client@example.com", clientPhone: "07700 900000",
+    clientSalutation: "Ms Tester", tenure: "Leasehold", titleNumber: "AV999", registeredProprietor: "Seller Person",
+    leaseTerm: "125 years from 2005", groundRent: "£100 a year", serviceCharge: "£900 a year",
+    deposit: 30000, sdlt: 0, mortgageConditions: "None",
+  };
+  const saved = await request(app).patch(`/matters/${purchase.id}`).set(sarah).send(patch);
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.title_number, "AV999");
+  assert.equal(Number(saved.body.deposit), 30000);
+
+  const res = await request(app).get(`/matters/${purchase.id}/report-on-title`).set(sarah)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  const text = (await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string"))
+    .replace(/<[^>]+>/g, "").replace(/&amp;/g, "&");
+  for (const expected of ["1 Old Road", "Dear Ms Tester", "Leasehold", "AV999", "Seller Person", "125 years from 2005",
+    "£100 a year", "£900 a year", "£30,000", "none is payable"]) {
+    assert.ok(text.includes(expected), `report is missing: ${expected}`);
+  }
+  assert.ok(!text.includes("[title number]"));
+
+  assert.equal((await request(app).patch(`/matters/${purchase.id}`).set(sarah).send({ tenure: "Rented" })).status, 400);
+
+  // Clearing optional fields (as the Edit form does with blank inputs) must work — dates included.
+  const cleared = await request(app).patch(`/matters/${purchase.id}`).set(sarah)
+    .send({ deposit: "", titleNumber: "", targetExchange: "", actualExchange: "", notes: "" });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.deposit, null);
+  assert.equal(cleared.body.target_exchange, null);
+  assert.equal(cleared.body.notes, "");
+
+  const created = await request(app).post("/matters").set(sarah)
+    .send({ address: "10 New Road", client: "New Client", type: "Purchase", clientEmail: "new@example.com", tenure: "Freehold" });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.client_email, "new@example.com");
+  assert.equal(created.body.tenure, "Freehold");
+});
+
+test("import: client and title columns are brought across", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const rows = [{ Address: "11 Import Lane", Client: "Imp Client", Type: "Purchase", "Client Email": "imp@example.com",
+    Tenure: "leasehold", "Title Number": "XY1", Deposit: "£25,000", SDLT: "0", Salutation: "Mr Imp" }];
+  const done = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(done.status, 201);
+  const m = (await request(app).get("/matters?search=Import Lane").set(david)).body.matters[0];
+  assert.equal(m.client_email, "imp@example.com");
+  assert.equal(m.tenure, "Leasehold");
+  assert.equal(m.title_number, "XY1");
+  assert.equal(Number(m.deposit), 25000);
+  assert.equal(Number(m.sdlt), 0);
+  assert.equal(m.client_salutation, "Mr Imp");
+
+  const bad = await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "x", Client: "y", Type: "Sale", Tenure: "Rented", Deposit: "lots" }], dryRun: true });
+  assert.equal(bad.body.errors[0].messages.length, 2);
+});
+
+test("staff management: admins add, edit, reset and deactivate staff, and it's all audited", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarahId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("sarah")}` })).body.id;
+
+  const added = await request(app).post("/users").set(david)
+    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.email, "starter@vjcrawfordconveyancing.co.uk");
+  const id = added.body.id;
+  const login = (pw) => request(app).post("/auth/login").send({ email: "starter@vjcrawfordconveyancing.co.uk", password: pw });
+  assert.equal((await login("temporary-pass-1")).status, 200);
+
+  const edited = await request(app).patch(`/users/${id}`).set(david).send({ name: "New Starter-Smith", role: "supervisor" });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.name, "New Starter-Smith");
+  assert.equal(edited.body.role, "supervisor");
+
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "david@vjcrawfordconveyancing.co.uk" })).status, 409);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "not-an-email" })).status, 400);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: id })).status, 400);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: "00000000-0000-0000-0000-000000000000" })).status, 400);
+
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(david).send({ password: "short" })).status, 400);
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(david).send({ password: "reset-by-admin-1" })).status, 204);
+  assert.equal((await login("temporary-pass-1")).status, 401);
+  assert.equal((await login("reset-by-admin-1")).status, 200);
+
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ active: false })).status, 200);
+  assert.equal((await login("reset-by-admin-1")).status, 401);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ active: true })).status, 200);
+
+  // Non-admins can't manage staff or read the audit.
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(sarah).send({ password: "sarah-did-this" })).status, 403);
+  assert.equal((await request(app).get("/users/audit").set(sarah)).status, 403);
+
+  const audit = (await request(app).get("/users/audit").set(david)).body.filter((a) => a.target_name === "New Starter-Smith");
+  assert.deepEqual(audit.map((a) => a.action).reverse(), ["added", "updated", "password reset", "deactivated", "reactivated"]);
+  assert.match(audit.find((a) => a.action === "updated").details, /role changed from Fee earner to Supervisor/);
+  assert.ok(audit.every((a) => a.actor_name === "David Okonkwo"));
+
+  await runSeed(pool); // re-seeding still works with audit entries present
+});

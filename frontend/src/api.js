@@ -67,7 +67,9 @@ export const api = {
     return request(`/matters${qs ? `?${qs}` : ""}`);
   },
   getMatter: (id) => request(`/matters/${id}`),
+  getReportOnTitle: (id) => request(`/matters/${id}/report-on-title`, { blob: true }),
   createMatter: (payload) => request("/matters", { method: "POST", body: payload }),
+  importMatters: (rows, dryRun) => request("/matters/import", { method: "POST", body: { rows, dryRun } }),
   updateMatter: (id, patch) => request(`/matters/${id}`, { method: "PATCH", body: patch }),
   setStage: (id, stageIndex) => request(`/matters/${id}/stage`, { method: "POST", body: { stageIndex } }),
   addNote: (id, text) => request(`/matters/${id}/notes`, { method: "POST", body: { text } }),
@@ -108,6 +110,8 @@ export const api = {
   getUsers: () => request("/users"),
   createUser: (payload) => request("/users", { method: "POST", body: payload }),
   updateUser: (id, patch) => request(`/users/${id}`, { method: "PATCH", body: patch }),
+  resetUserPassword: (id, password) => request(`/users/${id}/reset-password`, { method: "POST", body: { password } }),
+  getStaffAudit: () => request("/users/audit"),
 
   getFirmSettings: () => request("/settings"),
   updateFirmSettings: (patch) => request("/settings", { method: "PATCH", body: patch }),

@@ -4,8 +4,9 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload
 } from "lucide-react";
+import Papa from "papaparse";
 import Login from "./Login";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -55,6 +56,8 @@ const PRE_COMPLETION_CHECKLIST = [
 ];
 
 const TYPES = ["Sale", "Purchase", "Remortgage"];
+const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
+const isLeasehold = (tenure) => tenure === "Leasehold" || tenure === "Share of freehold";
 
 const DOC_CATEGORIES = [
   "Contract", "Title", "Search", "ID / AML", "Mortgage", "Correspondence", "SDLT / LR", "Other"
@@ -359,6 +362,8 @@ export default function App() {
   const [myMattersOnly, setMyMattersOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
   const [showNewMatter, setShowNewMatter] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [showStaff, setShowStaff] = useState(false);
   const [showEditMatter, setShowEditMatter] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
@@ -567,6 +572,21 @@ export default function App() {
       await afterMutation();
     } catch (err) {
       window.alert(err.message || "Couldn't upload the file.");
+    }
+  }
+
+  async function downloadReportOnTitle(matter) {
+    try {
+      const blob = await api.getReportOnTitle(matter.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Report on Title - ${matter.reference}.docx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      await refreshSelected(matter.id); // picks up the "generated" activity entry
+    } catch (err) {
+      window.alert(err.message || "Couldn't generate the report.");
     }
   }
 
@@ -915,6 +935,24 @@ export default function App() {
           display: flex; align-items: center; justify-content: center; gap: 6px;
         }
         .ac-newbtn:hover { background: #5f4a1e; border-color: #5f4a1e; }
+        .ac-importbtn {
+          width: 100%; margin-top: 6px; background: none; border: 1px dashed var(--line); border-radius: 2px;
+          padding: 7px; font-size: 11.5px; color: var(--slate); display: flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .ac-importbtn:hover { color: var(--ink); border-color: var(--ink); }
+        .ac-modal.wide { width: 720px; }
+        .ac-panel.wide { width: 620px; }
+        .ac-staff-row { border: 1px solid var(--line); background: var(--card); border-radius: 3px; padding: 10px 12px; margin-bottom: 8px; }
+        .ac-staff-row.inactive { opacity: 0.6; }
+        .ac-staff-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+        .ac-staff-name { font-weight: 600; font-size: 13.5px; }
+        .ac-staff-meta { font-size: 12px; color: var(--slate); margin-top: 2px; overflow-wrap: anywhere; }
+        .ac-staff-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .ac-role-guide { font-size: 12px; color: var(--slate); background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px; margin-bottom: 14px; line-height: 1.55; }
+        .ac-audit-row { font-size: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+        .ac-import-errors { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+        .ac-import-errors td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+        .ac-import-errors td:first-child { font-family: var(--font-mono); white-space: nowrap; color: var(--slate); }
 
         .ac-list { flex: 1; overflow-y: auto; }
         .ac-item {
@@ -1193,6 +1231,11 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          {authUser.role === "admin" && (
+            <button className="ac-iconbtn" onClick={() => setShowStaff(true)} title="Staff">
+              <Users size={18} />
+            </button>
+          )}
           <button className="ac-iconbtn" onClick={() => setShowSettings(true)} title="Settings & integrations">
             <SettingsIcon size={18} />
           </button>
@@ -1235,6 +1278,9 @@ export default function App() {
               </button>
             )}
             <button className="ac-newbtn" onClick={() => setShowNewMatter(true)}><Plus size={15} /> Open new matter</button>
+            {authUser.role === "admin" && (
+              <button className="ac-importbtn" onClick={() => setShowImport(true)}><Upload size={13} /> Import matters from a spreadsheet</button>
+            )}
           </div>
           <div className="ac-list">
             {loading && <div className="ac-empty-list">Loading matters…</div>}
@@ -1373,6 +1419,7 @@ export default function App() {
               onAddDoc={() => setShowAddDoc(true)}
               onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
               onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
+              onReportOnTitle={() => downloadReportOnTitle(selected)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
               onEdit={() => setShowEditMatter(true)}
@@ -1453,6 +1500,15 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {showStaff && (
+        <StaffPanel
+          users={users}
+          currentUserId={authUser.id}
+          onClose={() => setShowStaff(false)}
+          onChanged={() => api.getUsers().then(setUsers).catch(() => {})}
+        />
+      )}
+      {showImport && <ImportMattersForm onClose={() => setShowImport(false)} onImported={refreshList} />}
       {showOutlookConsent && (
         <OutlookConsentModal
           onCancel={() => setShowOutlookConsent(false)}
@@ -1466,6 +1522,57 @@ export default function App() {
 /* ---------------------------------------------------------------------- */
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
+
+function ReportOnTitleCard({ matter, onGenerate }) {
+  const [busy, setBusy] = useState(false);
+  const searches = matter.searches;
+  const received = searches.filter((s) => s.dateReceived).length;
+  const issues = searches.filter((s) => s.issue).length;
+  const answered = matter.enquiries.filter((q) => q.status === "Answered").length;
+  const pendingReview = matter.enquiries.filter((q) => q.status === "Pending Review").length;
+  const ready = searches.length > 0 && received === searches.length && answered === matter.enquiries.length;
+  const missing = [
+    !matter.clientDetails.address && "client address",
+    !matter.clientDetails.salutation && "\u201cDear \u2026\u201d",
+    !matter.property.tenure && "tenure",
+    !matter.property.titleNumber && "title number",
+    !matter.property.registeredProprietor && "registered owner",
+    isLeasehold(matter.property.tenure) && !matter.property.leaseTerm && "lease term",
+    matter.type === "Purchase" && matter.money.deposit === "" && "deposit",
+    matter.type === "Purchase" && matter.money.sdlt === "" && "SDLT",
+  ].filter(Boolean);
+
+  async function generate() {
+    setBusy(true);
+    try { await onGenerate(); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-card" style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 10 }}><FileSignature size={12} /> Report on Title</h3>
+      <div className="ac-kv"><span className="k">Searches back</span><span>{received} of {searches.length}{issues ? ` · ${issues} issue${issues === 1 ? "" : "s"}` : ""}</span></div>
+      <div className="ac-kv"><span className="k">Enquiries answered</span><span>{answered} of {matter.enquiries.length}{pendingReview ? ` · ${pendingReview} to review` : ""}</span></div>
+      <p style={{ fontSize: 12, color: ready ? "var(--success)" : "var(--slate)", margin: "8px 0 10px" }}>
+        {ready
+          ? "All searches and enquiries are in — ready to report."
+          : searches.length === 0
+            ? "No searches recorded yet. You can still produce a draft; gaps are highlighted in it."
+            : "Not everything is in yet. You can still produce a draft; anything outstanding is highlighted in it."}
+      </p>
+      {missing.length > 0 && (
+        <p style={{ fontSize: 12, color: "var(--slate)", margin: "0 0 10px" }}>
+          Details not filled in yet (they'll be highlighted in the report): {missing.join(", ")}. Add them with <em>Edit details</em>.
+        </p>
+      )}
+      <button className="ac-submit" type="button" onClick={generate} disabled={busy} style={{ width: "100%" }}>
+        <Download size={14} /> {busy ? "Preparing…" : "Download draft (Word)"}
+      </button>
+      <p style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 0" }}>
+        Pulls in the client, property, searches and enquiry replies. Highlighted parts need completing before it's sent.
+      </p>
+    </div>
+  );
+}
 
 /** Date each stage was last reached, from the "Moved to …" entries in the activity log. */
 function stageReachedDates(matter) {
@@ -1520,7 +1627,7 @@ function StageTimeline({ matter, onSetStage }) {
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1604,6 +1711,38 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             )}
 
             <div className="ac-card">
+              <h3><Users size={12} /> Client</h3>
+              <div className="ac-kv"><span className="k">Name</span><span className="v">{matter.client}</span></div>
+              <div className="ac-kv"><span className="k">Correspondence address</span><span className="v" style={{ whiteSpace: "pre-line", textAlign: "right" }}>{matter.clientDetails.address || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Email</span><span className="v mono">{matter.clientDetails.email || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Phone</span><span className="v mono">{matter.clientDetails.phone || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Letters start</span><span className="v">{matter.clientDetails.salutation ? `Dear ${matter.clientDetails.salutation}` : "—"}</span></div>
+            </div>
+
+            <div className="ac-card">
+              <h3><Building2 size={12} /> Property &amp; title</h3>
+              <div className="ac-kv"><span className="k">Tenure</span><span className="v">{matter.property.tenure || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Title number</span><span className="v mono">{matter.property.titleNumber || "—"}</span></div>
+              <div className="ac-kv"><span className="k">Registered owner</span><span className="v">{matter.property.registeredProprietor || "—"}</span></div>
+              {isLeasehold(matter.property.tenure) && (
+                <>
+                  <div className="ac-kv"><span className="k">Lease term</span><span className="v">{matter.property.leaseTerm || "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Ground rent</span><span className="v">{matter.property.groundRent || "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Service charge</span><span className="v">{matter.property.serviceCharge || "—"}</span></div>
+                </>
+              )}
+              {matter.type !== "Sale" && (
+                <>
+                  <div className="ac-kv"><span className="k">Deposit</span><span className="v mono">{matter.money.deposit !== "" ? formatMoney(matter.money.deposit) : "—"}</span></div>
+                  <div className="ac-kv"><span className="k">SDLT payable</span><span className="v mono">{matter.money.sdlt !== "" ? formatMoney(matter.money.sdlt) : "—"}</span></div>
+                </>
+              )}
+              {matter.parties.lender && (
+                <div className="ac-kv"><span className="k">Mortgage conditions</span><span className="v" style={{ textAlign: "right" }}>{matter.money.mortgageConditions || "—"}</span></div>
+              )}
+            </div>
+
+            <div className="ac-card">
               <h3><Users size={12} /> Parties &amp; team</h3>
               <div className="ac-kv"><span className="k">Fee earner</span><span className="v">{matter.feeEarner || "—"}</span></div>
               <div className="ac-kv"><span className="k">Supervisor</span><span className="v">{matter.supervisor || "—"}</span></div>
@@ -1664,6 +1803,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           </div>
 
           <div className="ac-col-side">
+            {(matter.type === "Purchase" || matter.type === "Remortgage") && <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />}
             <div className="ac-card" style={{ marginBottom: 18 }}>
               <h3 style={{ marginBottom: 10 }}>Workstreams</h3>
               {(() => {
@@ -2110,9 +2250,12 @@ function NewMatterForm({ onClose, onCreate, users }) {
     address: "", client: "", type: "Purchase", price: "",
     otherSideSolicitor: "", otherSideSolicitorEmail: "", estateAgent: "", lender: "",
     targetExchange: "", targetCompletion: "", feeEarnerId: "", supervisorId: "", mortgageOfferExpiry: "",
+    clientDetails: { address: "", email: "", phone: "", salutation: "" },
+    property: { tenure: "", titleNumber: "", registeredProprietor: "", leaseTerm: "", groundRent: "", serviceCharge: "" },
   });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
 
   function submit(e) {
     e.preventDefault();
@@ -2142,6 +2285,8 @@ function NewMatterForm({ onClose, onCreate, users }) {
         actualCompletion: "",
         mortgageOfferExpiry: f.mortgageOfferExpiry,
       },
+      clientDetails: f.clientDetails,
+      property: f.property,
     });
   }
 
@@ -2174,20 +2319,26 @@ function NewMatterForm({ onClose, onCreate, users }) {
           <input type="number" value={f.price} onChange={set("price")} placeholder="465000" />
         </div>
 
+        <div className="ac-fieldset-title">Client contact</div>
+        <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Property &amp; title</div>
+        <PropertyFields value={f.property} onChange={setIn} />
+
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
           <div className="ac-field">
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -2508,6 +2659,73 @@ function AddEmailForm({ onClose, onAdd }) {
 /* Edit matter details                                                    */
 /* ---------------------------------------------------------------------- */
 
+function ClientDetailsFields({ value, onChange }) {
+  return (
+    <>
+      <div className="ac-field">
+        <label>Correspondence address</label>
+        <textarea value={value.address} onChange={onChange("clientDetails", "address")} placeholder="If different from the property" style={{ minHeight: 60 }} />
+      </div>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Email</label>
+          <input type="email" value={value.email} onChange={onChange("clientDetails", "email")} />
+        </div>
+        <div className="ac-field">
+          <label>Phone</label>
+          <input value={value.phone} onChange={onChange("clientDetails", "phone")} />
+        </div>
+      </div>
+      <div className="ac-field">
+        <label>Letters start "Dear …"</label>
+        <input value={value.salutation} onChange={onChange("clientDetails", "salutation")} placeholder="e.g. Mr and Mrs Faulkner" />
+      </div>
+    </>
+  );
+}
+
+function PropertyFields({ value, onChange }) {
+  return (
+    <>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Tenure</label>
+          <select value={value.tenure} onChange={onChange("property", "tenure")}>
+            <option value="">— Select —</option>
+            {TENURES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="ac-field">
+          <label>Title number</label>
+          <input value={value.titleNumber} onChange={onChange("property", "titleNumber")} placeholder="e.g. GR123456" />
+        </div>
+      </div>
+      <div className="ac-field">
+        <label>Registered owner</label>
+        <input value={value.registeredProprietor} onChange={onChange("property", "registeredProprietor")} />
+      </div>
+      {isLeasehold(value.tenure) && (
+        <>
+          <div className="ac-field">
+            <label>Lease term</label>
+            <input value={value.leaseTerm} onChange={onChange("property", "leaseTerm")} placeholder="e.g. 125 years from 1 January 2005 (104 remaining)" />
+          </div>
+          <div className="ac-row2">
+            <div className="ac-field">
+              <label>Ground rent</label>
+              <input value={value.groundRent} onChange={onChange("property", "groundRent")} placeholder="e.g. £250 a year, doubling every 25 years" />
+            </div>
+            <div className="ac-field">
+              <label>Service charge</label>
+              <input value={value.serviceCharge} onChange={onChange("property", "serviceCharge")} placeholder="e.g. £1,200 a year" />
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
   const [f, setF] = useState({
     address: matter.address,
@@ -2526,7 +2744,11 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
     actualCompletion: matter.keyDates.actualCompletion,
     mortgageOfferExpiry: matter.keyDates.mortgageOfferExpiry,
     linkedMatterIds: matter.linkedMatterIds,
+    clientDetails: { ...matter.clientDetails },
+    property: { ...matter.property },
+    money: { ...matter.money },
   });
+  const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -2565,6 +2787,13 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         actualCompletion: f.actualCompletion,
         mortgageOfferExpiry: f.mortgageOfferExpiry,
       },
+      clientDetails: f.clientDetails,
+      property: f.property,
+      money: {
+        ...f.money,
+        deposit: f.money.deposit === "" ? "" : Number(f.money.deposit),
+        sdlt: f.money.sdlt === "" ? "" : Number(f.money.sdlt),
+      },
     });
   }
 
@@ -2597,20 +2826,42 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           <input type="number" value={f.price} onChange={set("price")} />
         </div>
 
+        <div className="ac-fieldset-title">Client contact</div>
+        <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Property &amp; title</div>
+        <PropertyFields value={f.property} onChange={setIn} />
+
+        <div className="ac-fieldset-title">Money</div>
+        <div className="ac-row2">
+          <div className="ac-field">
+            <label>Deposit (£)</label>
+            <input type="number" min="0" step="0.01" value={f.money.deposit} onChange={setIn("money", "deposit")} />
+          </div>
+          <div className="ac-field">
+            <label>SDLT payable (£)</label>
+            <input type="number" min="0" step="0.01" value={f.money.sdlt} onChange={setIn("money", "sdlt")} placeholder="0 if none due" />
+          </div>
+        </div>
+        <div className="ac-field">
+          <label>Mortgage offer special conditions</label>
+          <textarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
+        </div>
+
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
           <div className="ac-field">
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -3111,6 +3362,359 @@ function AddSearchForm({ onClose, onAdd }) {
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><ShieldCheck size={14} /> Add search</button>
       </form>
+    </div>
+  );
+}
+
+const IMPORT_TEMPLATE_HEADERS = [
+  "Reference", "Address", "Client", "Type", "Price", "Stage", "Fee Earner", "Supervisor",
+  "Other Side Solicitor", "Other Side Solicitor Email", "Estate Agent", "Lender",
+  "Date Instructed", "Target Exchange", "Target Completion", "Actual Exchange", "Actual Completion",
+  "Mortgage Offer Expiry", "Notes",
+  "Client Address", "Client Email", "Client Phone", "Salutation", "Tenure", "Title Number",
+  "Registered Proprietor", "Lease Term", "Ground Rent", "Service Charge", "Deposit", "SDLT", "Mortgage Conditions",
+];
+const IMPORT_TEMPLATE_EXAMPLE = [
+  "", "14 Example Road, Bath, BA1 1AA", "J & K Example", "Purchase", "£350,000", "Searches", "", "",
+  "Smith & Co LLP", "conveyancing@smithco.example", "Example Estates", "Nationwide",
+  "01/09/2026", "20/11/2026", "04/12/2026", "", "", "31/01/2027", "Imported from the old system",
+  "22 Current Street, Bath, BA2 2BB", "j.example@example.com", "07700 900123", "Mr and Mrs Example", "Freehold", "AV123456",
+  "Alan Seller", "", "", "", "£35,000", "£7,500", "",
+];
+const MAX_IMPORT_ROWS = 1000;
+
+function downloadImportTemplate() {
+  const csv = Papa.unparse([IMPORT_TEMPLATE_HEADERS, IMPORT_TEMPLATE_EXAMPLE]);
+  const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "matters-import-template.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+function ImportMattersForm({ onClose, onImported }) {
+  const [fileName, setFileName] = useState("");
+  const [rows, setRows] = useState(null);
+  const [check, setCheck] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [imported, setImported] = useState(null);
+
+  function pickFile(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(""); setCheck(null); setRows(null); setFileName(file.name);
+    if (!/\.csv$/i.test(file.name)) {
+      setError("Please choose a .csv file. In Excel: File → Save As → \"CSV UTF-8 (Comma delimited)\".");
+      return;
+    }
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: "greedy",
+      transformHeader: (h) => h.replace(/^\ufeff/, "").trim(),
+      complete: async (result) => {
+        const data = result.data;
+        if (!data.length) return setError("That file has no rows under the header line.");
+        if (data.length > MAX_IMPORT_ROWS) return setError(`That file has ${data.length} rows — import at most ${MAX_IMPORT_ROWS} at a time. Split it into smaller files.`);
+        setRows(data);
+        setBusy(true);
+        try {
+          setCheck(await api.importMatters(data, true));
+        } catch (err) {
+          setError(err.message || "Couldn't check the file.");
+        } finally {
+          setBusy(false);
+        }
+      },
+      error: () => setError("Couldn't read that file."),
+    });
+  }
+
+  async function runImport() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.importMatters(rows, false);
+      setImported(result.imported);
+      onImported();
+    } catch (err) {
+      setError(err.message || "The import failed — nothing was imported.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={busy ? undefined : onClose}>
+      <div className="ac-modal wide" onClick={(e) => e.stopPropagation()}>
+        <div className="ac-modal-head">
+          <h2>Import matters</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose} disabled={busy}><X size={18} /></button>
+        </div>
+
+        {imported !== null ? (
+          <>
+            <p style={{ fontSize: 14 }}><CheckCircle2 size={15} style={{ verticalAlign: -3, color: "var(--success)" }} /> {imported} matter{imported === 1 ? "" : "s"} imported.</p>
+            <button className="ac-submit" type="button" onClick={onClose}><Check size={14} /> Done</button>
+          </>
+        ) : (
+          <>
+            <ol style={{ fontSize: 13, lineHeight: 1.55, paddingLeft: 18, margin: "0 0 14px" }}>
+              <li>
+                <button type="button" className="ac-tablebtn" onClick={downloadImportTemplate} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <Download size={12} /> Download the template
+                </button>{" "}
+                and fill in one row per matter (or use your own spreadsheet with similar column names).
+              </li>
+              <li><strong>Address</strong>, <strong>Client</strong> and <strong>Type</strong> (Sale, Purchase or Remortgage) are required. Dates as DD/MM/YYYY. Stage as a name (e.g. <em>Searches</em>) or number 1–12. Fee earner and supervisor by name or email. Leave Reference blank to get a new CV- number.</li>
+              <li>In Excel, save it with <em>File → Save As → CSV UTF-8</em>, then choose it below. You'll see a check before anything is saved.</li>
+            </ol>
+
+            <div className="ac-field">
+              <label>Spreadsheet (.csv, up to {MAX_IMPORT_ROWS} rows)</label>
+              <input type="file" accept=".csv,text/csv" onChange={pickFile} disabled={busy} />
+            </div>
+
+            {busy && !check && <p style={{ fontSize: 13, color: "var(--slate)" }}>Checking {fileName}…</p>}
+            {error && <p style={{ fontSize: 13, color: "var(--danger)" }}>{error}</p>}
+
+            {check && (
+              <div style={{ fontSize: 13 }}>
+                <p style={{ margin: "6px 0" }}>
+                  <strong>{check.valid}</strong> matter{check.valid === 1 ? "" : "s"} ready to import
+                  {check.errors.length > 0 && <> · <strong style={{ color: "var(--danger)" }}>{check.errors.length}</strong> row{check.errors.length === 1 ? "" : "s"} with problems</>}
+                </p>
+                {check.ignoredHeaders.length > 0 && (
+                  <p style={{ margin: "6px 0", color: "var(--slate)" }}>Columns not recognised (will be ignored): {check.ignoredHeaders.join(", ")}</p>
+                )}
+                {check.errors.length > 0 && (
+                  <>
+                    <p style={{ margin: "10px 0 0" }}>Fix these rows in your spreadsheet, save it again, and re-choose the file. Nothing is imported until every row is OK.</p>
+                    <table className="ac-import-errors">
+                      <tbody>
+                        {check.errors.slice(0, 200).map((e) => (
+                          <tr key={e.row}><td>Row {e.row}</td><td>{e.messages.map((m, i) => <div key={i}>{m}</div>)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {check.errors.length > 200 && <p style={{ color: "var(--slate)" }}>…and {check.errors.length - 200} more rows.</p>}
+                  </>
+                )}
+                {check.errors.length === 0 && check.valid > 0 && (
+                  <button className="ac-submit" type="button" onClick={runImport} disabled={busy} style={{ marginTop: 12 }}>
+                    <Upload size={14} /> {busy ? "Importing…" : `Import ${check.valid} matter${check.valid === 1 ? "" : "s"}`}
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const ROLE_LABELS = { fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
+const AUDIT_VERBS = { "password reset": "reset the password for" };
+
+/** Readable temporary password (no 0/O/1/l look-alikes), 12 characters. */
+function makeTempPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const bytes = new Uint32Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
+  const [f, setF] = useState({ name: "", email: "", role: "fee_earner", supervisorId: "", password: isNew ? makeTempPassword() : "", ...initial });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.name.trim() || !f.email.trim()) return setError("Name and email are required.");
+    if (isNew && f.password.length < 10) return setError("The temporary password must be at least 10 characters.");
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(f);
+    } catch (err) {
+      setError(err.message || "Couldn't save.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ marginTop: 10 }}>
+      <div className="ac-row2">
+        <div className="ac-field"><label>Name</label><input value={f.name} onChange={set("name")} autoFocus /></div>
+        <div className="ac-field"><label>Email (their login)</label><input type="email" value={f.email} onChange={set("email")} /></div>
+      </div>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Role</label>
+          <select value={f.role} onChange={set("role")}>
+            {Object.entries(ROLE_LABELS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+          </select>
+        </div>
+        <div className="ac-field">
+          <label>Supervisor</label>
+          <select value={f.supervisorId || ""} onChange={set("supervisorId")}>
+            <option value="">— None —</option>
+            {users.filter((u) => u.active && u.id !== selfId).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      </div>
+      {isNew && (
+        <div className="ac-field">
+          <label>Temporary password — give this to them; they can change it after logging in</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={f.password} onChange={set("password")} style={{ fontFamily: "var(--font-mono)" }} />
+            <button type="button" className="ac-tablebtn" onClick={() => setF({ ...f, password: makeTempPassword() })}>New</button>
+          </div>
+        </div>
+      )}
+      {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="ac-submit" type="submit" disabled={saving} style={{ flex: 1 }}><Check size={14} /> {saving ? "Saving…" : isNew ? "Add staff member" : "Save"}</button>
+        <button className="ac-tablebtn" type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function StaffPanel({ users, currentUserId, onClose, onChanged }) {
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [audit, setAudit] = useState([]);
+  const nameOf = (id) => users.find((u) => u.id === id)?.name;
+
+  const loadAudit = useCallback(() => api.getStaffAudit().then(setAudit).catch(() => {}), []);
+  useEffect(() => { loadAudit(); }, [loadAudit]);
+
+  async function afterChange(message) {
+    await onChanged();
+    await loadAudit();
+    setNotice(message);
+  }
+
+  async function add(f) {
+    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password });
+    setAdding(false);
+    await afterChange({ text: `${f.name} added. Their login is ${f.email.trim().toLowerCase()} with temporary password:`, secret: f.password });
+  }
+
+  async function save(id, f) {
+    await api.updateUser(id, { name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null });
+    setEditingId(null);
+    await afterChange({ text: `${f.name} updated.` });
+  }
+
+  async function setActive(u, active) {
+    if (!active && !window.confirm(`Deactivate ${u.name}? They'll be logged out straight away and won't be able to log in. Their matters stay as they are.`)) return;
+    try {
+      await api.updateUser(u.id, { active });
+      await afterChange({ text: `${u.name} ${active ? "reactivated" : "deactivated"}.` });
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  async function resetPassword(u) {
+    const password = makeTempPassword();
+    if (!window.confirm(`Set a new temporary password for ${u.name}? Their current password will stop working.`)) return;
+    try {
+      await api.resetUserPassword(u.id, password);
+      await afterChange({ text: `New temporary password for ${u.name}:`, secret: password });
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  return (
+    <div className="ac-overlay" onClick={onClose}>
+      <div className="ac-panel wide" onClick={(e) => e.stopPropagation()}>
+        <div className="ac-panel-head">
+          <h2>Staff</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="ac-role-guide">
+          <strong>Fee earner</strong> — sees and works on their own matters. <br />
+          <strong>Supervisor</strong> — also sees the matters of everyone they supervise. <br />
+          <strong>Admin</strong> — sees every matter, manages staff, imports matters and changes firm settings.
+        </div>
+
+        {notice && (
+          <div className="ac-card" style={{ background: "var(--success-bg)", borderColor: "var(--success)", padding: "10px 14px" }}>
+            <div style={{ fontSize: 13 }}>{notice.text}</div>
+            {notice.secret && (
+              <>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 16, margin: "6px 0", userSelect: "all" }}>{notice.secret}</div>
+                <div style={{ fontSize: 11.5, color: "var(--slate)" }}>Copy it now and give it to them securely — it won't be shown again.</div>
+              </>
+            )}
+            <button className="ac-tablebtn" style={{ marginTop: 6 }} onClick={() => setNotice(null)}>Dismiss</button>
+          </div>
+        )}
+
+        {adding ? (
+          <div className="ac-staff-row">
+            <div className="ac-staff-name">New staff member</div>
+            <StaffForm isNew users={users} onCancel={() => setAdding(false)} onSave={add} />
+          </div>
+        ) : (
+          <button className="ac-newbtn" style={{ marginBottom: 14 }} onClick={() => { setAdding(true); setNotice(null); }}><Plus size={15} /> Add staff member</button>
+        )}
+
+        {users.map((u) => (
+          <div key={u.id} className={`ac-staff-row ${u.active ? "" : "inactive"}`}>
+            <div className="ac-staff-top">
+              <div style={{ minWidth: 0 }}>
+                <div className="ac-staff-name">{u.name}{u.id === currentUserId ? " (you)" : ""}</div>
+                <div className="ac-staff-meta">{u.email}</div>
+                <div className="ac-staff-meta">
+                  {ROLE_LABELS[u.role]}{u.supervisor_id ? ` · supervised by ${nameOf(u.supervisor_id) || "—"}` : ""}
+                </div>
+              </div>
+              <span className={`ac-pill ${u.active ? "ac-pill--closed" : "ac-pill--setup"}`}>{u.active ? "Active" : "Deactivated"}</span>
+            </div>
+            {editingId === u.id ? (
+              <StaffForm
+                users={users}
+                selfId={u.id}
+                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "" }}
+                onCancel={() => setEditingId(null)}
+                onSave={(f) => save(u.id, f)}
+              />
+            ) : (
+              <div className="ac-staff-actions">
+                <button className="ac-tablebtn" onClick={() => { setEditingId(u.id); setNotice(null); }}>Edit</button>
+                {u.active && <button className="ac-tablebtn" onClick={() => resetPassword(u)}>Reset password</button>}
+                {u.id !== currentUserId && (
+                  u.active
+                    ? <button className="ac-tablebtn" onClick={() => setActive(u, false)}>Deactivate</button>
+                    : <button className="ac-tablebtn" onClick={() => setActive(u, true)}>Reactivate</button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div className="ac-fieldset-title" style={{ marginTop: 20 }}>Recent changes</div>
+        {audit.length === 0 && <p style={{ fontSize: 12.5, color: "var(--slate)" }}>No staff changes recorded yet.</p>}
+        {audit.slice(0, 30).map((a) => (
+          <div key={a.id} className="ac-audit-row">
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--slate)" }}>{new Date(a.occurred_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+            {" · "}<strong>{a.actor_name || "Someone"}</strong> {AUDIT_VERBS[a.action] || a.action} <strong>{a.target_name || "a former user"}</strong>
+            {a.details && a.details !== a.action && a.action !== "password reset" && <span style={{ color: "var(--slate)" }}> — {a.details}</span>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

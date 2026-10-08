@@ -122,8 +122,10 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
 | GET | `/matters?limit=&offset=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
 | POST | `/matters` | Create a matter |
+| POST | `/matters/import` | Bulk import (admin only) — `{ rows, dryRun }`, rows keyed by spreadsheet header; validates every row, all-or-nothing, max 1000 rows |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
+| GET | `/matters/:id/report-on-title` | Draft Report on Title as a Word document (purchases and remortgages) |
 | POST | `/matters/:id/stage` | Move the stage tracker |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |
@@ -143,7 +145,9 @@ All routes except `/auth/register` and `/auth/login` require
 | PATCH | `/matters/:id/tasks/:tid/complete` \| `/reopen` | Complete / reopen |
 | PUT/DELETE | `/matters/:id/links/:linkedId` | Link / unlink a matter chain |
 | GET | `/users` | List staff (for fee-earner pickers) |
-| POST/PATCH | `/users` | Add / update staff (admin only) |
+| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active (admin only) |
+| POST | `/users/:id/reset-password` | Set a temporary password for a member of staff (admin only) |
+| GET | `/users/audit` | Recent staff account changes (admin only) |
 | GET/PATCH | `/settings` | Firm-level settings (domain, review threshold) |
 
 ## Connecting the React frontend to this API
