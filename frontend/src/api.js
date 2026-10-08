@@ -110,6 +110,8 @@ export const api = {
   getUsers: () => request("/users"),
   createUser: (payload) => request("/users", { method: "POST", body: payload }),
   updateUser: (id, patch) => request(`/users/${id}`, { method: "PATCH", body: patch }),
+  resetUserPassword: (id, password) => request(`/users/${id}/reset-password`, { method: "POST", body: { password } }),
+  getStaffAudit: () => request("/users/audit"),
 
   getFirmSettings: () => request("/settings"),
   updateFirmSettings: (patch) => request("/settings", { method: "PATCH", body: patch }),

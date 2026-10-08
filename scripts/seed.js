@@ -21,6 +21,9 @@ async function runSeed(pool, { password = "password123" } = {}) {
     await client.query(
       `DELETE FROM matters WHERE firm_id IN (SELECT id FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)')`
     );
+    await client.query(
+      `DELETE FROM staff_audit WHERE firm_id IN (SELECT id FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)')`
+    );
     await client.query(`DELETE FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)'`);
 
     const firm = (

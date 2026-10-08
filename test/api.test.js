@@ -448,3 +448,47 @@ test("import: client and title columns are brought across", async () => {
     .send({ rows: [{ Address: "x", Client: "y", Type: "Sale", Tenure: "Rented", Deposit: "lots" }], dryRun: true });
   assert.equal(bad.body.errors[0].messages.length, 2);
 });
+
+test("staff management: admins add, edit, reset and deactivate staff, and it's all audited", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarahId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("sarah")}` })).body.id;
+
+  const added = await request(app).post("/users").set(david)
+    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.email, "starter@vjcrawfordconveyancing.co.uk");
+  const id = added.body.id;
+  const login = (pw) => request(app).post("/auth/login").send({ email: "starter@vjcrawfordconveyancing.co.uk", password: pw });
+  assert.equal((await login("temporary-pass-1")).status, 200);
+
+  const edited = await request(app).patch(`/users/${id}`).set(david).send({ name: "New Starter-Smith", role: "supervisor" });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.name, "New Starter-Smith");
+  assert.equal(edited.body.role, "supervisor");
+
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "david@vjcrawfordconveyancing.co.uk" })).status, 409);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "not-an-email" })).status, 400);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: id })).status, 400);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: "00000000-0000-0000-0000-000000000000" })).status, 400);
+
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(david).send({ password: "short" })).status, 400);
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(david).send({ password: "reset-by-admin-1" })).status, 204);
+  assert.equal((await login("temporary-pass-1")).status, 401);
+  assert.equal((await login("reset-by-admin-1")).status, 200);
+
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ active: false })).status, 200);
+  assert.equal((await login("reset-by-admin-1")).status, 401);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ active: true })).status, 200);
+
+  // Non-admins can't manage staff or read the audit.
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  assert.equal((await request(app).post(`/users/${id}/reset-password`).set(sarah).send({ password: "sarah-did-this" })).status, 403);
+  assert.equal((await request(app).get("/users/audit").set(sarah)).status, 403);
+
+  const audit = (await request(app).get("/users/audit").set(david)).body.filter((a) => a.target_name === "New Starter-Smith");
+  assert.deepEqual(audit.map((a) => a.action).reverse(), ["added", "updated", "password reset", "deactivated", "reactivated"]);
+  assert.match(audit.find((a) => a.action === "updated").details, /role changed from Fee earner to Supervisor/);
+  assert.ok(audit.every((a) => a.actor_name === "David Okonkwo"));
+
+  await runSeed(pool); // re-seeding still works with audit entries present
+});

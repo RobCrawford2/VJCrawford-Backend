@@ -363,6 +363,7 @@ export default function App() {
   const [visibleCount, setVisibleCount] = useState(20);
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showStaff, setShowStaff] = useState(false);
   const [showEditMatter, setShowEditMatter] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
@@ -940,6 +941,15 @@ export default function App() {
         }
         .ac-importbtn:hover { color: var(--ink); border-color: var(--ink); }
         .ac-modal.wide { width: 720px; }
+        .ac-panel.wide { width: 620px; }
+        .ac-staff-row { border: 1px solid var(--line); background: var(--card); border-radius: 3px; padding: 10px 12px; margin-bottom: 8px; }
+        .ac-staff-row.inactive { opacity: 0.6; }
+        .ac-staff-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+        .ac-staff-name { font-weight: 600; font-size: 13.5px; }
+        .ac-staff-meta { font-size: 12px; color: var(--slate); margin-top: 2px; overflow-wrap: anywhere; }
+        .ac-staff-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .ac-role-guide { font-size: 12px; color: var(--slate); background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px; margin-bottom: 14px; line-height: 1.55; }
+        .ac-audit-row { font-size: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
         .ac-import-errors { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
         .ac-import-errors td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
         .ac-import-errors td:first-child { font-family: var(--font-mono); white-space: nowrap; color: var(--slate); }
@@ -1221,6 +1231,11 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          {authUser.role === "admin" && (
+            <button className="ac-iconbtn" onClick={() => setShowStaff(true)} title="Staff">
+              <Users size={18} />
+            </button>
+          )}
           <button className="ac-iconbtn" onClick={() => setShowSettings(true)} title="Settings & integrations">
             <SettingsIcon size={18} />
           </button>
@@ -1485,6 +1500,14 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {showStaff && (
+        <StaffPanel
+          users={users}
+          currentUserId={authUser.id}
+          onClose={() => setShowStaff(false)}
+          onChanged={() => api.getUsers().then(setUsers).catch(() => {})}
+        />
+      )}
       {showImport && <ImportMattersForm onClose={() => setShowImport(false)} onImported={refreshList} />}
       {showOutlookConsent && (
         <OutlookConsentModal
@@ -2308,14 +2331,14 @@ function NewMatterForm({ onClose, onCreate, users }) {
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -2831,14 +2854,14 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -3488,6 +3511,209 @@ function ImportMattersForm({ onClose, onImported }) {
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+const ROLE_LABELS = { fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
+const AUDIT_VERBS = { "password reset": "reset the password for" };
+
+/** Readable temporary password (no 0/O/1/l look-alikes), 12 characters. */
+function makeTempPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const bytes = new Uint32Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
+  const [f, setF] = useState({ name: "", email: "", role: "fee_earner", supervisorId: "", password: isNew ? makeTempPassword() : "", ...initial });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.name.trim() || !f.email.trim()) return setError("Name and email are required.");
+    if (isNew && f.password.length < 10) return setError("The temporary password must be at least 10 characters.");
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(f);
+    } catch (err) {
+      setError(err.message || "Couldn't save.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ marginTop: 10 }}>
+      <div className="ac-row2">
+        <div className="ac-field"><label>Name</label><input value={f.name} onChange={set("name")} autoFocus /></div>
+        <div className="ac-field"><label>Email (their login)</label><input type="email" value={f.email} onChange={set("email")} /></div>
+      </div>
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>Role</label>
+          <select value={f.role} onChange={set("role")}>
+            {Object.entries(ROLE_LABELS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+          </select>
+        </div>
+        <div className="ac-field">
+          <label>Supervisor</label>
+          <select value={f.supervisorId || ""} onChange={set("supervisorId")}>
+            <option value="">— None —</option>
+            {users.filter((u) => u.active && u.id !== selfId).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      </div>
+      {isNew && (
+        <div className="ac-field">
+          <label>Temporary password — give this to them; they can change it after logging in</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={f.password} onChange={set("password")} style={{ fontFamily: "var(--font-mono)" }} />
+            <button type="button" className="ac-tablebtn" onClick={() => setF({ ...f, password: makeTempPassword() })}>New</button>
+          </div>
+        </div>
+      )}
+      {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="ac-submit" type="submit" disabled={saving} style={{ flex: 1 }}><Check size={14} /> {saving ? "Saving…" : isNew ? "Add staff member" : "Save"}</button>
+        <button className="ac-tablebtn" type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function StaffPanel({ users, currentUserId, onClose, onChanged }) {
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [audit, setAudit] = useState([]);
+  const nameOf = (id) => users.find((u) => u.id === id)?.name;
+
+  const loadAudit = useCallback(() => api.getStaffAudit().then(setAudit).catch(() => {}), []);
+  useEffect(() => { loadAudit(); }, [loadAudit]);
+
+  async function afterChange(message) {
+    await onChanged();
+    await loadAudit();
+    setNotice(message);
+  }
+
+  async function add(f) {
+    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password });
+    setAdding(false);
+    await afterChange({ text: `${f.name} added. Their login is ${f.email.trim().toLowerCase()} with temporary password:`, secret: f.password });
+  }
+
+  async function save(id, f) {
+    await api.updateUser(id, { name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null });
+    setEditingId(null);
+    await afterChange({ text: `${f.name} updated.` });
+  }
+
+  async function setActive(u, active) {
+    if (!active && !window.confirm(`Deactivate ${u.name}? They'll be logged out straight away and won't be able to log in. Their matters stay as they are.`)) return;
+    try {
+      await api.updateUser(u.id, { active });
+      await afterChange({ text: `${u.name} ${active ? "reactivated" : "deactivated"}.` });
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  async function resetPassword(u) {
+    const password = makeTempPassword();
+    if (!window.confirm(`Set a new temporary password for ${u.name}? Their current password will stop working.`)) return;
+    try {
+      await api.resetUserPassword(u.id, password);
+      await afterChange({ text: `New temporary password for ${u.name}:`, secret: password });
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  return (
+    <div className="ac-overlay" onClick={onClose}>
+      <div className="ac-panel wide" onClick={(e) => e.stopPropagation()}>
+        <div className="ac-panel-head">
+          <h2>Staff</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="ac-role-guide">
+          <strong>Fee earner</strong> — sees and works on their own matters. <br />
+          <strong>Supervisor</strong> — also sees the matters of everyone they supervise. <br />
+          <strong>Admin</strong> — sees every matter, manages staff, imports matters and changes firm settings.
+        </div>
+
+        {notice && (
+          <div className="ac-card" style={{ background: "var(--success-bg)", borderColor: "var(--success)", padding: "10px 14px" }}>
+            <div style={{ fontSize: 13 }}>{notice.text}</div>
+            {notice.secret && (
+              <>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 16, margin: "6px 0", userSelect: "all" }}>{notice.secret}</div>
+                <div style={{ fontSize: 11.5, color: "var(--slate)" }}>Copy it now and give it to them securely — it won't be shown again.</div>
+              </>
+            )}
+            <button className="ac-tablebtn" style={{ marginTop: 6 }} onClick={() => setNotice(null)}>Dismiss</button>
+          </div>
+        )}
+
+        {adding ? (
+          <div className="ac-staff-row">
+            <div className="ac-staff-name">New staff member</div>
+            <StaffForm isNew users={users} onCancel={() => setAdding(false)} onSave={add} />
+          </div>
+        ) : (
+          <button className="ac-newbtn" style={{ marginBottom: 14 }} onClick={() => { setAdding(true); setNotice(null); }}><Plus size={15} /> Add staff member</button>
+        )}
+
+        {users.map((u) => (
+          <div key={u.id} className={`ac-staff-row ${u.active ? "" : "inactive"}`}>
+            <div className="ac-staff-top">
+              <div style={{ minWidth: 0 }}>
+                <div className="ac-staff-name">{u.name}{u.id === currentUserId ? " (you)" : ""}</div>
+                <div className="ac-staff-meta">{u.email}</div>
+                <div className="ac-staff-meta">
+                  {ROLE_LABELS[u.role]}{u.supervisor_id ? ` · supervised by ${nameOf(u.supervisor_id) || "—"}` : ""}
+                </div>
+              </div>
+              <span className={`ac-pill ${u.active ? "ac-pill--closed" : "ac-pill--setup"}`}>{u.active ? "Active" : "Deactivated"}</span>
+            </div>
+            {editingId === u.id ? (
+              <StaffForm
+                users={users}
+                selfId={u.id}
+                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "" }}
+                onCancel={() => setEditingId(null)}
+                onSave={(f) => save(u.id, f)}
+              />
+            ) : (
+              <div className="ac-staff-actions">
+                <button className="ac-tablebtn" onClick={() => { setEditingId(u.id); setNotice(null); }}>Edit</button>
+                {u.active && <button className="ac-tablebtn" onClick={() => resetPassword(u)}>Reset password</button>}
+                {u.id !== currentUserId && (
+                  u.active
+                    ? <button className="ac-tablebtn" onClick={() => setActive(u, false)}>Deactivate</button>
+                    : <button className="ac-tablebtn" onClick={() => setActive(u, true)}>Reactivate</button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div className="ac-fieldset-title" style={{ marginTop: 20 }}>Recent changes</div>
+        {audit.length === 0 && <p style={{ fontSize: 12.5, color: "var(--slate)" }}>No staff changes recorded yet.</p>}
+        {audit.slice(0, 30).map((a) => (
+          <div key={a.id} className="ac-audit-row">
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--slate)" }}>{new Date(a.occurred_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+            {" · "}<strong>{a.actor_name || "Someone"}</strong> {AUDIT_VERBS[a.action] || a.action} <strong>{a.target_name || "a former user"}</strong>
+            {a.details && a.details !== a.action && a.action !== "password reset" && <span style={{ color: "var(--slate)" }}> — {a.details}</span>}
+          </div>
+        ))}
       </div>
     </div>
   );

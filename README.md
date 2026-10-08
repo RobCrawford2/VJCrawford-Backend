@@ -145,7 +145,9 @@ All routes except `/auth/register` and `/auth/login` require
 | PATCH | `/matters/:id/tasks/:tid/complete` \| `/reopen` | Complete / reopen |
 | PUT/DELETE | `/matters/:id/links/:linkedId` | Link / unlink a matter chain |
 | GET | `/users` | List staff (for fee-earner pickers) |
-| POST/PATCH | `/users` | Add / update staff (admin only) |
+| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active (admin only) |
+| POST | `/users/:id/reset-password` | Set a temporary password for a member of staff (admin only) |
+| GET | `/users/audit` | Recent staff account changes (admin only) |
 | GET/PATCH | `/settings` | Firm-level settings (domain, review threshold) |
 
 ## Connecting the React frontend to this API
