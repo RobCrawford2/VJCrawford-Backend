@@ -127,6 +127,16 @@ export function adaptMatter(m, users) {
       id: l.id, reference: l.reference, address: l.address, client: l.client, type: l.type,
       currentStageIndex: l.current_stage_index, targetCompletion: l.target_completion || "",
     })),
+    // Stage sign-off (only on the detail endpoint's response).
+    pendingStageRequest: m.pendingStageRequest
+      ? {
+          id: m.pendingStageRequest.id, toStage: m.pendingStageRequest.to_stage, fromStage: m.pendingStageRequest.from_stage,
+          note: m.pendingStageRequest.note || "", requestedBy: m.pendingStageRequest.requested_by,
+          requestedByName: m.pendingStageRequest.requested_by_name || "", requestedAt: m.pendingStageRequest.requested_at,
+        }
+      : null,
+    canSignOffStages: !!m.canSignOffStages,
+    stageMovesNeedSignoff: !!m.stageMovesNeedSignoff,
     preCompletionReview: {
       checkedItems: Array.isArray(m.pre_exchange_checklist) ? m.pre_exchange_checklist : [],
       confirmedBy: m.pre_exchange_confirmed_by || "",

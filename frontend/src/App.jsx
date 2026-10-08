@@ -156,6 +156,48 @@ const STANDARD_ENQUIRIES = [
   },
 ];
 
+// Standard conveyancing tasks, by matter type and stage index (see STAGES).
+// A starting point to be reviewed against the firm's own procedures.
+const STANDARD_TASKS = {
+  Purchase: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account", "Record source of instruction / referral arrangements"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Obtain evidence of source of funds and source of wealth", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Request contract pack from seller's solicitors", "Review draft contract, title register and title plan", "Review Property Information Form (TA6) and Fittings & Contents Form (TA10)", "Leasehold: review lease and Leasehold Information Form (TA7)"],
+    3: ["Order local authority, water & drainage and environmental searches", "Consider additional searches (coal mining, flood, chancel, highways)", "Review search results and note issues for the report"],
+    4: ["Raise pre-contract enquiries with seller's solicitors", "Chase outstanding enquiry replies", "Review enquiry replies and decide whether satisfactory"],
+    5: ["Receive and review mortgage offer and special conditions", "Check mortgage offer expiry against the proposed completion date", "Report any issues to the lender (UK Finance Mortgage Lenders' Handbook)"],
+    6: ["Send Report on Title to client", "Obtain signed contract, transfer (TR1) and mortgage deed", "Calculate SDLT and prepare completion statement"],
+    7: ["Complete the pre-exchange review checklist", "Receive deposit funds (cleared) into client account", "Confirm buildings insurance will be in place from exchange", "Agree completion date with all parties in the chain"],
+    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client, estate agent and lender", "Send certificate of title and request mortgage advance", "Carry out pre-completion searches (OS1 / bankruptcy)"],
+    9: ["Receive mortgage advance and balance of funds from client", "Send completion monies to seller's solicitors", "Confirm completion to client and agent; arrange release of keys"],
+    10: ["Submit SDLT return and pay SDLT (within 14 days of completion)", "Discharge any undertakings given", "Apply to register at HM Land Registry (AP1)", "Send title information document to client and lender"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+  Sale: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Confirm client's name matches the registered proprietor", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Obtain official copies of the title register and plan", "Client to complete TA6, TA10 (and TA7 if leasehold)", "Draft contract and send contract pack to buyer's solicitors", "Leasehold: request management pack from managing agent"],
+    4: ["Receive buyer's enquiries", "Answer buyer's enquiries with the client"],
+    5: ["Obtain redemption statement for the existing mortgage"],
+    7: ["Obtain signed contract and transfer (TR1) from client", "Agree completion date with all parties in the chain"],
+    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client and estate agent", "Obtain final redemption figure for completion day"],
+    9: ["Receive completion monies from buyer's solicitors", "Redeem the seller's mortgage", "Authorise release of keys and confirm completion to client"],
+    10: ["Send DS1 / evidence of discharge to buyer's solicitors", "Pay estate agent's invoice", "Account to client for net sale proceeds", "Discharge any undertakings given"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+  Remortgage: {
+    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business"],
+    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Verify client's bank details by phone (cyber-fraud check)"],
+    2: ["Obtain official copies of the title register and plan", "Check title for restrictions and other charges"],
+    3: ["Order searches, or search indemnity insurance where the lender allows"],
+    5: ["Receive and review mortgage offer and special conditions", "Obtain redemption statement from the existing lender"],
+    6: ["Report to the lender / send certificate of title", "Obtain signed mortgage deed"],
+    9: ["Draw down the new mortgage advance", "Redeem the existing mortgage", "Account to client for any surplus funds"],
+    10: ["Apply to register the new charge at HM Land Registry (AP1 with DS1)", "Send title information document to client and lender"],
+    11: ["Send final bill and close client ledger", "Archive the file"],
+  },
+};
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -371,6 +413,14 @@ export default function App() {
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
+  const [stageRequestDraft, setStageRequestDraft] = useState(null);
+  const [showStandardTasks, setShowStandardTasks] = useState(false);
+  const [pendingSignoffs, setPendingSignoffs] = useState([]);
+  const refreshSignoffs = useCallback(() => {
+    if (!authUser || authUser.role === "fee_earner") return setPendingSignoffs([]);
+    api.getPendingSignoffs().then(setPendingSignoffs).catch(() => {});
+  }, [authUser]);
+  useEffect(() => { refreshSignoffs(); }, [refreshSignoffs]);
   // The case list folds away when a matter is opened, so the matter gets the full width.
   const [listOpen, setListOpen] = useState(true);
   const [showEditMatter, setShowEditMatter] = useState(false);
@@ -402,6 +452,7 @@ export default function App() {
           ...prev,
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
+          requireStageSignoff: s.require_stage_signoff ?? true,
           currentUser: authUser.name,
         }))
       )
@@ -416,6 +467,7 @@ export default function App() {
     const firmPatch = {};
     if ("domain" in patch) firmPatch.domain = patch.domain;
     if ("staleDays" in patch) firmPatch.staleDays = patch.staleDays;
+    if ("requireStageSignoff" in patch) firmPatch.requireStageSignoff = patch.requireStageSignoff;
     if (Object.keys(firmPatch).length) {
       api.updateFirmSettings(firmPatch).catch(() => {});
     }
@@ -506,11 +558,38 @@ export default function App() {
       );
       if (!proceed) return;
     }
+    if (matter && matter.stageMovesNeedSignoff) {
+      if (idx === matter.currentStageIndex) return;
+      setStageRequestDraft({ matterId: id, stageIndex: idx });
+      return;
+    }
     try {
       await api.setStage(id, idx);
       await afterMutation();
     } catch (err) {
       window.alert(err.message || "Couldn't update the stage.");
+    }
+  }
+
+  async function requestStage(id, idx, note) {
+    await api.requestStage(id, idx, note);
+    setStageRequestDraft(null);
+    await afterMutation();
+    refreshSignoffs();
+  }
+
+  async function decideStageRequest(id, requestId, approve, note) {
+    await api.decideStageRequest(id, requestId, approve, note);
+    await afterMutation();
+    refreshSignoffs();
+  }
+
+  async function withdrawStageRequest(id, requestId) {
+    try {
+      await api.withdrawStageRequest(id, requestId);
+      await afterMutation();
+    } catch (err) {
+      window.alert(err.message || "Couldn't withdraw the request.");
     }
   }
 
@@ -1108,6 +1187,13 @@ export default function App() {
         .ac-tl-step.done .ac-tl-label { color: var(--ink-soft); }
         .ac-tl-step.current .ac-tl-label { color: var(--ink); }
         .ac-tl-date { font-size: 10px; font-family: var(--font-mono); color: var(--slate); }
+        .ac-tl-step.requested .ac-stamp { border: 2px dashed var(--brass); }
+        .ac-signoff-banner {
+          grid-column: 1 / -1; min-width: 0; background: var(--brass-bg); border: 1px solid var(--brass); border-radius: 3px;
+          padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+        }
+        .ac-signoff-banner .txt { font-size: 13px; color: var(--ink); }
+        .ac-signoff-banner .note { font-size: 12px; color: var(--ink-soft); font-style: italic; margin-top: 2px; }
 
         /* cards */
         .ac-card { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(22, 33, 47, 0.04); }
@@ -1383,6 +1469,24 @@ export default function App() {
                 </button>
               </div>
 
+              {pendingSignoffs.length > 0 && (
+                <div className="ac-card" style={{ borderColor: "var(--brass)", background: "var(--brass-bg)" }}>
+                  <h3><ShieldCheck size={12} /> Awaiting your sign-off ({pendingSignoffs.length})</h3>
+                  {pendingSignoffs.map((r) => (
+                    <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px dashed var(--line)" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{r.reference} — {r.address}</div>
+                        <div style={{ fontSize: 12, color: "var(--slate)" }}>
+                          {r.requested_by_name} asks to move from {r.from_stage_name} to <strong>{r.to_stage_name}</strong>
+                          {r.note && <> · “{r.note}”</>}
+                        </div>
+                      </div>
+                      <button className="ac-tablebtn" onClick={() => { setSelectedId(r.matter_id); setActiveTab("overview"); }}>Open</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {(() => {
                 const openTasks = allOpenTasks(matters);
                 const stale = staleFiles(matters, settings.staleDays);
@@ -1462,6 +1566,10 @@ export default function App() {
               onOpenSettings={() => setShowSettings(true)}
               onBack={() => setSelectedId(null)}
               onSetStage={(idx) => setStage(selected.id, idx)}
+              onDecideStageRequest={(requestId, approve, note) => decideStageRequest(selected.id, requestId, approve, note)}
+              onWithdrawStageRequest={(requestId) => withdrawStageRequest(selected.id, requestId)}
+              currentUserId={authUser.id}
+              onLoadStandardTasks={() => setShowStandardTasks(true)}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onAddDoc={() => setShowAddDoc(true)}
@@ -1531,6 +1639,7 @@ export default function App() {
       )}
       {showSettings && (
         <SettingsPanel
+          isAdmin={authUser.role === "admin"}
           settings={settings}
           matters={matters}
           onClose={() => setShowSettings(false)}
@@ -1540,6 +1649,20 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {stageRequestDraft && (
+        <StageRequestForm
+          stageIndex={stageRequestDraft.stageIndex}
+          onClose={() => setStageRequestDraft(null)}
+          onSubmit={(note) => requestStage(stageRequestDraft.matterId, stageRequestDraft.stageIndex, note)}
+        />
+      )}
+      {showStandardTasks && selected && (
+        <StandardTasksForm
+          matter={selected}
+          onClose={() => setShowStandardTasks(false)}
+          onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
+        />
+      )}
       {showStaff && (
         <StaffPanel
           users={users}
@@ -1614,6 +1737,82 @@ function ReportOnTitleCard({ matter, onGenerate }) {
   );
 }
 
+function StageRequestForm({ stageIndex, onClose, onSubmit }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try { await onSubmit(note); } catch (err) { setError(err.message || "Couldn't send the request."); setBusy(false); }
+  }
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="ac-modal-head">
+          <h2>Request sign-off</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 13.5, marginTop: 0 }}>
+          Ask your supervisor to sign off moving this matter to <strong>{STAGES[stageIndex].name}</strong>. It moves once they approve.
+        </p>
+        <div className="ac-field">
+          <label>Note for your supervisor (optional)</label>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
+        </div>
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        <button className="ac-submit" type="submit" disabled={busy}><Send size={14} /> {busy ? "Sending…" : "Send for sign-off"}</button>
+      </form>
+    </div>
+  );
+}
+
+function StageRequestBanner({ matter, currentUserId, onDecide, onWithdraw }) {
+  const r = matter.pendingStageRequest;
+  const [declining, setDeclining] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const mine = r.requestedBy === currentUserId;
+  const canDecide = matter.canSignOffStages && !mine;
+
+  async function decide(approve) {
+    setBusy(true);
+    try { await onDecide(r.id, approve, note); setDeclining(false); setNote(""); }
+    catch (err) { window.alert(err.message || "Couldn't record the decision."); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-signoff-banner">
+      <div style={{ minWidth: 0 }}>
+        <div className="txt">
+          <ShieldCheck size={13} style={{ verticalAlign: -2 }} /> <strong>Sign-off requested</strong>
+          {" "}by {mine ? "you" : r.requestedByName} to move from <strong>{STAGES[r.fromStage]?.name}</strong> to <strong>{STAGES[r.toStage].name}</strong>
+          {" "}· {new Date(r.requestedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </div>
+        {r.note && <div className="note">“{r.note}”</div>}
+        {!canDecide && !mine && <div className="note" style={{ fontStyle: "normal" }}>Waiting for the matter's supervisor or an admin.</div>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {canDecide && !declining && (
+          <>
+            <button className="ac-tablebtn primary" disabled={busy} onClick={() => decide(true)}><Check size={12} /> Approve &amp; move</button>
+            <button className="ac-tablebtn" disabled={busy} onClick={() => setDeclining(true)}>Decline…</button>
+          </>
+        )}
+        {canDecide && declining && (
+          <>
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason (required)" style={{ minWidth: 220 }} autoFocus />
+            <button className="ac-tablebtn" disabled={busy || !note.trim()} onClick={() => decide(false)}>Decline</button>
+            <button className="ac-tablebtn" onClick={() => { setDeclining(false); setNote(""); }}>Cancel</button>
+          </>
+        )}
+        {mine && <button className="ac-tablebtn" onClick={() => onWithdraw(r.id)}>Withdraw request</button>}
+      </div>
+    </div>
+  );
+}
+
 /** Date each stage was last reached, from the "Moved to …" entries in the activity log. */
 function stageReachedDates(matter) {
   const dates = {};
@@ -1651,13 +1850,16 @@ function StageTimeline({ matter, onSetStage }) {
       <div className="ac-timeline-track" ref={trackRef}>
         {STAGES.map((s, idx) => {
           const state = idx < currentIdx ? "done" : idx === currentIdx ? "current" : "todo";
+          const requested = matter.pendingStageRequest?.toStage === idx;
           const date = idx <= currentIdx ? reached[idx] : null;
           return (
-            <button key={s.name} type="button" className={`ac-tl-step ${state}`} onClick={() => onSetStage(idx)} title={`${s.name} — ${s.hint}`}>
+            <button key={s.name} type="button" className={`ac-tl-step ${state} ${requested ? "requested" : ""}`} onClick={() => onSetStage(idx)}
+              title={requested ? `${s.name} — awaiting sign-off` : matter.stageMovesNeedSignoff && idx !== currentIdx ? `${s.name} — click to request sign-off to move here` : `${s.name} — ${s.hint}`}>
               <span className={`ac-stamp ${state === "todo" ? "" : state}`}>
                 {state === "done" ? <Check size={12} /> : state === "current" ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
               </span>
               <span className="ac-tl-label">{s.name}</span>
+              {requested && <span className="ac-tl-date" style={{ color: "var(--brass)", fontWeight: 600 }}>awaiting sign-off</span>}
               {date && <span className="ac-tl-date" title={formatDate(date)}>{new Date(date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>}
             </button>
           );
@@ -1796,7 +1998,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1849,6 +2051,14 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
       {activeTab === "overview" && (
         <div className="ac-detail-body">
+          {matter.pendingStageRequest && (
+            <StageRequestBanner
+              matter={matter}
+              currentUserId={currentUserId}
+              onDecide={onDecideStageRequest}
+              onWithdraw={onWithdrawStageRequest}
+            />
+          )}
           <StageTimeline matter={matter} onSetStage={onSetStage} />
           <div className="ac-col-main">
             {(() => {
@@ -2226,7 +2436,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           <div className="ac-col-main">
             <div className="ac-section-head">
               <h2>Tasks &amp; reminders</h2>
-              <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>
+                <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
+              </div>
             </div>
 
             {matter.tasks.filter((t) => t.status === "Open").length === 0 && matter.tasks.filter((t) => t.status === "Done").length === 0 && (
@@ -2565,7 +2778,7 @@ function NewMatterForm({ onClose, onCreate, users }) {
 /* Settings & Outlook integration                                         */
 /* ---------------------------------------------------------------------- */
 
-function SettingsPanel({ settings, matters, onClose, onSave, onConnectOutlook, onDisconnectOutlook }) {
+function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectOutlook, onDisconnectOutlook }) {
   const [domain, setDomain] = useState(settings.domain);
   const [staleDays, setStaleDays] = useState(settings.staleDays);
   const [currentUser, setCurrentUser] = useState(settings.currentUser);
@@ -2646,6 +2859,19 @@ function SettingsPanel({ settings, matters, onClose, onSave, onConnectOutlook, o
             <label>Flag files inactive for more than (days)</label>
             <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} />
           </div>
+        </div>
+
+        <div className="ac-card">
+          <h3><ShieldCheck size={12} /> Stage sign-off</h3>
+          <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
+            When on, fee earners can't move a matter to another stage themselves — they send a sign-off request, which the matter's supervisor or an admin approves or declines. Supervisors and admins can always move stages directly.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, textTransform: "none", fontWeight: 500, color: "var(--ink)" }}>
+            <input type="checkbox" checked={settings.requireStageSignoff !== false} disabled={!isAdmin}
+              onChange={(e) => onSave({ requireStageSignoff: e.target.checked })} style={{ width: "auto" }} />
+            Fee earners need sign-off to move stages
+          </label>
+          {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
         </div>
 
         <p style={{ fontSize: 11, color: "var(--slate-light)" }}>
@@ -3292,6 +3518,81 @@ function StandardEnquiriesModal({ onClose, onAdd }) {
           })}
         </div>
         <button className="ac-submit" type="submit" onClick={submit}><FileSearch size={14} /> Add {selected.size} enquir{selected.size === 1 ? "y" : "ies"}</button>
+      </form>
+    </div>
+  );
+}
+
+function StandardTasksForm({ matter, onClose, onAdd }) {
+  const groups = Object.entries(STANDARD_TASKS[matter.type] || {})
+    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items }))
+    .sort((a, b) => a.idx - b.idx);
+  const existing = new Set(matter.tasks.map((t) => t.description.trim().toLowerCase()));
+  const isExisting = (t) => existing.has(t.toLowerCase());
+  // Pre-tick everything from the current stage onwards that isn't already on the file.
+  const [selected, setSelected] = useState(
+    () => new Set(groups.filter((g) => g.idx >= matter.currentStageIndex).flatMap((g) => g.items).filter((t) => !isExisting(t)))
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function toggle(t) {
+    setSelected((prev) => { const next = new Set(prev); next.has(t) ? next.delete(t) : next.add(t); return next; });
+  }
+  function toggleGroup(items, allOn) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      items.filter((t) => !isExisting(t)).forEach((t) => (allOn ? next.delete(t) : next.add(t)));
+      return next;
+    });
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!selected.size) return;
+    setBusy(true); setError("");
+    try {
+      await onAdd(groups.flatMap((g) => g.items).filter((t) => selected.has(t)).map((description) => ({ description })));
+    } catch (err) {
+      setError(err.message || "Couldn't add the tasks.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit} style={{ width: 640 }}>
+        <div className="ac-modal-head">
+          <h2>Standard tasks — {matter.type.toLowerCase()}</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: -6, marginBottom: 14 }}>
+          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected. Tasks already on this file are greyed out. Add due dates afterwards where you need reminders.
+        </p>
+        <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
+          {groups.map((g) => {
+            const available = g.items.filter((t) => !isExisting(t));
+            const allOn = available.length > 0 && available.every((t) => selected.has(t));
+            return (
+              <div key={g.idx} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: g.idx === matter.currentStageIndex ? "var(--brass)" : "var(--slate)" }}>
+                    {g.idx + 1}. {g.stage}{g.idx === matter.currentStageIndex ? " (current)" : ""}
+                  </span>
+                  {available.length > 0 && <button type="button" className="ac-tablebtn" onClick={() => toggleGroup(g.items, allOn)}>{allOn ? "Deselect all" : "Select all"}</button>}
+                </div>
+                {g.items.map((t) => (
+                  <label key={t} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, textTransform: "none", color: isExisting(t) ? "var(--slate-light)" : "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4 }}>
+                    <input type="checkbox" disabled={isExisting(t)} checked={!isExisting(t) && selected.has(t)} onChange={() => toggle(t)} style={{ width: "auto", marginTop: 2, flexShrink: 0 }} />
+                    {t}{isExisting(t) ? " (already on file)" : ""}
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        <button className="ac-submit" type="submit" disabled={busy || !selected.size}><ListChecks size={14} /> {busy ? "Adding…" : `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`}</button>
       </form>
     </div>
   );

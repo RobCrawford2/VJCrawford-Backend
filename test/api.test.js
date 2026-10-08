@@ -560,3 +560,69 @@ test("enquiries: replies and comments are logged, status can be set by hand, ema
     .send({ direction: "in", subject: "x", body: "y", date: "2026-09-12" })).body.email;
   assert.equal((await request(app).post(`${base}/replies`).set(sarah).send({ emailId: otherEmail.id })).status, 404);
 });
+
+test("stage sign-off: fee earners request, the supervisor or an admin approves or declines", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  const matter = (await request(app).get("/matters?showClosed=false").set(sarah)).body.matters[0];
+  const from = matter.current_stage_index;
+  const to = from === 11 ? 10 : from + 1;
+
+  // Fee earner can't move directly while sign-off is required
+  const direct = await request(app).post(`/matters/${matter.id}/stage`).set(sarah).send({ stageIndex: to });
+  assert.equal(direct.status, 403);
+  assert.equal(direct.body.needsSignoff, true);
+
+  // Request it
+  const reqRes = await request(app).post(`/matters/${matter.id}/stage-requests`).set(sarah).send({ stageIndex: to, note: "Searches all back" });
+  assert.equal(reqRes.status, 201);
+  let detail = (await request(app).get(`/matters/${matter.id}`).set(sarah)).body;
+  assert.equal(detail.pendingStageRequest.to_stage, to);
+  assert.equal(detail.canSignOffStages, false);
+  assert.equal(detail.stageMovesNeedSignoff, true);
+
+  // Requester and other fee earners can't approve; Sarah's pending list is empty
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage-requests/${reqRes.body.id}/decision`).set(sarah).send({ approve: true })).status, 403);
+  assert.equal((await request(app).get("/matters/sign-offs/pending").set(sarah)).body.length, 0);
+
+  // Admin sees it waiting; declining needs a reason
+  const pending = (await request(app).get("/matters/sign-offs/pending").set(david)).body;
+  assert.ok(pending.some((p) => p.id === reqRes.body.id && p.requested_by_name === "Sarah Ncube"));
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage-requests/${reqRes.body.id}/decision`).set(david).send({ approve: false })).status, 400);
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage-requests/${reqRes.body.id}/decision`).set(david).send({ approve: false, note: "Mortgage offer not in yet" })).status, 200);
+  detail = (await request(app).get(`/matters/${matter.id}`).set(sarah)).body;
+  assert.equal(detail.current_stage_index, from);
+  assert.equal(detail.pendingStageRequest, null);
+
+  // Ask again; approve — stage moves; can't decide twice
+  const again = (await request(app).post(`/matters/${matter.id}/stage-requests`).set(sarah).send({ stageIndex: to })).body;
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage-requests/${again.id}/decision`).set(david).send({ approve: true, note: "OK" })).status, 200);
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage-requests/${again.id}/decision`).set(david).send({ approve: true })).status, 409);
+  detail = (await request(app).get(`/matters/${matter.id}`).set(sarah)).body;
+  assert.equal(detail.current_stage_index, to);
+  const log = detail.activity.map((a) => a.text);
+  assert.ok(log.some((t) => t.startsWith("Sign-off requested to move to")));
+  assert.ok(log.some((t) => t.includes("declined by David Okonkwo — Mortgage offer not in yet")));
+  assert.ok(log.some((t) => t.includes("signed off by David Okonkwo")));
+
+  // Withdraw your own request
+  const w = (await request(app).post(`/matters/${matter.id}/stage-requests`).set(sarah).send({ stageIndex: from })).body;
+  assert.equal((await request(app).delete(`/matters/${matter.id}/stage-requests/${w.id}`).set(marcus)).status, 404);
+  assert.equal((await request(app).delete(`/matters/${matter.id}/stage-requests/${w.id}`).set(sarah)).status, 204);
+
+  // Firm switches sign-off off — fee earners move directly
+  assert.equal((await request(app).patch("/settings").set(david).send({ requireStageSignoff: false })).status, 200);
+  assert.equal((await request(app).post(`/matters/${matter.id}/stage`).set(sarah).send({ stageIndex: from })).status, 200);
+  await request(app).patch("/settings").set(david).send({ requireStageSignoff: true });
+});
+
+test("standard tasks can be added in bulk", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matterId = (await request(app).get("/matters").set(sarah)).body.matters[0].id;
+  const res = await request(app).post(`/matters/${matterId}/tasks/bulk`).set(sarah)
+    .send({ tasks: [{ description: "Send client care letter", dueDate: "2026-10-10" }, { description: "Verify client ID" }] });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.length, 2);
+  assert.equal((await request(app).post(`/matters/${matterId}/tasks/bulk`).set(sarah).send({ tasks: [{ description: " " }] })).status, 400);
+});

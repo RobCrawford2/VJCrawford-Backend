@@ -126,7 +126,12 @@ All routes except `/auth/register` and `/auth/login` require
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
 | GET | `/matters/:id/report-on-title` | Draft Report on Title as a Word document (purchases and remortgages) |
-| POST | `/matters/:id/stage` | Move the stage tracker |
+| POST | `/matters/:id/stage` | Move the stage tracker (fee earners get 403 `needsSignoff` when the firm requires sign-off) |
+| POST | `/matters/:id/stage-requests` | Request sign-off to move to a stage (`stageIndex`, `note`) |
+| POST | `/matters/:id/stage-requests/:rid/decision` | Approve (moves the stage) or decline (`approve`, `note`) — matter's supervisor or admin |
+| DELETE | `/matters/:id/stage-requests/:rid` | Withdraw your own waiting request |
+| GET | `/matters/sign-offs/pending` | Requests waiting for the current user's sign-off |
+| POST | `/matters/:id/tasks/bulk` | Add several tasks at once (standard task list) |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |
 | PUT | `/matters/:id/documents/:docId/file` | Upload (or replace) the file for a document — multipart field `file`, max 10 MB, PDF/Office/images/text/Outlook only |
@@ -151,7 +156,7 @@ All routes except `/auth/register` and `/auth/login` require
 | POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active (admin only) |
 | POST | `/users/:id/reset-password` | Set a temporary password for a member of staff (admin only) |
 | GET | `/users/audit` | Recent staff account changes (admin only) |
-| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold) |
+| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold, `requireStageSignoff`) |
 
 ## Connecting the React frontend to this API
 

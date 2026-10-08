@@ -72,6 +72,11 @@ export const api = {
   importMatters: (rows, dryRun) => request("/matters/import", { method: "POST", body: { rows, dryRun } }),
   updateMatter: (id, patch) => request(`/matters/${id}`, { method: "PATCH", body: patch }),
   setStage: (id, stageIndex) => request(`/matters/${id}/stage`, { method: "POST", body: { stageIndex } }),
+  requestStage: (id, stageIndex, note) => request(`/matters/${id}/stage-requests`, { method: "POST", body: { stageIndex, note } }),
+  decideStageRequest: (id, requestId, approve, note) =>
+    request(`/matters/${id}/stage-requests/${requestId}/decision`, { method: "POST", body: { approve, note } }),
+  withdrawStageRequest: (id, requestId) => request(`/matters/${id}/stage-requests/${requestId}`, { method: "DELETE" }),
+  getPendingSignoffs: () => request("/matters/sign-offs/pending"),
   addNote: (id, text) => request(`/matters/${id}/notes`, { method: "POST", body: { text } }),
 
   addDocument: (id, doc) => request(`/matters/${id}/documents`, { method: "POST", body: doc }),
@@ -102,6 +107,7 @@ export const api = {
     request(`/matters/${id}/undertakings/${undertakingId}/discharge`, { method: "PATCH", body: { dateDischarged } }),
 
   addTask: (id, task) => request(`/matters/${id}/tasks`, { method: "POST", body: task }),
+  addTasks: (id, tasks) => request(`/matters/${id}/tasks/bulk`, { method: "POST", body: { tasks } }),
   completeTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/complete`, { method: "PATCH" }),
   reopenTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/reopen`, { method: "PATCH" }),
 
