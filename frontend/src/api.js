@@ -68,6 +68,7 @@ export const api = {
   },
   getMatter: (id) => request(`/matters/${id}`),
   createMatter: (payload) => request("/matters", { method: "POST", body: payload }),
+  importMatters: (rows, dryRun) => request("/matters/import", { method: "POST", body: { rows, dryRun } }),
   updateMatter: (id, patch) => request(`/matters/${id}`, { method: "PATCH", body: patch }),
   setStage: (id, stageIndex) => request(`/matters/${id}/stage`, { method: "POST", body: { stageIndex } }),
   addNote: (id, text) => request(`/matters/${id}/notes`, { method: "POST", body: { text } }),

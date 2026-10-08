@@ -122,6 +122,7 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
 | GET | `/matters?limit=&offset=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
 | POST | `/matters` | Create a matter |
+| POST | `/matters/import` | Bulk import (admin only) — `{ rows, dryRun }`, rows keyed by spreadsheet header; validates every row, all-or-nothing, max 1000 rows |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
 | POST | `/matters/:id/stage` | Move the stage tracker |

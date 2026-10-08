@@ -3,20 +3,14 @@ const express = require("express");
 const multer = require("multer");
 const { query, pool } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, requireRole } = require("../middleware/auth");
 const { matterVisibilityClause } = require("../utils/permissions");
 
 const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
-// Must match STAGES in frontend/src/App.jsx.
-const STAGE_NAMES = [
-  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
-  "Mortgage Offer", "Report on Title", "Pre-Exchange Review", "Exchange", "Completion",
-  "Post-Completion", "Closed",
-];
-const STAGE_COUNT = STAGE_NAMES.length; // Instructed(0) .. Closed(11)
-const CLOSED_INDEX = STAGE_COUNT - 1;
+const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
+const { validateRows } = require("../utils/matterImport");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -63,6 +57,22 @@ async function loadMatterDetail(matterId) {
     linkedMatters: links.rows,
   };
 }
+
+/**
+ * Next free number for CV-<year>-NNNN references in this firm. Uses the
+ * highest existing number rather than a count, so imported references (which
+ * can have gaps or start high) never collide with newly created ones.
+ */
+async function nextReferenceNumber(db, firmId, year) {
+  const result = await db.query(
+    `SELECT coalesce(max(substring(reference FROM '^CV-[0-9]{4}-([0-9]+)$')::int), 0) AS max
+     FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
+    [firmId, `CV-${year}-%`]
+  );
+  return result.rows[0].max + 1;
+}
+
+const formatReference = (year, n) => `CV-${year}-${String(n).padStart(4, "0")}`;
 
 /** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
 async function assertMatterVisible(req, res, matterId) {
@@ -166,17 +176,12 @@ router.post(
       return res.status(400).json({ error: "type must be Sale, Purchase or Remortgage." });
     }
 
-    // Reference generation: CV-<year>-<next sequence for the firm>.
-    // In a high-concurrency firm this should move to a Postgres SEQUENCE per
-    // firm to fully rule out a race between two staff opening a matter at
-    // the same instant; fine as a straightforward count for phase 1.
+    // Reference generation: CV-<year>-<next number for the firm>. Two staff
+    // opening a matter at the same instant could pick the same number; the
+    // unique (firm_id, reference) constraint turns that into a 409 retry
+    // rather than a duplicate.
     const year = new Date().getFullYear();
-    const countResult = await query(
-      `SELECT count(*) FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
-      [req.user.firmId, `CV-${year}-%`]
-    );
-    const nextNum = parseInt(countResult.rows[0].count, 10) + 1;
-    const reference = `CV-${year}-${String(nextNum).padStart(4, "0")}`;
+    const reference = formatReference(year, await nextReferenceNumber({ query }, req.user.firmId, year));
 
     const client_ = await pool.connect();
     try {
@@ -196,6 +201,81 @@ router.post(
       await logActivity(client_, matter.id, req.user.id, "stage", "Matter opened at Instructed");
       await client_.query("COMMIT");
       res.status(201).json(matter);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+// -----------------------------------------------------------------------
+// POST /matters/import — bulk import from a spreadsheet (admin only)
+//
+// Body: { rows: [{ <header>: <value> }...], dryRun: boolean }. Every row is
+// validated first; with dryRun (or if any row has a problem) nothing is
+// written and the per-row problems come back. Otherwise all rows are
+// inserted in one transaction — all or nothing.
+// -----------------------------------------------------------------------
+const MAX_IMPORT_ROWS = 1000;
+
+router.post(
+  "/import",
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    const { rows, dryRun = true } = req.body;
+    if (!Array.isArray(rows) || !rows.length) {
+      return res.status(400).json({ error: "The file has no rows to import." });
+    }
+    if (rows.length > MAX_IMPORT_ROWS) {
+      return res.status(400).json({ error: `Import at most ${MAX_IMPORT_ROWS} rows at a time — split the file and import each part.` });
+    }
+    if (!rows.every((r) => r && typeof r === "object" && !Array.isArray(r))) {
+      return res.status(400).json({ error: "Rows must be objects keyed by column header." });
+    }
+
+    const [users, refs] = await Promise.all([
+      query(`SELECT id, name, email, active FROM users WHERE firm_id = $1`, [req.user.firmId]),
+      query(`SELECT lower(reference) AS reference FROM matters WHERE firm_id = $1`, [req.user.firmId]),
+    ]);
+    const { matters, errors, ignoredHeaders } = validateRows(rows, {
+      users: users.rows,
+      existingReferences: new Set(refs.rows.map((r) => r.reference)),
+    });
+
+    const summary = { valid: matters.length, errors, ignoredHeaders };
+    if (dryRun) return res.json(summary);
+    if (errors.length) return res.status(400).json({ error: "Some rows have problems — nothing was imported.", ...summary });
+    if (!matters.length) return res.status(400).json({ error: "The file has no rows to import." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      // Serialise imports/new-matter numbering for this firm within the transaction.
+      await client_.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`matter-refs:${req.user.firmId}`]);
+      const year = new Date().getFullYear();
+      let next = await nextReferenceNumber(client_, req.user.firmId, year);
+
+      for (const m of matters) {
+        const reference = m.reference || formatReference(year, next++);
+        const result = await client_.query(
+          `INSERT INTO matters (
+             firm_id, reference, address, client, type, price, current_stage_index,
+             fee_earner_id, supervisor_id, other_side_solicitor, other_side_solicitor_email,
+             estate_agent, lender, date_instructed, target_exchange, target_completion,
+             actual_exchange, actual_completion, mortgage_offer_expiry, notes
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14::date, CURRENT_DATE),$15,$16,$17,$18,$19,$20)
+           RETURNING id`,
+          [req.user.firmId, reference, m.address, m.client, m.type, m.price ?? null, m.stage,
+           m.feeEarnerId || null, m.supervisorId || null, m.otherSideSolicitor || null, m.otherSideSolicitorEmail || null,
+           m.estateAgent || null, m.lender || null, m.dateInstructed || null, m.targetExchange || null, m.targetCompletion || null,
+           m.actualExchange || null, m.actualCompletion || null, m.mortgageOfferExpiry || null, m.notes || ""]
+        );
+        await logActivity(client_, result.rows[0].id, req.user.id, "stage", `Matter imported at ${STAGE_NAMES[m.stage]}`);
+      }
+      await client_.query("COMMIT");
+      res.status(201).json({ imported: matters.length });
     } catch (err) {
       await client_.query("ROLLBACK");
       throw err;

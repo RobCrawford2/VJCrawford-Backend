@@ -4,8 +4,9 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload
 } from "lucide-react";
+import Papa from "papaparse";
 import Login from "./Login";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -359,6 +360,7 @@ export default function App() {
   const [myMattersOnly, setMyMattersOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
   const [showNewMatter, setShowNewMatter] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showEditMatter, setShowEditMatter] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
@@ -915,6 +917,15 @@ export default function App() {
           display: flex; align-items: center; justify-content: center; gap: 6px;
         }
         .ac-newbtn:hover { background: #5f4a1e; border-color: #5f4a1e; }
+        .ac-importbtn {
+          width: 100%; margin-top: 6px; background: none; border: 1px dashed var(--line); border-radius: 2px;
+          padding: 7px; font-size: 11.5px; color: var(--slate); display: flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .ac-importbtn:hover { color: var(--ink); border-color: var(--ink); }
+        .ac-modal.wide { width: 720px; }
+        .ac-import-errors { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+        .ac-import-errors td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+        .ac-import-errors td:first-child { font-family: var(--font-mono); white-space: nowrap; color: var(--slate); }
 
         .ac-list { flex: 1; overflow-y: auto; }
         .ac-item {
@@ -1235,6 +1246,9 @@ export default function App() {
               </button>
             )}
             <button className="ac-newbtn" onClick={() => setShowNewMatter(true)}><Plus size={15} /> Open new matter</button>
+            {authUser.role === "admin" && (
+              <button className="ac-importbtn" onClick={() => setShowImport(true)}><Upload size={13} /> Import matters from a spreadsheet</button>
+            )}
           </div>
           <div className="ac-list">
             {loading && <div className="ac-empty-list">Loading matters…</div>}
@@ -1453,6 +1467,7 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {showImport && <ImportMattersForm onClose={() => setShowImport(false)} onImported={refreshList} />}
       {showOutlookConsent && (
         <OutlookConsentModal
           onCancel={() => setShowOutlookConsent(false)}
@@ -3111,6 +3126,152 @@ function AddSearchForm({ onClose, onAdd }) {
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><ShieldCheck size={14} /> Add search</button>
       </form>
+    </div>
+  );
+}
+
+const IMPORT_TEMPLATE_HEADERS = [
+  "Reference", "Address", "Client", "Type", "Price", "Stage", "Fee Earner", "Supervisor",
+  "Other Side Solicitor", "Other Side Solicitor Email", "Estate Agent", "Lender",
+  "Date Instructed", "Target Exchange", "Target Completion", "Actual Exchange", "Actual Completion",
+  "Mortgage Offer Expiry", "Notes",
+];
+const IMPORT_TEMPLATE_EXAMPLE = [
+  "", "14 Example Road, Bath, BA1 1AA", "J & K Example", "Purchase", "£350,000", "Searches", "", "",
+  "Smith & Co LLP", "conveyancing@smithco.example", "Example Estates", "Nationwide",
+  "01/09/2026", "20/11/2026", "04/12/2026", "", "", "31/01/2027", "Imported from the old system",
+];
+const MAX_IMPORT_ROWS = 1000;
+
+function downloadImportTemplate() {
+  const csv = Papa.unparse([IMPORT_TEMPLATE_HEADERS, IMPORT_TEMPLATE_EXAMPLE]);
+  const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "matters-import-template.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+function ImportMattersForm({ onClose, onImported }) {
+  const [fileName, setFileName] = useState("");
+  const [rows, setRows] = useState(null);
+  const [check, setCheck] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [imported, setImported] = useState(null);
+
+  function pickFile(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(""); setCheck(null); setRows(null); setFileName(file.name);
+    if (!/\.csv$/i.test(file.name)) {
+      setError("Please choose a .csv file. In Excel: File → Save As → \"CSV UTF-8 (Comma delimited)\".");
+      return;
+    }
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: "greedy",
+      transformHeader: (h) => h.replace(/^\ufeff/, "").trim(),
+      complete: async (result) => {
+        const data = result.data;
+        if (!data.length) return setError("That file has no rows under the header line.");
+        if (data.length > MAX_IMPORT_ROWS) return setError(`That file has ${data.length} rows — import at most ${MAX_IMPORT_ROWS} at a time. Split it into smaller files.`);
+        setRows(data);
+        setBusy(true);
+        try {
+          setCheck(await api.importMatters(data, true));
+        } catch (err) {
+          setError(err.message || "Couldn't check the file.");
+        } finally {
+          setBusy(false);
+        }
+      },
+      error: () => setError("Couldn't read that file."),
+    });
+  }
+
+  async function runImport() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.importMatters(rows, false);
+      setImported(result.imported);
+      onImported();
+    } catch (err) {
+      setError(err.message || "The import failed — nothing was imported.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={busy ? undefined : onClose}>
+      <div className="ac-modal wide" onClick={(e) => e.stopPropagation()}>
+        <div className="ac-modal-head">
+          <h2>Import matters</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose} disabled={busy}><X size={18} /></button>
+        </div>
+
+        {imported !== null ? (
+          <>
+            <p style={{ fontSize: 14 }}><CheckCircle2 size={15} style={{ verticalAlign: -3, color: "var(--success)" }} /> {imported} matter{imported === 1 ? "" : "s"} imported.</p>
+            <button className="ac-submit" type="button" onClick={onClose}><Check size={14} /> Done</button>
+          </>
+        ) : (
+          <>
+            <ol style={{ fontSize: 13, lineHeight: 1.55, paddingLeft: 18, margin: "0 0 14px" }}>
+              <li>
+                <button type="button" className="ac-tablebtn" onClick={downloadImportTemplate} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <Download size={12} /> Download the template
+                </button>{" "}
+                and fill in one row per matter (or use your own spreadsheet with similar column names).
+              </li>
+              <li><strong>Address</strong>, <strong>Client</strong> and <strong>Type</strong> (Sale, Purchase or Remortgage) are required. Dates as DD/MM/YYYY. Stage as a name (e.g. <em>Searches</em>) or number 1–12. Fee earner and supervisor by name or email. Leave Reference blank to get a new CV- number.</li>
+              <li>In Excel, save it with <em>File → Save As → CSV UTF-8</em>, then choose it below. You'll see a check before anything is saved.</li>
+            </ol>
+
+            <div className="ac-field">
+              <label>Spreadsheet (.csv, up to {MAX_IMPORT_ROWS} rows)</label>
+              <input type="file" accept=".csv,text/csv" onChange={pickFile} disabled={busy} />
+            </div>
+
+            {busy && !check && <p style={{ fontSize: 13, color: "var(--slate)" }}>Checking {fileName}…</p>}
+            {error && <p style={{ fontSize: 13, color: "var(--danger)" }}>{error}</p>}
+
+            {check && (
+              <div style={{ fontSize: 13 }}>
+                <p style={{ margin: "6px 0" }}>
+                  <strong>{check.valid}</strong> matter{check.valid === 1 ? "" : "s"} ready to import
+                  {check.errors.length > 0 && <> · <strong style={{ color: "var(--danger)" }}>{check.errors.length}</strong> row{check.errors.length === 1 ? "" : "s"} with problems</>}
+                </p>
+                {check.ignoredHeaders.length > 0 && (
+                  <p style={{ margin: "6px 0", color: "var(--slate)" }}>Columns not recognised (will be ignored): {check.ignoredHeaders.join(", ")}</p>
+                )}
+                {check.errors.length > 0 && (
+                  <>
+                    <p style={{ margin: "10px 0 0" }}>Fix these rows in your spreadsheet, save it again, and re-choose the file. Nothing is imported until every row is OK.</p>
+                    <table className="ac-import-errors">
+                      <tbody>
+                        {check.errors.slice(0, 200).map((e) => (
+                          <tr key={e.row}><td>Row {e.row}</td><td>{e.messages.map((m, i) => <div key={i}>{m}</div>)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {check.errors.length > 200 && <p style={{ color: "var(--slate)" }}>…and {check.errors.length - 200} more rows.</p>}
+                  </>
+                )}
+                {check.errors.length === 0 && check.valid > 0 && (
+                  <button className="ac-submit" type="button" onClick={runImport} disabled={busy} style={{ marginTop: 12 }}>
+                    <Upload size={14} /> {busy ? "Importing…" : `Import ${check.valid} matter${check.valid === 1 ? "" : "s"}`}
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

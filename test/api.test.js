@@ -256,3 +256,98 @@ test("files can be attached to documents and downloaded again", async () => {
   // Re-seeding still works with files attached.
   await runSeed(pool);
 });
+
+test("import: values in everyday spreadsheet formats are understood", () => {
+  const { parseDate, parsePrice, parseStage } = require("../src/utils/matterImport");
+  assert.equal(parseDate("08/10/2026"), "2026-10-08");
+  assert.equal(parseDate("8-1-26"), "2026-01-08");
+  assert.equal(parseDate("2026-10-08"), "2026-10-08");
+  assert.equal(parseDate("31/02/2026"), null);
+  assert.equal(parseDate("next week"), null);
+  assert.equal(parsePrice("£465,000"), 465000);
+  assert.equal(parsePrice("250000.50"), 250000.5);
+  assert.equal(parsePrice("about 200k"), null);
+  assert.equal(parseStage("Searches"), 3);
+  assert.equal(parseStage("pre-exchange review"), 7);
+  assert.equal(parseStage("1"), 0);
+  assert.equal(parseStage("12"), 11);
+  assert.equal(parseStage("13"), null);
+});
+
+test("import: admins can bulk-import matters after checking them", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const before = (await request(app).get("/matters?limit=1").set(david)).body.pagination.total;
+
+  const rows = [
+    { "Property Address": "1 Test Street, Bath, BA1 1AA", "Client Name": "A Tester", "Matter Type": "purchase",
+      "Price": "£300,000", "Stage": "Searches", "Fee Earner": "Sarah Ncube", "Date Instructed": "01/09/2026",
+      "Target Completion": "15/12/2026", "Legacy ID": "X-1" },
+    { "Property Address": "2 Test Street, Bath, BA1 1AA", "Client Name": "B Tester", "Matter Type": "Sale",
+      "Reference": "OLD-0002", "Fee Earner": "marcus@vjcrawfordconveyancing.co.uk", "Stage": "12" },
+    { "Property Address": "", "Client Name": "", "Matter Type": "" }, // blank line — skipped
+  ];
+
+  const check = await request(app).post("/matters/import").set(david).send({ rows, dryRun: true });
+  assert.equal(check.status, 200);
+  assert.equal(check.body.valid, 2);
+  assert.deepEqual(check.body.errors, []);
+  assert.deepEqual(check.body.ignoredHeaders, ["Legacy ID"]);
+
+  const ambiguous = await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "x", Client: "y", Type: "Sale", "Completion Date": "01/01/2027" }], dryRun: true });
+  assert.deepEqual(ambiguous.body.ignoredHeaders, ["Completion Date"]);
+  assert.equal((await request(app).get("/matters?limit=1").set(david)).body.pagination.total, before, "dry run wrote data");
+
+  const done = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(done.status, 201);
+  assert.equal(done.body.imported, 2);
+
+  const list = (await request(app).get("/matters?limit=100&search=Test Street").set(david)).body.matters;
+  const first = list.find((m) => m.address.startsWith("1 Test"));
+  const second = list.find((m) => m.address.startsWith("2 Test"));
+  assert.equal(first.type, "Purchase");
+  assert.equal(Number(first.price), 300000);
+  assert.equal(first.current_stage_index, 3);
+  assert.match(first.reference, /^CV-\d{4}-\d{4}$/);
+  assert.equal(second.reference, "OLD-0002");
+  assert.equal(second.current_stage_index, 11);
+  assert.equal(second.fee_earner_name, "Marcus Webb");
+
+  // Re-importing the same reference is caught.
+  const again = await request(app).post("/matters/import").set(david).send({ rows: [rows[1]], dryRun: true });
+  assert.match(again.body.errors[0].messages[0], /already in the system/);
+});
+
+test("import: any bad row means nothing is imported", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const before = (await request(app).get("/matters?limit=1").set(david)).body.pagination.total;
+  const rows = [
+    { Address: "3 Good Road", Client: "Fine", Type: "Sale" },
+    { Address: "4 Bad Road", Client: "Wrong", Type: "Lease", Price: "lots", Stage: "Nearly done",
+      "Fee Earner": "Nobody Here", "Target Exchange": "31/02/2026" },
+    { Address: "5 Dup Road", Client: "Dup", Type: "Sale", Reference: "DUP-1" },
+    { Address: "6 Dup Road", Client: "Dup", Type: "Sale", Reference: "dup-1" },
+  ];
+  const res = await request(app).post("/matters/import").set(david).send({ rows, dryRun: false });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.valid, 2);
+  assert.deepEqual(res.body.errors.map((e) => e.row), [3, 5]);
+  assert.equal(res.body.errors[0].messages.length, 5);
+  assert.ok(res.body.errors[0].messages.includes(`Target Exchange "31/02/2026" isn't a valid date (use DD/MM/YYYY).`));
+  assert.match(res.body.errors[1].messages[0], /more than once/);
+  assert.equal((await request(app).get("/matters?limit=1").set(david)).body.pagination.total, before);
+});
+
+test("import: only admins can import, and new references continue after imported ones", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const rows = [{ Address: "7 Road", Client: "C", Type: "Sale" }];
+  assert.equal((await request(app).post("/matters/import").set(sarah).send({ rows, dryRun: true })).status, 403);
+
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const year = new Date().getFullYear();
+  await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "8 Road", Client: "C", Type: "Sale", Reference: `CV-${year}-0900` }], dryRun: false });
+  const created = await request(app).post("/matters").set(david).send({ address: "9 Road", client: "C", type: "Sale" });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.reference, `CV-${year}-0901`);
+});
