@@ -17,6 +17,8 @@ with the interface itself barely changing.
   the prototype, including the enquiry auto-match-from-email logic and the
   mortgage-expiry / stage-tracking fields.
 - Real login (JWT-based) and password hashing (bcrypt).
+- Roles: secretary / assistant (work for a fee earner and see their
+  matters), fee earner, supervisor, and admin (a system role).
 - **Server-enforced** role-based visibility: fee earners see their own
   matters, supervisors see their team's, admins see everything in the
   firm — enforced in every query, not just filtered in the UI.
@@ -128,7 +130,7 @@ All routes except `/auth/register` and `/auth/login` require
 | GET | `/matters/:id/report-on-title` | Draft Report on Title as a Word document (purchases and remortgages) |
 | POST | `/matters/:id/stage` | Move the stage tracker (fee earners get 403 `needsSignoff` when the firm requires sign-off) |
 | POST | `/matters/:id/stage-requests` | Request sign-off to move to a stage (`stageIndex`, `note`) |
-| POST | `/matters/:id/stage-requests/:rid/decision` | Approve (moves the stage) or decline (`approve`, `note`) — matter's supervisor or admin |
+| POST | `/matters/:id/stage-requests/:rid/decision` | Approve (moves the stage) or decline (`approve`, `note`) — the matter's fee earner or their supervisor (not admin) |
 | DELETE | `/matters/:id/stage-requests/:rid` | Withdraw your own waiting request |
 | GET | `/matters/sign-offs/pending` | Requests waiting for the current user's sign-off |
 | POST | `/matters/:id/tasks/bulk` | Add several tasks at once (standard task list) |
