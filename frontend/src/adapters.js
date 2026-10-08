@@ -116,6 +116,12 @@ export function adaptMatter(m, users) {
     tasks: (m.tasks || []).map(adaptTask),
     activity: (m.activity || []).map(adaptActivity),
     linkedMatterIds: (m.linkedMatters || []).map((l) => l.id),
+    // Summary of each linked matter, from the detail endpoint — so links work
+    // even when the linked matter isn't in the currently loaded list page.
+    linkedMatters: (m.linkedMatters || []).map((l) => ({
+      id: l.id, reference: l.reference, address: l.address, client: l.client, type: l.type,
+      currentStageIndex: l.current_stage_index, targetCompletion: l.target_completion || "",
+    })),
     preCompletionReview: {
       checkedItems: Array.isArray(m.pre_exchange_checklist) ? m.pre_exchange_checklist : [],
       confirmedBy: m.pre_exchange_confirmed_by || "",

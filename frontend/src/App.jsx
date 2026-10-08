@@ -364,6 +364,8 @@ export default function App() {
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
+  // The case list folds away when a matter is opened, so the matter gets the full width.
+  const [listOpen, setListOpen] = useState(true);
   const [showEditMatter, setShowEditMatter] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
@@ -831,6 +833,9 @@ export default function App() {
   const filtered = matters;
   const visibleMatters = matters;
   const selected = selectedDetail;
+  useEffect(() => {
+    setListOpen(!selectedId);
+  }, [selectedId]);
 
   const activeCount = matters.filter((m) => m.currentStageIndex !== CLOSED_INDEX).length;
   const closedThisYear = matters.filter((m) => m.currentStageIndex === CLOSED_INDEX).length;
@@ -916,6 +921,24 @@ export default function App() {
           display: flex; flex-direction: column; background: var(--paper);
         }
         .ac-sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+        .ac-rail {
+          width: 34px; flex-shrink: 0; border: none; border-right: 1px solid var(--line); background: var(--paper);
+          display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0; color: var(--slate);
+        }
+        .ac-rail:hover { background: var(--card); color: var(--ink); }
+        .ac-rail span { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+        .ac-hidelist {
+          display: inline-flex; align-items: center; gap: 4px; background: none; border: none; padding: 0;
+          font-size: 11.5px; color: var(--slate); margin-bottom: 10px;
+        }
+        .ac-hidelist:hover { color: var(--ink); }
+        .ac-linked-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--slate); }
+        .ac-linked-chip {
+          display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line);
+          border-radius: 3px; padding: 4px 9px; font-size: 12px; color: var(--ink); max-width: 100%;
+        }
+        .ac-linked-chip:hover { border-color: var(--ink); }
+        .ac-linked-chip .addr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; font-weight: 600; }
         .ac-search {
           display: flex; align-items: center; gap: 8px; background: var(--card);
           border: 1px solid var(--line); border-radius: 3px; padding: 8px 10px; margin-bottom: 10px;
@@ -1253,8 +1276,19 @@ export default function App() {
 
       <div className="ac-body">
         {/* ---------------- Sidebar ---------------- */}
-        <div className={`ac-sidebar ${selected ? "ac-sidebar--hidden-mobile" : ""}`}>
+        {selected && !listOpen && (
+          <button className="ac-rail ac-sidebar--hidden-mobile" onClick={() => setListOpen(true)} title="Show matter list">
+            <ChevronRight size={16} />
+            <span>Matters</span>
+          </button>
+        )}
+        <div className={`ac-sidebar ${selected ? "ac-sidebar--hidden-mobile" : ""}`} style={selected && !listOpen ? { display: "none" } : undefined}>
           <div className="ac-sidebar-head">
+            {selected && (
+              <button className="ac-hidelist" onClick={() => setListOpen(false)} title="Hide the list so the matter fills the screen">
+                <ChevronLeft size={13} /> Hide list
+              </button>
+            )}
             <div className="ac-search">
               <Search size={14} color="var(--slate-light)" />
               <input placeholder="Search address, client, reference…" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -1645,6 +1679,18 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <span className="ac-detail-price"><PoundSterling size={11} style={{ verticalAlign: -1 }} /> {formatMoney(matter.price)}</span>
               <span style={{ fontSize: 12.5, color: "var(--slate)" }}>Client: <strong style={{ color: "var(--ink)" }}>{matter.client}</strong></span>
             </div>
+            {matter.linkedMatters.length > 0 && (
+              <div className="ac-linked-bar">
+                <span><Link2 size={12} style={{ verticalAlign: -2 }} /> Linked:</span>
+                {matter.linkedMatters.map((l) => (
+                  <button key={l.id} type="button" className="ac-linked-chip" onClick={() => onOpenLinked(l.id)} title={`Open ${l.reference} — ${l.address}`}>
+                    <TypeTag type={l.type} />
+                    <span className="addr">{l.address}</span>
+                    <ChevronRight size={12} />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div className="ac-savebadge">{saveState === "saving" ? "Saving…" : saveState === "saved" ? <><Check size={12} /> Saved</> : ""}</div>
@@ -1689,20 +1735,19 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               );
             })()}
 
-            {matter.linkedMatterIds.length > 0 && (
+            {matter.linkedMatters.length > 0 && (
               <div className="ac-card">
                 <h3><Link2 size={12} /> Chain</h3>
-                {matter.linkedMatterIds.map((lid) => {
-                  const linked = allMatters.find((m) => m.id === lid);
-                  if (!linked) return null;
-                  const dateMismatch = matter.keyDates.targetCompletion && linked.keyDates.targetCompletion && matter.keyDates.targetCompletion !== linked.keyDates.targetCompletion;
+                {matter.linkedMatters.map((linked) => {
+                  const lid = linked.id;
+                  const dateMismatch = matter.keyDates.targetCompletion && linked.targetCompletion && matter.keyDates.targetCompletion !== linked.targetCompletion;
                   return (
                     <div key={lid} style={{ padding: "9px 0", borderBottom: "1px dashed var(--line)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                         <button onClick={() => onOpenLinked(lid)} style={{ background: "none", border: "none", padding: 0, fontWeight: 600, fontSize: 13, color: "var(--ink)", cursor: "pointer", textAlign: "left" }}>{linked.address}</button>
                         <StagePill idx={linked.currentStageIndex} />
                       </div>
-                      <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{linked.reference} · {linked.client} · target completion {formatDate(linked.keyDates.targetCompletion)}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{linked.reference} · {linked.client} · target completion {formatDate(linked.targetCompletion)}</div>
                       {dateMismatch && <div style={{ fontSize: 11.5, color: "#8a3b1f", marginTop: 3 }}>⚠ Target completion dates don't match across the chain — align before exchange.</div>}
                     </div>
                   );
@@ -2726,6 +2771,51 @@ function PropertyFields({ value, onChange }) {
   );
 }
 
+/**
+ * Linked-matter picker for the Edit form. Lists the matters already linked
+ * plus the loaded list, and searches the whole firm (server-side) so any
+ * matter can be linked, not just the current page of the list.
+ */
+function ChainPicker({ matter, allMatters, selectedIds, onToggle }) {
+  const [term, setTerm] = useState("");
+  const [results, setResults] = useState(null);
+
+  useEffect(() => {
+    if (!term.trim()) { setResults(null); return; }
+    const handle = setTimeout(() => {
+      api.getMatters({ search: term.trim(), limit: 20 })
+        .then((r) => setResults(r.matters.map((m) => ({ id: m.id, reference: m.reference, address: m.address, client: m.client }))))
+        .catch(() => setResults([]));
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [term]);
+
+  // Already-linked first (always shown, so they can be unticked), then search results or the loaded list.
+  const known = new Map();
+  for (const l of matter.linkedMatters) known.set(l.id, l);
+  for (const m of results ?? allMatters) if (!known.has(m.id)) known.set(m.id, m);
+  const options = [...known.values()].filter((m) => m.id !== matter.id);
+
+  return (
+    <div className="ac-field">
+      <label>Linked matters (same chain, or the same client's sale and purchase)</label>
+      <div className="ac-search" style={{ marginTop: 4 }}>
+        <Search size={14} color="var(--slate-light)" />
+        <input placeholder="Search any matter by address, client or reference…" value={term} onChange={(e) => setTerm(e.target.value)} />
+      </div>
+      {results && results.length === 0 && <p style={{ fontSize: 12, color: "var(--slate)" }}>No matters match that search.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 4 }}>
+        {options.map((m) => (
+          <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 500, textTransform: "none", color: "var(--ink)" }}>
+            <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => onToggle(m.id)} style={{ width: "auto" }} />
+            {m.reference} — {m.address} ({m.client})
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
   const [f, setF] = useState({
     address: matter.address,
@@ -2915,20 +3005,12 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         </div>
 
         <div className="ac-fieldset-title">Chain</div>
-        <div className="ac-field">
-          <label>Linked matters (same chain)</label>
-          {allMatters.filter((m) => m.id !== matter.id).length === 0 && (
-            <p style={{ fontSize: 12, color: "var(--slate)" }}>No other matters open to link to.</p>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 4 }}>
-            {allMatters.filter((m) => m.id !== matter.id).map((m) => (
-              <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 500, textTransform: "none", color: "var(--ink)" }}>
-                <input type="checkbox" checked={f.linkedMatterIds.includes(m.id)} onChange={() => toggleLink(m.id)} style={{ width: "auto" }} />
-                {m.reference} — {m.address} ({m.client})
-              </label>
-            ))}
-          </div>
-        </div>
+        <ChainPicker
+          matter={matter}
+          allMatters={allMatters}
+          selectedIds={f.linkedMatterIds}
+          onToggle={toggleLink}
+        />
 
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><Check size={14} /> Save changes</button>

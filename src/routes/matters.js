@@ -37,7 +37,7 @@ async function loadMatterDetail(matterId) {
     query(`SELECT * FROM tasks WHERE matter_id = $1 ORDER BY (status = 'Open') DESC, due_date ASC NULLS LAST`, [matterId]),
     query(`SELECT * FROM activity_log WHERE matter_id = $1 ORDER BY occurred_at DESC LIMIT 100`, [matterId]),
     query(
-      `SELECT linked_matter_id AS id, m.reference, m.address, m.client, m.current_stage_index, m.target_completion
+      `SELECT linked_matter_id AS id, m.reference, m.address, m.client, m.type, m.current_stage_index, m.target_completion
        FROM matter_links l JOIN matters m ON m.id = l.linked_matter_id
        WHERE l.matter_id = $1`,
       [matterId]

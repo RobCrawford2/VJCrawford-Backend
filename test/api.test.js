@@ -492,3 +492,15 @@ test("staff management: admins add, edit, reset and deactivate staff, and it's a
 
   await runSeed(pool); // re-seeding still works with audit entries present
 });
+
+test("linked matters come back with enough detail to show and open them", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const [a, b] = (await request(app).get("/matters?limit=100").set(david)).body.matters;
+  assert.equal((await request(app).put(`/matters/${a.id}/links/${b.id}`).set(david)).status, 204);
+  const detail = (await request(app).get(`/matters/${a.id}`).set(david)).body;
+  const link = detail.linkedMatters.find((l) => l.id === b.id);
+  assert.ok(link, "link missing");
+  for (const key of ["reference", "address", "client", "type", "current_stage_index"]) assert.ok(key in link, `missing ${key}`);
+  // Reciprocal
+  assert.ok((await request(app).get(`/matters/${b.id}`).set(david)).body.linkedMatters.some((l) => l.id === a.id));
+});
