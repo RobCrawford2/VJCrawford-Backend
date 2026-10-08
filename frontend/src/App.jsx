@@ -572,6 +572,21 @@ export default function App() {
     }
   }
 
+  async function downloadReportOnTitle(matter) {
+    try {
+      const blob = await api.getReportOnTitle(matter.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Report on Title - ${matter.reference}.docx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      await refreshSelected(matter.id); // picks up the "generated" activity entry
+    } catch (err) {
+      window.alert(err.message || "Couldn't generate the report.");
+    }
+  }
+
   async function openDocumentFile(id, doc, download) {
     // Open the tab now, while we still have the click — browsers block
     // window.open calls made after an await.
@@ -1387,6 +1402,7 @@ export default function App() {
               onAddDoc={() => setShowAddDoc(true)}
               onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
               onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
+              onReportOnTitle={() => downloadReportOnTitle(selected)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
               onEdit={() => setShowEditMatter(true)}
@@ -1482,6 +1498,42 @@ export default function App() {
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
 
+function ReportOnTitleCard({ matter, onGenerate }) {
+  const [busy, setBusy] = useState(false);
+  const searches = matter.searches;
+  const received = searches.filter((s) => s.dateReceived).length;
+  const issues = searches.filter((s) => s.issue).length;
+  const answered = matter.enquiries.filter((q) => q.status === "Answered").length;
+  const pendingReview = matter.enquiries.filter((q) => q.status === "Pending Review").length;
+  const ready = searches.length > 0 && received === searches.length && answered === matter.enquiries.length;
+
+  async function generate() {
+    setBusy(true);
+    try { await onGenerate(); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-card" style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 10 }}><FileSignature size={12} /> Report on Title</h3>
+      <div className="ac-kv"><span className="k">Searches back</span><span>{received} of {searches.length}{issues ? ` · ${issues} issue${issues === 1 ? "" : "s"}` : ""}</span></div>
+      <div className="ac-kv"><span className="k">Enquiries answered</span><span>{answered} of {matter.enquiries.length}{pendingReview ? ` · ${pendingReview} to review` : ""}</span></div>
+      <p style={{ fontSize: 12, color: ready ? "var(--success)" : "var(--slate)", margin: "8px 0 10px" }}>
+        {ready
+          ? "All searches and enquiries are in — ready to report."
+          : searches.length === 0
+            ? "No searches recorded yet. You can still produce a draft; gaps are highlighted in it."
+            : "Not everything is in yet. You can still produce a draft; anything outstanding is highlighted in it."}
+      </p>
+      <button className="ac-submit" type="button" onClick={generate} disabled={busy} style={{ width: "100%" }}>
+        <Download size={14} /> {busy ? "Preparing…" : "Download draft (Word)"}
+      </button>
+      <p style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 0" }}>
+        Pulls in the client, property, searches and enquiry replies. Highlighted parts need completing before it's sent.
+      </p>
+    </div>
+  );
+}
+
 /** Date each stage was last reached, from the "Moved to …" entries in the activity log. */
 function stageReachedDates(matter) {
   const dates = {};
@@ -1535,7 +1587,7 @@ function StageTimeline({ matter, onSetStage }) {
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onAnswerEnquiry, onReviewEnquiry, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
@@ -1679,6 +1731,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           </div>
 
           <div className="ac-col-side">
+            {(matter.type === "Purchase" || matter.type === "Remortgage") && <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />}
             <div className="ac-card" style={{ marginBottom: 18 }}>
               <h3 style={{ marginBottom: 10 }}>Workstreams</h3>
               {(() => {

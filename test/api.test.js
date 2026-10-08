@@ -351,3 +351,38 @@ test("import: only admins can import, and new references continue after imported
   assert.equal(created.status, 201);
   assert.equal(created.body.reference, `CV-${year}-0901`);
 });
+
+test("report on title: a Word draft is built from the matter's searches and enquiries", async () => {
+  const JSZip = require("jszip");
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matters = (await request(app).get("/matters?limit=100").set(sarah)).body.matters;
+  const purchase = matters.find((m) => m.type === "Purchase");
+  const sale = matters.find((m) => m.type === "Sale");
+
+  await request(app).post(`/matters/${purchase.id}/searches`).set(sarah).send({ type: "Local Authority Search", dateOrdered: "2026-07-01" });
+  const search = (await request(app).get(`/matters/${purchase.id}`).set(sarah)).body.searches.find((s) => s.type === "Local Authority Search");
+  await request(app).patch(`/matters/${purchase.id}/searches/${search.id}`).set(sarah)
+    .send({ dateReceived: "2026-07-20", issue: true, issueNotes: "Unapproved extension noted" });
+  const enquiry = (await request(app).post(`/matters/${purchase.id}/enquiries`).set(sarah).send({ question: "Please confirm vacant possession." })).body;
+  await request(app).patch(`/matters/${purchase.id}/enquiries/${enquiry.id}/answer`).set(sarah).send({ answer: "Confirmed by the seller." });
+
+  const res = await request(app).get(`/matters/${purchase.id}/report-on-title`).set(sarah)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  assert.equal(res.status, 200);
+  assert.match(res.headers["content-type"], /wordprocessingml/);
+  assert.match(res.headers["content-disposition"], /Report%20on%20Title/);
+
+  const xml = await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string");
+  const text = xml.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&apos;/g, "'");
+  for (const expected of [purchase.client, purchase.address, purchase.reference, "Unapproved extension noted",
+    "Please confirm vacant possession.", "Confirmed by the seller.", "Sarah Ncube", "[title number]"]) {
+    assert.ok(text.includes(expected), `report is missing: ${expected}`);
+  }
+
+  const log = (await request(app).get(`/matters/${purchase.id}`).set(sarah)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("Report on Title draft generated"));
+
+  assert.equal((await request(app).get(`/matters/${sale.id}/report-on-title`).set(sarah)).status, 400);
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/matters/${purchase.id}/report-on-title`).set(marcus)).status, 404);
+});

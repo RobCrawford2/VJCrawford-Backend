@@ -11,6 +11,7 @@ router.use(requireAuth); // every route below requires a valid logged-in user
 
 const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
 const { validateRows } = require("../utils/matterImport");
+const { buildReportOnTitle } = require("../reports/reportOnTitle");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -295,6 +296,44 @@ router.get(
     const detail = await loadMatterDetail(req.params.id);
     if (!detail) return res.status(404).json({ error: "Matter not found." });
     res.json(detail);
+  })
+);
+
+// -----------------------------------------------------------------------
+// GET /matters/:id/report-on-title — draft Report on Title (.docx)
+// -----------------------------------------------------------------------
+router.get(
+  "/:id/report-on-title",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const [matter, searches, enquiries, firm] = await Promise.all([
+      query(`SELECT m.*, fe.name AS fee_earner_name FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id WHERE m.id = $1`, [req.params.id]),
+      query(`SELECT * FROM searches WHERE matter_id = $1 ORDER BY date_ordered ASC NULLS LAST, created_at ASC`, [req.params.id]),
+      query(`SELECT * FROM enquiries WHERE matter_id = $1 ORDER BY number ASC`, [req.params.id]),
+      query(`SELECT name FROM firms WHERE id = $1`, [req.user.firmId]),
+    ]);
+    const m = matter.rows[0];
+    if (!["Purchase", "Remortgage"].includes(m.type)) {
+      return res.status(400).json({ error: "A Report on Title is only produced for purchases and remortgages." });
+    }
+
+    const buffer = await buildReportOnTitle({
+      matter: m,
+      searches: searches.rows,
+      enquiries: enquiries.rows,
+      firm: firm.rows[0],
+      feeEarner: m.fee_earner_name ? { name: m.fee_earner_name } : null,
+    });
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'doc','Report on Title draft generated')`,
+      [req.params.id, req.user.id]);
+
+    const fileName = `Report on Title - ${m.reference}.docx`;
+    res.set({
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      "Cache-Control": "private, no-store",
+    });
+    res.send(buffer);
   })
 );
 

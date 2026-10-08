@@ -125,6 +125,7 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/matters/import` | Bulk import (admin only) — `{ rows, dryRun }`, rows keyed by spreadsheet header; validates every row, all-or-nothing, max 1000 rows |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
+| GET | `/matters/:id/report-on-title` | Draft Report on Title as a Word document (purchases and remortgages) |
 | POST | `/matters/:id/stage` | Move the stage tracker |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |

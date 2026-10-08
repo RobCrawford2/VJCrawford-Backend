@@ -67,6 +67,7 @@ export const api = {
     return request(`/matters${qs ? `?${qs}` : ""}`);
   },
   getMatter: (id) => request(`/matters/${id}`),
+  getReportOnTitle: (id) => request(`/matters/${id}/report-on-title`, { blob: true }),
   createMatter: (payload) => request("/matters", { method: "POST", body: payload }),
   importMatters: (rows, dryRun) => request("/matters/import", { method: "POST", body: { rows, dryRun } }),
   updateMatter: (id, patch) => request(`/matters/${id}`, { method: "PATCH", body: patch }),
