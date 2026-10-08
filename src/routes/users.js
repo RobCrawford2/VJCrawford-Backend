@@ -7,8 +7,8 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const router = express.Router();
 router.use(requireAuth);
 
-const ROLES = ["fee_earner", "supervisor", "admin"];
-const ROLE_LABELS = { fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
+const ROLES = ["secretary", "assistant", "fee_earner", "supervisor", "admin"];
+const ROLE_LABELS = { secretary: "Secretary", assistant: "Assistant", fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USER_COLUMNS = "id, name, email, role, supervisor_id, active, created_at";
 
@@ -69,7 +69,7 @@ router.post(
     }
     if (!EMAIL_RE.test(email.trim())) return res.status(400).json({ error: "That email address doesn't look right." });
     if (!ROLES.includes(role)) {
-      return res.status(400).json({ error: "role must be fee_earner, supervisor or admin." });
+      return res.status(400).json({ error: "role must be secretary, assistant, fee_earner, supervisor or admin." });
     }
     if (password.length < 10) {
       return res.status(400).json({ error: "Password must be at least 10 characters." });
@@ -98,7 +98,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const { name, email, role, supervisorId, active } = req.body;
     if (role !== undefined && !ROLES.includes(role)) {
-      return res.status(400).json({ error: "role must be fee_earner, supervisor or admin." });
+      return res.status(400).json({ error: "role must be secretary, assistant, fee_earner, supervisor or admin." });
     }
     if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: "Name can't be blank." });
     if (email !== undefined && !EMAIL_RE.test(String(email).trim())) {

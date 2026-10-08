@@ -99,11 +99,13 @@ async function firmRequiresSignoff(firmId) {
 }
 
 /**
- * Who can sign off a stage move on a matter: any admin, or a supervisor who
- * supervises the matter or its fee earner. Fee earners can't.
+ * Who can move a matter's stage directly, and sign off others' requests:
+ * the matter's own fee earner, or a supervisor who supervises the matter or
+ * its fee earner. Secretaries, assistants and admins can't — admin is a
+ * system role, not part of the file's chain of responsibility.
  */
 const SIGNOFF_CLAUSE = (userParam) => `(
-  $${userParam}::text = 'admin'
+  m.fee_earner_id = $${userParam + 1}
   OR ($${userParam}::text = 'supervisor' AND (m.supervisor_id = $${userParam + 1} OR fe.supervisor_id = $${userParam + 1}))
 )`;
 
@@ -389,7 +391,7 @@ router.get(
       ...detail,
       pendingStageRequest: pending.rows[0] || null,
       canSignOffStages: canSign,
-      stageMovesNeedSignoff: requireSignoff && req.user.role === "fee_earner",
+      stageMovesNeedSignoff: requireSignoff && !canSign,
     });
   })
 );
@@ -515,9 +517,9 @@ router.post(
       return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
     }
 
-    if (req.user.role === "fee_earner" && (await firmRequiresSignoff(req.user.firmId))) {
+    if ((await firmRequiresSignoff(req.user.firmId)) && !(await canSignOff(req.user, req.params.id))) {
       return res.status(403).json({
-        error: "Moving a matter to another stage needs sign-off from a supervisor or admin. Send a sign-off request instead.",
+        error: "Moving this matter to another stage needs the fee earner's sign-off. Send a sign-off request instead.",
         needsSignoff: true,
       });
     }
@@ -528,7 +530,7 @@ router.post(
     );
     if (!result.rows.length) return res.status(404).json({ error: "Matter not found." });
 
-    // A direct move by a supervisor/admin supersedes any waiting request.
+    // A direct move by the fee earner / supervisor supersedes any waiting request.
     await query(
       `UPDATE stage_requests SET status = 'withdrawn', decided_by = $2, decided_at = now(),
          decision_note = 'Superseded by a direct stage change'
@@ -586,7 +588,7 @@ router.post(
   })
 );
 
-/** Approve (moves the stage) or decline a waiting request. Supervisor of the matter or admin only. */
+/** Approve (moves the stage) or decline a waiting request. The matter's fee earner or their supervisor only. */
 router.post(
   "/:id/stage-requests/:requestId/decision",
   asyncHandler(async (req, res) => {
@@ -595,7 +597,7 @@ router.post(
     if (typeof approve !== "boolean") return res.status(400).json({ error: "approve must be true or false." });
     if (!approve && !String(note).trim()) return res.status(400).json({ error: "Please give a reason for declining." });
     if (!(await canSignOff(req.user, req.params.id))) {
-      return res.status(403).json({ error: "Only the matter's supervisor or an admin can sign off stage moves." });
+      return res.status(403).json({ error: "Only the matter's fee earner (or their supervisor) can sign off stage moves." });
     }
 
     const client_ = await pool.connect();

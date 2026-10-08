@@ -417,7 +417,7 @@ export default function App() {
   const [showStandardTasks, setShowStandardTasks] = useState(false);
   const [pendingSignoffs, setPendingSignoffs] = useState([]);
   const refreshSignoffs = useCallback(() => {
-    if (!authUser || authUser.role === "fee_earner") return setPendingSignoffs([]);
+    if (!authUser || isSupportRole(authUser.role)) return setPendingSignoffs([]);
     api.getPendingSignoffs().then(setPendingSignoffs).catch(() => {});
   }, [authUser]);
   useEffect(() => { refreshSignoffs(); }, [refreshSignoffs]);
@@ -1754,10 +1754,10 @@ function StageRequestForm({ stageIndex, onClose, onSubmit }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 13.5, marginTop: 0 }}>
-          Ask your supervisor to sign off moving this matter to <strong>{STAGES[stageIndex].name}</strong>. It moves once they approve.
+          Ask the fee earner to sign off moving this matter to <strong>{STAGES[stageIndex].name}</strong>. It moves once they approve.
         </p>
         <div className="ac-field">
-          <label>Note for your supervisor (optional)</label>
+          <label>Note for the fee earner (optional)</label>
           <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
         </div>
         {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
@@ -1791,7 +1791,7 @@ function StageRequestBanner({ matter, currentUserId, onDecide, onWithdraw }) {
           {" "}· {new Date(r.requestedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
         </div>
         {r.note && <div className="note">“{r.note}”</div>}
-        {!canDecide && !mine && <div className="note" style={{ fontStyle: "normal" }}>Waiting for the matter's supervisor or an admin.</div>}
+        {!canDecide && !mine && <div className="note" style={{ fontStyle: "normal" }}>Waiting for the matter's fee earner to sign off.</div>}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {canDecide && !declining && (
@@ -2717,14 +2717,14 @@ function NewMatterForm({ onClose, onCreate, users }) {
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -2864,12 +2864,12 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectO
         <div className="ac-card">
           <h3><ShieldCheck size={12} /> Stage sign-off</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
-            When on, fee earners can't move a matter to another stage themselves — they send a sign-off request, which the matter's supervisor or an admin approves or declines. Supervisors and admins can always move stages directly.
+            When on, only the matter's fee earner (or their supervisor) can move it to another stage. Secretaries, assistants and admins send a sign-off request instead, which the fee earner approves or declines.
           </p>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, textTransform: "none", fontWeight: 500, color: "var(--ink)" }}>
             <input type="checkbox" checked={settings.requireStageSignoff !== false} disabled={!isAdmin}
               onChange={(e) => onSave({ requireStageSignoff: e.target.checked })} style={{ width: "auto" }} />
-            Fee earners need sign-off to move stages
+            Stage moves need the fee earner's sign-off
           </label>
           {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
         </div>
@@ -3298,14 +3298,14 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => u.active !== false || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => u.active !== false || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -3922,7 +3922,9 @@ function ImportMattersForm({ onClose, onImported }) {
   );
 }
 
-const ROLE_LABELS = { fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
+const ROLE_LABELS = { secretary: "Secretary", assistant: "Assistant", fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
+const isSupportRole = (role) => role === "secretary" || role === "assistant";
+const isFeeEarnerRole = (role) => role === "fee_earner" || role === "supervisor";
 const AUDIT_VERBS = { "password reset": "reset the password for" };
 
 /** Readable temporary password (no 0/O/1/l look-alikes), 12 characters. */
@@ -3967,10 +3969,12 @@ function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
           </select>
         </div>
         <div className="ac-field">
-          <label>Supervisor</label>
+          <label>{isSupportRole(f.role) ? "Works for (fee earner)" : "Supervisor"}</label>
           <select value={f.supervisorId || ""} onChange={set("supervisorId")}>
             <option value="">— None —</option>
-            {users.filter((u) => u.active && u.id !== selfId).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            {users
+              .filter((u) => u.active && u.id !== selfId && (!isSupportRole(f.role) || isFeeEarnerRole(u.role)))
+              .map((u) => <option key={u.id} value={u.id}>{u.name} ({ROLE_LABELS[u.role]})</option>)}
           </select>
         </div>
       </div>
@@ -4050,9 +4054,10 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
         </div>
 
         <div className="ac-role-guide">
-          <strong>Fee earner</strong> — sees and works on their own matters. <br />
-          <strong>Supervisor</strong> — also sees the matters of everyone they supervise. <br />
-          <strong>Admin</strong> — sees every matter, manages staff, imports matters and changes firm settings.
+          <strong>Secretary / Assistant</strong> — works for a fee earner and sees their matters. Stage moves go to the fee earner for sign-off. <br />
+          <strong>Fee earner</strong> — runs their own matters, moves stages and signs off their team's requests. <br />
+          <strong>Supervisor</strong> — a fee earner who also oversees others; can sign off on their matters too. <br />
+          <strong>Admin</strong> — system role: sees every matter, manages staff, imports and settings. Doesn't sign off stage moves.
         </div>
 
         {notice && (
@@ -4084,7 +4089,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
                 <div className="ac-staff-name">{u.name}{u.id === currentUserId ? " (you)" : ""}</div>
                 <div className="ac-staff-meta">{u.email}</div>
                 <div className="ac-staff-meta">
-                  {ROLE_LABELS[u.role]}{u.supervisor_id ? ` · supervised by ${nameOf(u.supervisor_id) || "—"}` : ""}
+                  {ROLE_LABELS[u.role]}{u.supervisor_id ? ` · ${isSupportRole(u.role) ? "works for" : "supervised by"} ${nameOf(u.supervisor_id) || "—"}` : ""}
                 </div>
               </div>
               <span className={`ac-pill ${u.active ? "ac-pill--closed" : "ac-pill--setup"}`}>{u.active ? "Active" : "Deactivated"}</span>
