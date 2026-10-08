@@ -504,3 +504,59 @@ test("linked matters come back with enough detail to show and open them", async 
   // Reciprocal
   assert.ok((await request(app).get(`/matters/${b.id}`).set(david)).body.linkedMatters.some((l) => l.id === a.id));
 });
+
+test("enquiries: replies and comments are logged, status can be set by hand, emails can be linked", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matterId = (await request(app).get("/matters").set(sarah)).body.matters[0].id;
+  const q = (await request(app).post(`/matters/${matterId}/enquiries`).set(sarah).send({ question: "Please confirm the boiler was last serviced." })).body;
+  const base = `/matters/${matterId}/enquiries/${q.id}`;
+
+  // Typed reply → Response received
+  const r1 = await request(app).post(`${base}/replies`).set(sarah).send({ reply: "Seller is checking.", dateReceived: "2026-09-01" });
+  assert.equal(r1.status, 201);
+  // Comment
+  assert.equal((await request(app).post(`${base}/comments`).set(sarah).send({ comment: "Not good enough — chase for the certificate." })).status, 201);
+  assert.equal((await request(app).post(`${base}/comments`).set(sarah).send({ comment: "  " })).status, 400);
+  // Back to Raised by hand
+  assert.equal((await request(app).patch(`${base}/status`).set(sarah).send({ status: "Outstanding" })).status, 200);
+  assert.equal((await request(app).patch(`${base}/status`).set(sarah).send({ status: "Done" })).status, 400);
+
+  // A reply email arrives; link it to the enquiry (text taken from the email)
+  const email = (await request(app).post(`/matters/${matterId}/emails`).set(sarah)
+    .send({ direction: "in", subject: "Boiler", body: "Serviced in March 2026, certificate attached.", date: "2026-09-10" })).body.email;
+  const r2 = await request(app).post(`${base}/replies`).set(sarah).send({ emailId: email.id });
+  assert.equal(r2.status, 201);
+  assert.equal(r2.body.reply, "Serviced in March 2026, certificate attached.");
+  assert.equal(r2.body.date_received.slice(0, 10), "2026-09-10");
+
+  // Satisfactory
+  assert.equal((await request(app).patch(`${base}/status`).set(sarah).send({ status: "Answered" })).status, 200);
+
+  const detail = (await request(app).get(`/matters/${matterId}`).set(sarah)).body;
+  const e = detail.enquiries.find((x) => x.id === q.id);
+  assert.equal(e.status, "Answered");
+  assert.equal(e.answer, "Serviced in March 2026, certificate attached.");
+  assert.deepEqual(e.replies.map((r) => r.reply), ["Seller is checking.", "Serviced in March 2026, certificate attached."]);
+  assert.equal(e.replies[1].source_email_subject, "Boiler");
+  assert.equal(e.replies[0].created_by_name, "Sarah Ncube");
+  assert.deepEqual(e.comments.map((c) => c.comment), ["Not good enough — chase for the certificate."]);
+  const log = detail.activity.map((a) => a.text);
+  assert.ok(log.includes(`Enquiry ${q.number} marked Satisfactory`));
+  assert.ok(log.includes(`Enquiry ${q.number} marked Raised`));
+
+  // Auto-matching a numbered reply email logs a reply too — once, even if re-run
+  const q2 = (await request(app).post(`/matters/${matterId}/enquiries`).set(sarah).send({ question: "Any disputes?" })).body;
+  const auto = (await request(app).post(`/matters/${matterId}/emails`).set(sarah)
+    .send({ direction: "in", subject: "Replies", body: `${q2.number}. None that the seller is aware of.`, date: "2026-09-12" })).body;
+  assert.equal(auto.enquiriesMatched, 1);
+  await request(app).patch(`/matters/${matterId}/enquiries/${q2.id}/status`).set(sarah).send({ status: "Outstanding" });
+  await request(app).post(`/matters/${matterId}/emails/${auto.email.id}/match`).set(sarah);
+  const e2 = (await request(app).get(`/matters/${matterId}`).set(sarah)).body.enquiries.find((x) => x.id === q2.id);
+  assert.equal(e2.replies.length, 1);
+
+  // Linking an email from another matter is refused
+  const other = (await request(app).get("/matters?limit=100").set(sarah)).body.matters.find((m) => m.id !== matterId);
+  const otherEmail = (await request(app).post(`/matters/${other.id}/emails`).set(sarah)
+    .send({ direction: "in", subject: "x", body: "y", date: "2026-09-12" })).body.email;
+  assert.equal((await request(app).post(`${base}/replies`).set(sarah).send({ emailId: otherEmail.id })).status, 404);
+});

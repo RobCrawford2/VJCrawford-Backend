@@ -25,6 +25,11 @@ function adaptEnquiry(q) {
     id: q.id, number: q.number, question: q.question, dateRaised: q.date_raised, status: q.status,
     answer: q.answer || "", dateAnswered: q.date_answered || "", autoFilled: q.auto_filled,
     sourceEmailId: q.source_email_id, followUpNotes: q.follow_up_notes || "",
+    replies: (q.replies || []).map((r) => ({
+      id: r.id, text: r.reply, date: r.date_received, by: r.created_by_name || "",
+      emailId: r.source_email_id, emailSubject: r.source_email_subject || "", createdAt: r.created_at,
+    })),
+    comments: (q.comments || []).map((c) => ({ id: c.id, text: c.comment, at: c.created_at, by: c.created_by_name || "" })),
   };
 }
 function adaptSearch(s) {

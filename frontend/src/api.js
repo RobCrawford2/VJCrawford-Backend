@@ -87,10 +87,12 @@ export const api = {
 
   addEnquiry: (id, question) => request(`/matters/${id}/enquiries`, { method: "POST", body: { question } }),
   addStandardEnquiries: (id, questions) => request(`/matters/${id}/enquiries/bulk`, { method: "POST", body: { questions } }),
-  answerEnquiry: (id, enquiryId, answer, dateAnswered) =>
-    request(`/matters/${id}/enquiries/${enquiryId}/answer`, { method: "PATCH", body: { answer, dateAnswered } }),
-  reviewEnquiry: (id, enquiryId, payload) =>
-    request(`/matters/${id}/enquiries/${enquiryId}/review`, { method: "PATCH", body: payload }),
+  setEnquiryStatus: (id, enquiryId, status) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/status`, { method: "PATCH", body: { status } }),
+  addEnquiryReply: (id, enquiryId, payload) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/replies`, { method: "POST", body: payload }),
+  addEnquiryComment: (id, enquiryId, comment) =>
+    request(`/matters/${id}/enquiries/${enquiryId}/comments`, { method: "POST", body: { comment } }),
 
   addSearch: (id, search) => request(`/matters/${id}/searches`, { method: "POST", body: search }),
   updateSearch: (id, searchId, patch) => request(`/matters/${id}/searches/${searchId}`, { method: "PATCH", body: patch }),

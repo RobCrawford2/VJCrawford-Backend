@@ -137,6 +137,9 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/matters/:id/enquiries/bulk` | Add several from the standard template |
 | PATCH | `/matters/:id/enquiries/:eid/answer` | Manually answer an enquiry |
 | PATCH | `/matters/:id/enquiries/:eid/review` | Confirm or flag-follow-up a Pending Review reply |
+| PATCH | `/matters/:id/enquiries/:eid/status` | Set status by hand (Outstanding = Raised, Pending Review = Response received, Answered = Satisfactory) |
+| POST | `/matters/:id/enquiries/:eid/replies` | Log a reply (typed, or `emailId` to use an email on the matter) |
+| POST | `/matters/:id/enquiries/:eid/comments` | Add an internal comment |
 | POST | `/matters/:id/searches` | Order a search |
 | PATCH | `/matters/:id/searches/:sid` | Update / flag an issue |
 | POST | `/matters/:id/undertakings` | Add an undertaking |

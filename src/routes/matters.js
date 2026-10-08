@@ -27,7 +27,7 @@ function logActivity(client, matterId, userId, type, text) {
  * column so it's cheap even on a large caseload.
  */
 async function loadMatterDetail(matterId) {
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -42,6 +42,19 @@ async function loadMatterDetail(matterId) {
        WHERE l.matter_id = $1`,
       [matterId]
     ),
+    query(
+      `SELECT r.*, u.name AS created_by_name, em.subject AS source_email_subject
+       FROM enquiry_replies r JOIN enquiries e ON e.id = r.enquiry_id
+       LEFT JOIN users u ON u.id = r.created_by LEFT JOIN emails em ON em.id = r.source_email_id
+       WHERE e.matter_id = $1 ORDER BY r.date_received ASC, r.created_at ASC`,
+      [matterId]
+    ),
+    query(
+      `SELECT c.*, u.name AS created_by_name
+       FROM enquiry_comments c JOIN enquiries e ON e.id = c.enquiry_id LEFT JOIN users u ON u.id = c.created_by
+       WHERE e.matter_id = $1 ORDER BY c.created_at ASC`,
+      [matterId]
+    ),
   ]);
 
   if (!matter.rows.length) return null;
@@ -50,7 +63,11 @@ async function loadMatterDetail(matterId) {
     ...matter.rows[0],
     documents: documents.rows,
     emails: emails.rows,
-    enquiries: enquiries.rows,
+    enquiries: enquiries.rows.map((q) => ({
+      ...q,
+      replies: replies.rows.filter((r) => r.enquiry_id === q.id),
+      comments: comments.rows.filter((c) => c.enquiry_id === q.id),
+    })),
     searches: searches.rows,
     undertakings: undertakings.rows,
     tasks: tasks.rows,
@@ -638,13 +655,17 @@ function parseEnquiryReplies(body) {
   return found;
 }
 
-async function matchEmailToEnquiries(client_, matterId, email) {
+async function matchEmailToEnquiries(client_, matterId, email, userId) {
   const replies = parseEnquiryReplies(email.body);
   if (!Object.keys(replies).length) return 0;
 
+  // Outstanding enquiries that don't already have a reply logged from this email
+  // (so re-running the match on the same email doesn't log it twice).
   const outstanding = await client_.query(
-    `SELECT id, number FROM enquiries WHERE matter_id = $1 AND status = 'Outstanding'`,
-    [matterId]
+    `SELECT e.id, e.number FROM enquiries e
+     WHERE e.matter_id = $1 AND e.status = 'Outstanding'
+       AND NOT EXISTS (SELECT 1 FROM enquiry_replies r WHERE r.enquiry_id = e.id AND r.source_email_id = $2)`,
+    [matterId, email.id]
   );
 
   let matched = 0;
@@ -655,6 +676,10 @@ async function matchEmailToEnquiries(client_, matterId, email) {
            auto_filled = true, source_email_id = $3, follow_up_notes = ''
          WHERE id = $4`,
         [replies[enquiry.number], email.email_date, email.id, enquiry.id]
+      );
+      await client_.query(
+        `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, source_email_id, created_by) VALUES ($1,$2,$3,$4,$5)`,
+        [enquiry.id, replies[enquiry.number], email.email_date, email.id, userId]
       );
       matched++;
     }
@@ -682,7 +707,7 @@ router.post(
 
       let matched = 0;
       if (direction === "in") {
-        matched = await matchEmailToEnquiries(client_, req.params.id, email);
+        matched = await matchEmailToEnquiries(client_, req.params.id, email, req.user.id);
         if (matched > 0) {
           await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} auto-filled from this email — pending review`);
         }
@@ -712,7 +737,7 @@ router.post(
         await client_.query("ROLLBACK");
         return res.status(404).json({ error: "Email not found." });
       }
-      const matched = await matchEmailToEnquiries(client_, req.params.id, emailResult.rows[0]);
+      const matched = await matchEmailToEnquiries(client_, req.params.id, emailResult.rows[0], req.user.id);
       if (matched > 0) {
         await logActivity(client_, req.params.id, req.user.id, "enquiry", `${matched} enquiry repl${matched === 1 ? "y" : "ies"} matched from "${emailResult.rows[0].subject}" — pending review`);
       }
@@ -809,6 +834,10 @@ router.patch(
     );
     if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
 
+    await query(
+      `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, created_by) VALUES ($1,$2,$3,$4)`,
+      [req.params.enquiryId, answer.trim(), result.rows[0].date_answered, req.user.id]
+    );
     await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
       [req.params.id, req.user.id, `Enquiry ${result.rows[0].number} answered`]);
     res.json(result.rows[0]);
@@ -842,12 +871,118 @@ router.patch(
         [followUpNote.trim(), req.params.enquiryId, req.params.id]
       );
       if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
+      await query(`INSERT INTO enquiry_comments (enquiry_id, comment, created_by) VALUES ($1,$2,$3)`,
+        [req.params.enquiryId, `Follow-up needed: ${followUpNote.trim()}`, req.user.id]);
       await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
         [req.params.id, req.user.id, `Follow-up needed on enquiry ${result.rows[0].number}: ${followUpNote.trim()}`]);
       return res.json(result.rows[0]);
     }
 
     res.status(400).json({ error: "outcome must be 'confirm' or 'follow_up'." });
+  })
+);
+
+// Status labels as staff see them (the stored values predate the wording).
+const ENQUIRY_STATUS_LABELS = { Outstanding: "Raised", "Pending Review": "Response received", Answered: "Satisfactory" };
+
+/** Loads an enquiry, checking it belongs to the matter. */
+async function findEnquiry(db, matterId, enquiryId) {
+  const result = await db.query(`SELECT * FROM enquiries WHERE id = $1 AND matter_id = $2`, [enquiryId, matterId]);
+  return result.rows[0] || null;
+}
+
+/** Set an enquiry's status by hand: Raised / Response received / Satisfactory. */
+router.patch(
+  "/:id/enquiries/:enquiryId/status",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { status } = req.body;
+    if (!ENQUIRY_STATUS_LABELS[status]) {
+      return res.status(400).json({ error: "status must be Outstanding, Pending Review or Answered." });
+    }
+    const enquiry = await findEnquiry({ query }, req.params.id, req.params.enquiryId);
+    if (!enquiry) return res.status(404).json({ error: "Enquiry not found." });
+    if (enquiry.status === status) return res.json(enquiry);
+
+    const result = await query(`UPDATE enquiries SET status = $1 WHERE id = $2 RETURNING *`, [status, enquiry.id]);
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'enquiry',$3)`,
+      [req.params.id, req.user.id, `Enquiry ${enquiry.number} marked ${ENQUIRY_STATUS_LABELS[status]}`]);
+    res.json(result.rows[0]);
+  })
+);
+
+/**
+ * Log a reply against an enquiry — typed/pasted, or linked to an email
+ * already on the matter (emailId). Becomes the enquiry's latest answer and
+ * moves it to "Response received" unless a status is given.
+ */
+router.post(
+  "/:id/enquiries/:enquiryId/replies",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { reply, dateReceived, emailId, status = "Pending Review" } = req.body;
+    if (!ENQUIRY_STATUS_LABELS[status]) return res.status(400).json({ error: "Unknown status." });
+
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const enquiry = await findEnquiry(client_, req.params.id, req.params.enquiryId);
+      if (!enquiry) {
+        await client_.query("ROLLBACK");
+        return res.status(404).json({ error: "Enquiry not found." });
+      }
+      let email = null;
+      if (emailId) {
+        email = (await client_.query(`SELECT * FROM emails WHERE id = $1 AND matter_id = $2`, [emailId, req.params.id])).rows[0];
+        if (!email) {
+          await client_.query("ROLLBACK");
+          return res.status(404).json({ error: "That email isn't on this matter." });
+        }
+      }
+      const text = (reply && reply.trim()) || (email && (email.body || "").trim());
+      if (!text) {
+        await client_.query("ROLLBACK");
+        return res.status(400).json({ error: "The reply is empty." });
+      }
+      const date = dateReceived || (email && email.email_date) || new Date().toISOString().slice(0, 10);
+
+      const inserted = await client_.query(
+        `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, source_email_id, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [enquiry.id, text, date, email ? email.id : null, req.user.id]
+      );
+      await client_.query(
+        `UPDATE enquiries SET answer = $1, date_answered = $2, status = $3, source_email_id = coalesce($4, source_email_id)
+         WHERE id = $5`,
+        [text, date, status, email ? email.id : null, enquiry.id]
+      );
+      await logActivity(client_, req.params.id, req.user.id, "enquiry",
+        `Reply logged on enquiry ${enquiry.number}${email ? ` from email "${email.subject}"` : ""}`);
+      await client_.query("COMMIT");
+      res.status(201).json(inserted.rows[0]);
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
+  })
+);
+
+/** Add an internal comment to an enquiry. */
+router.post(
+  "/:id/enquiries/:enquiryId/comments",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { comment } = req.body;
+    if (!comment || !comment.trim()) return res.status(400).json({ error: "The comment is empty." });
+    const enquiry = await findEnquiry({ query }, req.params.id, req.params.enquiryId);
+    if (!enquiry) return res.status(404).json({ error: "Enquiry not found." });
+    const result = await query(
+      `INSERT INTO enquiry_comments (enquiry_id, comment, created_by) VALUES ($1,$2,$3) RETURNING *`,
+      [enquiry.id, comment.trim(), req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
   })
 );
 
