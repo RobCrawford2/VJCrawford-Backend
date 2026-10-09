@@ -5,6 +5,7 @@ const authRoutes = require("./routes/auth");
 const matterRoutes = require("./routes/matters");
 const userRoutes = require("./routes/users");
 const settingsRoutes = require("./routes/settings");
+const taskRoutes = require("./routes/tasks");
 
 const app = express();
 
@@ -30,12 +31,26 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => res.json({ status: "ok" }));
+// Boot-time setup status (see server.js), shown on /health so a failed
+// database migration is visible without digging through host logs.
+app.locals.setup = { migrations: "pending" };
+
+app.get("/health", (req, res) => {
+  const { migrations, error } = app.locals.setup;
+  res.json({
+    status: migrations === "failed" ? "degraded" : "ok",
+    migrations,
+    ...(error ? { error } : {}),
+    // Render sets RENDER_GIT_COMMIT — shows which version is actually running.
+    version: (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || undefined,
+  });
+});
 
 app.use("/auth", authRoutes);
 app.use("/matters", matterRoutes);
 app.use("/users", userRoutes);
 app.use("/settings", settingsRoutes);
+app.use("/tasks", taskRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not found." });

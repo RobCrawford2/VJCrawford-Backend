@@ -108,6 +108,8 @@ export const api = {
 
   addTask: (id, task) => request(`/matters/${id}/tasks`, { method: "POST", body: task }),
   addTasks: (id, tasks) => request(`/matters/${id}/tasks/bulk`, { method: "POST", body: { tasks } }),
+  updateTask: (id, taskId, patch) => request(`/matters/${id}/tasks/${taskId}`, { method: "PATCH", body: patch }),
+  getTasks: (mine) => request(`/tasks${mine ? "?mine=true" : ""}`),
   completeTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/complete`, { method: "PATCH" }),
   reopenTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/reopen`, { method: "PATCH" }),
 

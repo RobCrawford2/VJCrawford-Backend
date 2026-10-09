@@ -34,7 +34,11 @@ async function loadMatterDetail(matterId) {
     query(`SELECT * FROM enquiries WHERE matter_id = $1 ORDER BY number ASC`, [matterId]),
     query(`SELECT * FROM searches WHERE matter_id = $1 ORDER BY date_ordered DESC NULLS LAST`, [matterId]),
     query(`SELECT * FROM undertakings WHERE matter_id = $1 ORDER BY date_given DESC NULLS LAST`, [matterId]),
-    query(`SELECT * FROM tasks WHERE matter_id = $1 ORDER BY (status = 'Open') DESC, due_date ASC NULLS LAST`, [matterId]),
+    query(
+      `SELECT t.*, u.name AS assigned_to_name FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to
+       WHERE t.matter_id = $1 ORDER BY (t.status = 'Open') DESC, t.due_date ASC NULLS LAST`,
+      [matterId]
+    ),
     query(`SELECT * FROM activity_log WHERE matter_id = $1 ORDER BY occurred_at DESC LIMIT 100`, [matterId]),
     query(
       `SELECT linked_matter_id AS id, m.reference, m.address, m.client, m.type, m.current_stage_index, m.target_completion
@@ -116,6 +120,25 @@ async function canSignOff(user, matterId) {
     [matterId, user.firmId, user.role, user.id]
   );
   return result.rows.length > 0;
+}
+
+/**
+ * Checks a member of staff can be given a task on this matter: active, in
+ * the firm, and able to see the matter under their own role's visibility.
+ * Returns { user } or { error }.
+ */
+async function checkAssignee(db, firmId, matterId, assigneeId) {
+  const found = await db.query(`SELECT id, firm_id, role, name, active FROM users WHERE id = $1 AND firm_id = $2`, [assigneeId, firmId]);
+  const user = found.rows[0];
+  if (!user) return { error: "That person isn't a member of staff." };
+  if (!user.active) return { error: `${user.name}'s account is deactivated.` };
+  const visibility = matterVisibilityClause({ id: user.id, role: user.role }, 3);
+  const visible = await db.query(
+    `SELECT 1 FROM matters m WHERE m.id = $1 AND m.firm_id = $2 ${visibility.clause}`,
+    [matterId, firmId, ...visibility.params]
+  );
+  if (!visible.rows.length) return { error: `${user.name} can't see this matter, so can't be given tasks on it.` };
+  return { user };
 }
 
 /** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
@@ -1286,18 +1309,25 @@ router.post(
   "/:id/tasks",
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
-    const { description, dueDate } = req.body;
+    const { description, dueDate, assignedTo } = req.body;
     if (!description || !description.trim()) return res.status(400).json({ error: "description is required." });
+    let assignee = null;
+    if (assignedTo) {
+      const check = await checkAssignee({ query }, req.user.firmId, req.params.id, assignedTo);
+      if (check.error) return res.status(400).json({ error: check.error });
+      assignee = check.user;
+    }
 
     const client_ = await pool.connect();
     try {
       await client_.query("BEGIN");
       const result = await client_.query(
-        `INSERT INTO tasks (matter_id, description, due_date, status, created_by)
-         VALUES ($1,$2,$3,'Open',$4) RETURNING *`,
-        [req.params.id, description.trim(), dueDate || null, req.user.id]
+        `INSERT INTO tasks (matter_id, description, due_date, status, created_by, assigned_to)
+         VALUES ($1,$2,$3,'Open',$4,$5) RETURNING *`,
+        [req.params.id, description.trim(), dueDate || null, req.user.id, assignee ? assignee.id : null]
       );
-      await logActivity(client_, req.params.id, req.user.id, "task", `Task added: ${description.trim()}`);
+      await logActivity(client_, req.params.id, req.user.id, "task",
+        `Task added: ${description.trim()}${assignee ? ` — assigned to ${assignee.name}` : ""}`);
       await client_.query("COMMIT");
       res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -1321,14 +1351,19 @@ router.post(
     if (!tasks.every((t) => t && typeof t.description === "string" && t.description.trim())) {
       return res.status(400).json({ error: "Every task needs a description." });
     }
+    const assigneeIds = [...new Set(tasks.map((t) => t.assignedTo).filter(Boolean))];
+    for (const id of assigneeIds) {
+      const check = await checkAssignee({ query }, req.user.firmId, req.params.id, id);
+      if (check.error) return res.status(400).json({ error: check.error });
+    }
     const client_ = await pool.connect();
     try {
       await client_.query("BEGIN");
       const inserted = [];
       for (const t of tasks) {
         const result = await client_.query(
-          `INSERT INTO tasks (matter_id, description, due_date, status, created_by) VALUES ($1,$2,$3,'Open',$4) RETURNING *`,
-          [req.params.id, t.description.trim(), t.dueDate || null, req.user.id]
+          `INSERT INTO tasks (matter_id, description, due_date, status, created_by, assigned_to) VALUES ($1,$2,$3,'Open',$4,$5) RETURNING *`,
+          [req.params.id, t.description.trim(), t.dueDate || null, req.user.id, t.assignedTo || null]
         );
         inserted.push(result.rows[0]);
       }
@@ -1341,6 +1376,54 @@ router.post(
     } finally {
       client_.release();
     }
+  })
+);
+
+/** Edit a task: description, due date, and/or who it's assigned to (null to unassign). */
+router.patch(
+  "/:id/tasks/:taskId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const { description, dueDate, assignedTo } = req.body;
+    const current = (await query(
+      `SELECT t.*, to_char(t.due_date, 'YYYY-MM-DD') AS due_str, u.name AS assigned_to_name
+       FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to
+       WHERE t.id = $1 AND t.matter_id = $2`,
+      [req.params.taskId, req.params.id]
+    )).rows[0];
+    if (!current) return res.status(404).json({ error: "Task not found." });
+
+    const setClauses = [];
+    const params = [];
+    const set = (col, val) => { params.push(val); setClauses.push(`${col} = $${params.length}`); };
+    const changes = [];
+
+    if (description !== undefined) {
+      if (!String(description).trim()) return res.status(400).json({ error: "The task needs a description." });
+      if (description.trim() !== current.description) { set("description", description.trim()); changes.push("description changed"); }
+    }
+    if (dueDate !== undefined && (dueDate || null) !== current.due_str) {
+      set("due_date", dueDate || null);
+      changes.push(dueDate ? `due ${dueDate}` : "due date removed");
+    }
+    let assigneeName = null;
+    if (assignedTo !== undefined && (assignedTo || null) !== current.assigned_to) {
+      if (assignedTo) {
+        const check = await checkAssignee({ query }, req.user.firmId, req.params.id, assignedTo);
+        if (check.error) return res.status(400).json({ error: check.error });
+        assigneeName = check.user.name;
+      }
+      set("assigned_to", assignedTo || null);
+      changes.push(assignedTo ? `assigned to ${assigneeName}` : "unassigned");
+    }
+    delete current.due_str;
+    if (!setClauses.length) return res.json(current);
+
+    params.push(current.id);
+    const result = await query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING *`, params);
+    await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'task',$3)`,
+      [req.params.id, req.user.id, `Task "${current.description}" ${changes.join(", ")}`]);
+    res.json(result.rows[0]);
   })
 );
 

@@ -26,6 +26,7 @@ app.listen(PORT, () => {
   (async () => {
     try {
       await runMigrations(pool);
+      app.locals.setup = { migrations: "ok" };
       if (process.env.SEED_ON_BOOT === "true") {
         // Boot seeding only happens on a deployed host, where the demo
         // accounts are reachable from the internet — so refuse the
@@ -42,6 +43,7 @@ app.listen(PORT, () => {
       }
     } catch (err) {
       console.error("[boot] Setup on boot failed:", err.message);
+      if (app.locals.setup.migrations !== "ok") app.locals.setup = { migrations: "failed", error: err.message };
     }
   })();
 });

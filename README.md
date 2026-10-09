@@ -133,7 +133,9 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/matters/:id/stage-requests/:rid/decision` | Approve (moves the stage) or decline (`approve`, `note`) — the matter's fee earner or their supervisor (not admin) |
 | DELETE | `/matters/:id/stage-requests/:rid` | Withdraw your own waiting request |
 | GET | `/matters/sign-offs/pending` | Requests waiting for the current user's sign-off |
-| POST | `/matters/:id/tasks/bulk` | Add several tasks at once (standard task list) |
+| POST | `/matters/:id/tasks/bulk` | Add several tasks at once (standard task list), each with optional `assignedTo` |
+| PATCH | `/matters/:id/tasks/:tid` | Edit a task: `description`, `dueDate`, `assignedTo` (null to unassign) |
+| GET | `/tasks?mine=true` | Open tasks across every matter you can see (`mine` = assigned to you) |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |
 | PUT | `/matters/:id/documents/:docId/file` | Upload (or replace) the file for a document — multipart field `file`, max 10 MB, PDF/Office/images/text/Outlook only |
