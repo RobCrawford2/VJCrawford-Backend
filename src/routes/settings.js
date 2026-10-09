@@ -9,7 +9,7 @@ router.use(requireAuth);
 router.get(
   "/",
   asyncHandler(async (req, res) => {
-    const result = await query(`SELECT name, domain, stale_days, require_stage_signoff, dictation_enabled FROM firms WHERE id = $1`, [req.user.firmId]);
+    const result = await query(`SELECT name, domain, stale_days, require_stage_signoff, dictation_enabled, require_exchange_checks FROM firms WHERE id = $1`, [req.user.firmId]);
     if (!result.rows.length) return res.status(404).json({ error: "Firm not found." });
     res.json(result.rows[0]);
   })
@@ -20,7 +20,7 @@ router.patch(
   "/",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { domain, staleDays, requireStageSignoff, dictationEnabled } = req.body;
+    const { domain, staleDays, requireStageSignoff, dictationEnabled, requireExchangeChecks } = req.body;
     const setClauses = [];
     const params = [];
     if (domain !== undefined) { params.push(domain); setClauses.push(`domain = $${params.length}`); }
@@ -33,11 +33,15 @@ router.patch(
       if (typeof dictationEnabled !== "boolean") return res.status(400).json({ error: "dictationEnabled must be true or false." });
       params.push(dictationEnabled); setClauses.push(`dictation_enabled = $${params.length}`);
     }
+    if (requireExchangeChecks !== undefined) {
+      if (typeof requireExchangeChecks !== "boolean") return res.status(400).json({ error: "requireExchangeChecks must be true or false." });
+      params.push(requireExchangeChecks); setClauses.push(`require_exchange_checks = $${params.length}`);
+    }
     if (!setClauses.length) return res.status(400).json({ error: "No recognised fields to update." });
 
     params.push(req.user.firmId);
     const result = await query(
-      `UPDATE firms SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING name, domain, stale_days, require_stage_signoff, dictation_enabled`,
+      `UPDATE firms SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING name, domain, stale_days, require_stage_signoff, dictation_enabled, require_exchange_checks`,
       params
     );
     res.json(result.rows[0]);

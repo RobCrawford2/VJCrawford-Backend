@@ -18,6 +18,9 @@ function normalizeConnectionString(url) {
 
 const pool = new Pool({
   connectionString: normalizeConnectionString(process.env.DATABASE_URL),
+  // Work in UK time, so CURRENT_DATE and timestamps follow the firm's day
+  // rather than UTC (the host's timezone).
+  options: "-c TimeZone=Europe/London",
   // Most managed Postgres providers (Render, Railway, RDS, etc.) require SSL
   // in production but not for a local Docker instance. Adjust as needed once
   // you know your hosting provider's requirements.

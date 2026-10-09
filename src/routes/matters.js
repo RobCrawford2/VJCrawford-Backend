@@ -10,6 +10,7 @@ const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
 const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
+const { ukToday } = require("../utils/dates");
 const { validateRows } = require("../utils/matterImport");
 const { buildReportOnTitle } = require("../reports/reportOnTitle");
 
@@ -95,6 +96,47 @@ async function nextReferenceNumber(db, firmId, year) {
 }
 
 const formatReference = (year, n) => `CV-${year}-${String(n).padStart(4, "0")}`;
+
+const EXCHANGE_INDEX = STAGE_NAMES.indexOf("Exchange");
+
+/**
+ * Checks before a matter may move to Exchange or beyond (from before it),
+ * when the firm has them switched on. Returns a list of plain-English
+ * reasons it can't yet — empty means OK.
+ */
+async function exchangeBlockers(db, firmId, matterId, toStage) {
+  if (toStage < EXCHANGE_INDEX) return [];
+  const firm = (await db.query(`SELECT require_exchange_checks FROM firms WHERE id = $1`, [firmId])).rows[0];
+  if (firm && firm.require_exchange_checks === false) return [];
+  const m = (await db.query(
+    `SELECT current_stage_index, type, lender, pre_exchange_confirmed_by, deposit_received_date,
+            to_char(mortgage_offer_expiry, 'YYYY-MM-DD') AS expiry, to_char(target_completion, 'YYYY-MM-DD') AS completion
+     FROM matters WHERE id = $1`,
+    [matterId]
+  )).rows[0];
+  if (!m || m.current_stage_index >= EXCHANGE_INDEX) return [];
+
+  const reasons = [];
+  if (!m.pre_exchange_confirmed_by) reasons.push("The pre-exchange review hasn't been confirmed.");
+  if (m.lender && (m.type === "Purchase" || m.type === "Remortgage")) {
+    const needed = m.completion || ukToday();
+    if (!m.expiry) reasons.push("The mortgage offer expiry date isn't recorded.");
+    else if (m.expiry < needed) {
+      reasons.push(m.completion
+        ? `The mortgage offer expires (${m.expiry}) before the target completion date (${m.completion}).`
+        : `The mortgage offer expired on ${m.expiry}.`);
+    }
+  }
+  if (m.type === "Purchase" && !m.deposit_received_date) reasons.push("The deposit hasn't been marked as received.");
+  return reasons;
+}
+
+function blockedResponse(res, reasons) {
+  return res.status(400).json({
+    error: `This matter can't move to Exchange yet:\n• ${reasons.join("\n• ")}`,
+    exchangeBlockers: reasons,
+  });
+}
 
 /** Whether the firm requires sign-off for fee earners' stage moves. */
 async function firmRequiresSignoff(firmId) {
@@ -371,6 +413,47 @@ router.post(
 );
 
 // -----------------------------------------------------------------------
+// GET /matters/upcoming?days=7 — exchanges and completions due soon (or
+// overdue), with what's still outstanding on each. Powers "This week".
+// -----------------------------------------------------------------------
+router.get(
+  "/upcoming",
+  asyncHandler(async (req, res) => {
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 60);
+    const params = [req.user.firmId, days];
+    const visibility = matterVisibilityClause(req.user, 3);
+    params.push(...visibility.params);
+    const result = await query(
+      `SELECT m.id, m.reference, m.address, m.client, m.type, m.current_stage_index, m.lender,
+              fe.name AS fee_earner_name,
+              to_char(m.target_exchange, 'YYYY-MM-DD') AS target_exchange,
+              to_char(m.target_completion, 'YYYY-MM-DD') AS target_completion,
+              to_char(m.actual_exchange, 'YYYY-MM-DD') AS actual_exchange,
+              to_char(m.mortgage_offer_expiry, 'YYYY-MM-DD') AS mortgage_offer_expiry,
+              (m.pre_exchange_confirmed_by IS NOT NULL AND m.pre_exchange_confirmed_by <> '') AS pre_exchange_confirmed,
+              (m.deposit_received_date IS NOT NULL) AS deposit_received,
+              (SELECT count(*) FROM tasks t WHERE t.matter_id = m.id AND t.status = 'Open')::int AS open_tasks,
+              (SELECT count(*) FROM enquiries q WHERE q.matter_id = m.id AND q.status <> 'Answered')::int AS open_enquiries,
+              (SELECT count(*) FROM searches x WHERE x.matter_id = m.id AND x.date_received IS NULL)::int AS searches_awaited
+       FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
+       WHERE m.firm_id = $1 ${visibility.clause}
+         AND m.current_stage_index < ${CLOSED_INDEX}
+         AND (
+           (m.actual_exchange IS NULL AND m.target_exchange <= CURRENT_DATE + $2::int)
+           OR (m.actual_completion IS NULL AND m.target_completion <= CURRENT_DATE + $2::int)
+         )
+       ORDER BY LEAST(
+         CASE WHEN m.actual_exchange IS NULL THEN m.target_exchange END,
+         CASE WHEN m.actual_completion IS NULL THEN m.target_completion END
+       ) ASC
+       LIMIT 200`,
+      params
+    );
+    res.json({ today: ukToday(), days, matters: result.rows });
+  })
+);
+
+// -----------------------------------------------------------------------
 // GET /matters/sign-offs/pending — requests waiting for this user's sign-off
 // -----------------------------------------------------------------------
 router.get(
@@ -476,6 +559,9 @@ const PATCHABLE_FIELDS = {
   tenure: "tenure", titleNumber: "title_number", registeredProprietor: "registered_proprietor",
   leaseTerm: "lease_term", groundRent: "ground_rent", serviceCharge: "service_charge",
   deposit: "deposit", sdlt: "sdlt", mortgageConditions: "mortgage_conditions",
+  sdltBuyerType: "sdlt_buyer_type", sdltNonResident: "sdlt_non_resident",
+  depositReceivedDate: "deposit_received_date", os1PriorityExpiry: "os1_priority_expiry",
+  leaseYearsRemaining: "lease_years_remaining",
 };
 
 // Fields that can also be supplied when a matter is first opened (POST /matters).
@@ -503,6 +589,9 @@ router.patch(
     const params = [];
     if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
+    if (req.body.sdltBuyerType && !["standard", "first_time", "additional"].includes(req.body.sdltBuyerType)) {
+      return res.status(400).json({ error: "sdltBuyerType must be standard, first_time or additional." });
     }
     for (const [bodyKey, column] of Object.entries(PATCHABLE_FIELDS)) {
       if (bodyKey in req.body) {
@@ -539,6 +628,9 @@ router.post(
     if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= STAGE_COUNT) {
       return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
     }
+
+    const blockers = await exchangeBlockers({ query }, req.user.firmId, req.params.id, stageIndex);
+    if (blockers.length) return blockedResponse(res, blockers);
 
     if ((await firmRequiresSignoff(req.user.firmId)) && !(await canSignOff(req.user, req.params.id))) {
       return res.status(403).json({
@@ -588,6 +680,11 @@ router.post(
       if (matter.current_stage_index === stageIndex) {
         await client_.query("ROLLBACK");
         return res.status(400).json({ error: "The matter is already at that stage." });
+      }
+      const blockers = await exchangeBlockers(client_, req.user.firmId, req.params.id, stageIndex);
+      if (blockers.length) {
+        await client_.query("ROLLBACK");
+        return blockedResponse(res, blockers);
       }
       await client_.query(
         `UPDATE stage_requests SET status = 'withdrawn', decided_by = $2, decided_at = now(), decision_note = 'Replaced by a new request'
@@ -649,6 +746,11 @@ router.post(
       );
       const stageName = STAGE_NAMES[request.to_stage];
       if (approve) {
+        const blockers = await exchangeBlockers(client_, req.user.firmId, req.params.id, request.to_stage);
+        if (blockers.length) {
+          await client_.query("ROLLBACK");
+          return blockedResponse(res, blockers);
+        }
         await client_.query(`UPDATE matters SET current_stage_index = $1 WHERE id = $2`, [request.to_stage, req.params.id]);
         await logActivity(client_, req.params.id, req.user.id, "stage", `Moved to ${stageName}`);
         await logActivity(client_, req.params.id, req.user.id, "signoff",
@@ -1046,7 +1148,7 @@ router.patch(
     const result = await query(
       `UPDATE enquiries SET status = 'Answered', answer = $1, date_answered = $2
        WHERE id = $3 AND matter_id = $4 RETURNING *`,
-      [answer.trim(), dateAnswered || new Date().toISOString().slice(0, 10), req.params.enquiryId, req.params.id]
+      [answer.trim(), dateAnswered || ukToday(), req.params.enquiryId, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Enquiry not found." });
 
@@ -1160,7 +1262,7 @@ router.post(
         await client_.query("ROLLBACK");
         return res.status(400).json({ error: "The reply is empty." });
       }
-      const date = dateReceived || (email && email.email_date) || new Date().toISOString().slice(0, 10);
+      const date = dateReceived || (email && email.email_date) || ukToday();
 
       const inserted = await client_.query(
         `INSERT INTO enquiry_replies (enquiry_id, reply, date_received, source_email_id, created_by)
@@ -1292,7 +1394,7 @@ router.patch(
 
     const result = await query(
       `UPDATE undertakings SET status = 'Discharged', date_discharged = $1 WHERE id = $2 AND matter_id = $3 RETURNING *`,
-      [dateDischarged || new Date().toISOString().slice(0, 10), req.params.undertakingId, req.params.id]
+      [dateDischarged || ukToday(), req.params.undertakingId, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Undertaking not found." });
 
@@ -1485,5 +1587,93 @@ router.delete(
     res.status(204).send();
   })
 );
+
+// -----------------------------------------------------------------------
+// Corrections: edit / delete items added by mistake. Every change is
+// written to the matter's activity log, so the history shows what was
+// removed or changed, when and by whom.
+// -----------------------------------------------------------------------
+
+/** Deletes one row belonging to the matter and logs it. `describe` builds the log text from the row. */
+function deleteRoute(path, table, idParam, label, describe, before) {
+  router.delete(
+    path,
+    asyncHandler(async (req, res) => {
+      if (!(await assertMatterVisible(req, res, req.params.id))) return;
+      const client_ = await pool.connect();
+      try {
+        await client_.query("BEGIN");
+        const row = (await client_.query(`SELECT * FROM ${table} WHERE id = $1 AND matter_id = $2`, [req.params[idParam], req.params.id])).rows[0];
+        if (!row) {
+          await client_.query("ROLLBACK");
+          return res.status(404).json({ error: `${label} not found.` });
+        }
+        if (before) await before(client_, row);
+        await client_.query(`DELETE FROM ${table} WHERE id = $1`, [row.id]);
+        await logActivity(client_, req.params.id, req.user.id, "edit", `Deleted ${describe(row)}`);
+        await client_.query("COMMIT");
+        res.status(204).send();
+      } catch (err) {
+        await client_.query("ROLLBACK");
+        throw err;
+      } finally {
+        client_.release();
+      }
+    })
+  );
+}
+
+deleteRoute("/:id/documents/:documentId", "documents", "documentId", "Document", (d) => `document "${d.name}"${d.file_name ? " and its file" : ""}`);
+deleteRoute("/:id/emails/:emailId", "emails", "emailId", "Email", (e) => `email log "${e.subject}"`,
+  (db, e) => db.query(`UPDATE enquiries SET source_email_id = NULL WHERE source_email_id = $1`, [e.id]));
+deleteRoute("/:id/enquiries/:enquiryId", "enquiries", "enquiryId", "Enquiry", (q) => `enquiry ${q.number}: "${q.question}"`);
+deleteRoute("/:id/searches/:searchId", "searches", "searchId", "Search", (x) => `search "${x.type}"`);
+deleteRoute("/:id/undertakings/:undertakingId", "undertakings", "undertakingId", "Undertaking", (u) => `undertaking "${u.description}"`);
+deleteRoute("/:id/tasks/:taskId", "tasks", "taskId", "Task", (t) => `task "${t.description}"`);
+
+/** Generic field edit for one row on the matter; `fields` maps body keys to columns (+ optional validator). */
+function editRoute(path, table, idParam, label, fields, describe) {
+  router.patch(
+    path,
+    asyncHandler(async (req, res) => {
+      if (!(await assertMatterVisible(req, res, req.params.id))) return;
+      const row = (await query(`SELECT * FROM ${table} WHERE id = $1 AND matter_id = $2`, [req.params[idParam], req.params.id])).rows[0];
+      if (!row) return res.status(404).json({ error: `${label} not found.` });
+      const setClauses = [];
+      const params = [];
+      for (const [key, { column, required, oneOf }] of Object.entries(fields)) {
+        if (!(key in req.body)) continue;
+        let value = req.body[key];
+        if (typeof value === "string") value = value.trim();
+        if (value === "") value = null;
+        if (required && value === null) return res.status(400).json({ error: `${key} can't be blank.` });
+        if (oneOf && value !== null && !oneOf.includes(value)) return res.status(400).json({ error: `${key} must be one of: ${oneOf.join(", ")}.` });
+        params.push(value);
+        setClauses.push(`${column} = $${params.length}`);
+      }
+      if (!setClauses.length) return res.status(400).json({ error: "No recognised fields to update." });
+      params.push(row.id);
+      const result = await query(`UPDATE ${table} SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING *`, params);
+      await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'edit',$3)`,
+        [req.params.id, req.user.id, `Edited ${describe(result.rows[0])}`]);
+      res.json(result.rows[0]);
+    })
+  );
+}
+
+editRoute("/:id/documents/:documentId", "documents", "documentId", "Document", {
+  name: { column: "name", required: true }, category: { column: "category", required: true },
+  date: { column: "doc_date" }, notes: { column: "notes" },
+}, (d) => `document "${d.name}"`);
+editRoute("/:id/enquiries/:enquiryId", "enquiries", "enquiryId", "Enquiry", {
+  question: { column: "question", required: true },
+}, (q) => `enquiry ${q.number}`);
+editRoute("/:id/undertakings/:undertakingId", "undertakings", "undertakingId", "Undertaking", {
+  direction: { column: "direction", required: true, oneOf: ["given", "received"] },
+  description: { column: "description", required: true }, party: { column: "party" }, dateGiven: { column: "date_given" },
+}, (u) => `undertaking "${u.description}"`);
+editRoute("/:id/emails/:emailId", "emails", "emailId", "Email", {
+  subject: { column: "subject", required: true }, body: { column: "body" },
+}, (e) => `email log "${e.subject}"`);
 
 module.exports = router;
