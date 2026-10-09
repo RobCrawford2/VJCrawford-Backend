@@ -4,11 +4,13 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
+import { notify, confirmAction, Notifications } from "./notify";
+import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -57,6 +59,12 @@ const PRE_COMPLETION_CHECKLIST = [
 ];
 
 const TYPES = ["Sale", "Purchase", "Remortgage"];
+
+/** YYYY-MM-DD in the user's own (UK) time — toISOString() would give the UTC date. */
+function localISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const todayISO = () => localISO(new Date());
 const TENURES = ["Freehold", "Leasehold", "Share of freehold", "Commonhold"];
 // Stored enquiry statuses and the wording staff see.
 const ENQUIRY_STATUSES = [
@@ -333,8 +341,32 @@ function needsAttention(matter, staleDays = 14) {
   if (matter.searches.some((s) => searchStatus(s) === "overdue")) reasons.push("A search is overdue");
   if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries raised and not yet answered");
   if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry responses received — check whether they're satisfactory");
-  if (matter.undertakings.some((u) => u.status === "Outstanding")) reasons.push("Undertaking not yet discharged");
+  const outstandingUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding");
+  if (outstandingUndertakings.length && matter.keyDates.actualCompletion) {
+    reasons.push(`${outstandingUndertakings.length} undertaking${outstandingUndertakings.length === 1 ? "" : "s"} still outstanding after completion on ${formatDate(matter.keyDates.actualCompletion)}`);
+  } else if (outstandingUndertakings.length) {
+    reasons.push("Undertaking not yet discharged");
+  }
   const today = new Date();
+  const daysUntil = (d) => Math.ceil((new Date(d) - new Date(todayISO())) / 86400000);
+
+  // Land Registry OS1 priority: completion and the registration application must be in before it ends.
+  if (matter.keyDates.os1PriorityExpiry && matter.currentStageIndex < CLOSED_INDEX) {
+    const left = daysUntil(matter.keyDates.os1PriorityExpiry);
+    if (left < 0) reasons.push(`OS1 priority period ended ${formatDate(matter.keyDates.os1PriorityExpiry)} — check the registration application went in, or carry out a fresh search`);
+    else if (left <= 7) reasons.push(`OS1 priority period ends in ${left} day${left === 1 ? "" : "s"} (${formatDate(matter.keyDates.os1PriorityExpiry)}) — complete and apply to register before then`);
+  }
+  // Search results usually treated as stale after about six months.
+  if (matter.currentStageIndex < EXCHANGE_INDEX && !matter.keyDates.actualExchange) {
+    const sixMonthsAgo = new Date(); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const stale = matter.searches.filter((x) => x.dateReceived && new Date(x.dateReceived) < sixMonthsAgo);
+    if (stale.length) reasons.push(`Search results over 6 months old (${stale.map((x) => x.type).join(", ")}) — consider updating them or indemnity cover before exchange`);
+  }
+  // Short leases: mortgage and value risk.
+  const lease = matter.property?.leaseYearsRemaining;
+  if (isLeasehold(matter.property?.tenure) && lease !== "" && lease !== null && lease !== undefined && Number(lease) < 85) {
+    reasons.push(`Lease has only ${lease} years left — check the lender's minimum term; an extension may be needed${Number(lease) < 80 ? " (under 80 years: extension costs rise sharply)" : ""}`);
+  }
   if (matter.keyDates.targetExchange && !matter.keyDates.actualExchange && new Date(matter.keyDates.targetExchange) < today && matter.currentStageIndex < EXCHANGE_INDEX) {
     reasons.push("Target exchange date has passed");
   }
@@ -366,7 +398,7 @@ function sdltInfo(matter) {
   deadline.setDate(deadline.getDate() + 14);
   const filed = matter.documents.some((d) => d.category === "SDLT / LR");
   const daysLeft = Math.ceil((deadline - new Date()) / 86400000);
-  return { deadline: deadline.toISOString().slice(0, 10), filed, daysLeft, overdue: !filed && daysLeft < 0, dueSoon: !filed && daysLeft >= 0 && daysLeft <= 3 };
+  return { deadline: localISO(deadline), filed, daysLeft, overdue: !filed && daysLeft < 0, dueSoon: !filed && daysLeft >= 0 && daysLeft <= 3 };
 }
 
 
@@ -447,6 +479,9 @@ export default function App() {
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
+  const [showUndertakings, setShowUndertakings] = useState(false);
+  const [homeRefresh, setHomeRefresh] = useState(0);
+  const [editingItem, setEditingItem] = useState(null); // { kind, item }
   const [stageRequestDraft, setStageRequestDraft] = useState(null);
   const [showStandardTasks, setShowStandardTasks] = useState(false);
   const [pendingSignoffs, setPendingSignoffs] = useState([]);
@@ -494,6 +529,7 @@ export default function App() {
           staleDays: s.stale_days ?? prev.staleDays,
           requireStageSignoff: s.require_stage_signoff ?? true,
           dictationEnabled: s.dictation_enabled ?? true,
+          requireExchangeChecks: s.require_exchange_checks ?? true,
           currentUser: authUser.name,
         }))
       )
@@ -510,6 +546,7 @@ export default function App() {
     if ("staleDays" in patch) firmPatch.staleDays = patch.staleDays;
     if ("requireStageSignoff" in patch) firmPatch.requireStageSignoff = patch.requireStageSignoff;
     if ("dictationEnabled" in patch) firmPatch.dictationEnabled = patch.dictationEnabled;
+    if ("requireExchangeChecks" in patch) firmPatch.requireExchangeChecks = patch.requireExchangeChecks;
     if (Object.keys(firmPatch).length) {
       api.updateFirmSettings(firmPatch).catch(() => {});
     }
@@ -577,6 +614,7 @@ export default function App() {
   async function afterMutation() {
     await Promise.all([refreshSelected(selectedId), refreshList()]);
     refreshMyTasks();
+    setHomeRefresh((n) => n + 1);
   }
 
   // ---- New matter ----
@@ -588,16 +626,18 @@ export default function App() {
       setShowNewMatter(false);
       setActiveTab("overview");
     } catch (err) {
-      window.alert(err.message || "Couldn't create the matter.");
+      notify(err.message || "Couldn't create the matter.");
     }
   }
 
   // ---- Stage ----
   async function setStage(id, idx) {
     const matter = id === selectedId ? selectedDetail : matters.find((m) => m.id === id);
-    if (matter && idx >= EXCHANGE_INDEX && idx > matter.currentStageIndex && !matter.preCompletionReview.confirmedBy) {
-      const proceed = window.confirm(
-        "The pre-exchange review hasn't been confirmed on this file yet. Move to " + STAGES[idx].name + " anyway?"
+    // With the firm's exchange checks on, the server refuses (and explains) — only ask when they're off.
+    if (matter && settings.requireExchangeChecks === false && idx >= EXCHANGE_INDEX && idx > matter.currentStageIndex && !matter.preCompletionReview.confirmedBy) {
+      const proceed = await confirmAction(
+        `The pre-exchange review hasn't been confirmed on this file yet. Move to ${STAGES[idx].name} anyway?`,
+        { confirmLabel: "Move anyway", danger: true }
       );
       if (!proceed) return;
     }
@@ -610,7 +650,7 @@ export default function App() {
       await api.setStage(id, idx);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't update the stage.");
+      notify(err.message || "Couldn't update the stage.");
     }
   }
 
@@ -632,7 +672,7 @@ export default function App() {
       await api.withdrawStageRequest(id, requestId);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't withdraw the request.");
+      notify(err.message || "Couldn't withdraw the request.");
     }
   }
 
@@ -655,11 +695,11 @@ export default function App() {
 
   async function confirmPreCompletionReview(id, confirmedBy) {
     try {
-      await api.updateMatter(id, { preExchangeConfirmedBy: confirmedBy, preExchangeConfirmedDate: new Date().toISOString().slice(0, 10) });
+      await api.updateMatter(id, { preExchangeConfirmedBy: confirmedBy, preExchangeConfirmedDate: todayISO() });
       await api.addNote(id, `Pre-exchange review confirmed by ${confirmedBy}`);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't confirm the review.");
+      notify(err.message || "Couldn't confirm the review.");
     }
   }
 
@@ -669,7 +709,7 @@ export default function App() {
       await api.addNote(id, "Pre-exchange review reset — re-confirmation required");
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't reset the review.");
+      notify(err.message || "Couldn't reset the review.");
     }
   }
 
@@ -679,14 +719,14 @@ export default function App() {
     try {
       created = await api.addDocument(id, doc);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the document.");
+      notify(err.message || "Couldn't add the document.");
       return;
     }
     if (file) {
       try {
         await api.uploadDocumentFile(id, created.id, file);
       } catch (err) {
-        window.alert(`The document was recorded, but the file didn't upload: ${err.message} You can attach it again from the Documents tab.`);
+        notify(`The document was recorded, but the file didn't upload: ${err.message} You can attach it again from the Documents tab.`);
       }
     }
     await afterMutation();
@@ -695,12 +735,12 @@ export default function App() {
 
   async function attachDocumentFile(id, documentId, file) {
     const problem = checkDocFile(file);
-    if (problem) return window.alert(problem);
+    if (problem) return notify(problem);
     try {
       await api.uploadDocumentFile(id, documentId, file);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't upload the file.");
+      notify(err.message || "Couldn't upload the file.");
     }
   }
 
@@ -715,7 +755,7 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       await refreshSelected(matter.id); // picks up the "generated" activity entry
     } catch (err) {
-      window.alert(err.message || "Couldn't generate the report.");
+      notify(err.message || "Couldn't generate the report.");
     }
   }
 
@@ -738,7 +778,7 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
       viewer?.close();
-      window.alert(err.message || "Couldn't open the file.");
+      notify(err.message || "Couldn't open the file.");
     }
   }
 
@@ -749,7 +789,7 @@ export default function App() {
       await afterMutation();
       setShowAddEmail(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't log the email.");
+      notify(err.message || "Couldn't log the email.");
     }
   }
 
@@ -757,7 +797,7 @@ export default function App() {
     // Real Outlook integration is a Phase 2 backend feature (see the Settings
     // panel note) — there is no backend endpoint for this yet, so it's a
     // local-only placeholder rather than silently doing nothing.
-    window.alert("Outlook import isn't wired to a real mailbox yet — this is a placeholder for the Phase 2 Microsoft Graph integration.");
+    notify("Outlook import isn't wired to a real mailbox yet — this is a placeholder for the Phase 2 Microsoft Graph integration.");
   }
 
   async function matchEmailManually(id, emailId) {
@@ -765,7 +805,7 @@ export default function App() {
       await api.matchEmail(id, emailId);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't check that email for enquiry replies.");
+      notify(err.message || "Couldn't check that email for enquiry replies.");
     }
   }
 
@@ -776,7 +816,7 @@ export default function App() {
       await afterMutation();
       setShowAddEnquiry(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the enquiry.");
+      notify(err.message || "Couldn't add the enquiry.");
     }
   }
 
@@ -786,7 +826,7 @@ export default function App() {
       await afterMutation();
       setShowStandardEnquiries(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the standard enquiries.");
+      notify(err.message || "Couldn't add the standard enquiries.");
     }
   }
 
@@ -795,7 +835,7 @@ export default function App() {
       await api.setEnquiryStatus(id, enquiryId, status);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't change the status.");
+      notify(err.message || "Couldn't change the status.");
     }
   }
 
@@ -814,12 +854,12 @@ export default function App() {
     try {
       // The mailto: handoff already happened in the modal before this is called;
       // this just logs the copy on the file, same as before.
-      await api.addEmail(id, { direction: "out", from: "us", to, subject, date: new Date().toISOString().slice(0, 10), body });
+      await api.addEmail(id, { direction: "out", from: "us", to, subject, date: todayISO(), body });
       await api.addNote(id, `${count} enquir${count === 1 ? "y" : "ies"} emailed to other side's solicitor`);
       await afterMutation();
       setShowEmailEnquiries(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't log that email.");
+      notify(err.message || "Couldn't log that email.");
     }
   }
 
@@ -830,15 +870,15 @@ export default function App() {
       await afterMutation();
       setShowAddSearch(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the search.");
+      notify(err.message || "Couldn't add the search.");
     }
   }
 
   async function addStandardSearches(id, types) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const expected = new Date();
     expected.setDate(expected.getDate() + 14);
-    const expectedReturn = expected.toISOString().slice(0, 10);
+    const expectedReturn = localISO(expected);
     try {
       // The backend doesn't have a bulk-searches endpoint (only bulk enquiries) —
       // ordering several searches from a template is just several individual
@@ -849,7 +889,7 @@ export default function App() {
       await afterMutation();
       setShowStandardSearches(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the standard searches.");
+      notify(err.message || "Couldn't add the standard searches.");
     }
   }
 
@@ -859,7 +899,7 @@ export default function App() {
       await afterMutation();
       setUpdatingSearch(null);
     } catch (err) {
-      window.alert(err.message || "Couldn't update the search.");
+      notify(err.message || "Couldn't update the search.");
     }
   }
 
@@ -870,7 +910,7 @@ export default function App() {
       await afterMutation();
       setShowAddUndertaking(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the undertaking.");
+      notify(err.message || "Couldn't add the undertaking.");
     }
   }
 
@@ -880,7 +920,7 @@ export default function App() {
       await afterMutation();
       setDischargingUndertaking(null);
     } catch (err) {
-      window.alert(err.message || "Couldn't discharge the undertaking.");
+      notify(err.message || "Couldn't discharge the undertaking.");
     }
   }
 
@@ -891,7 +931,7 @@ export default function App() {
       await afterMutation();
       setShowAddTask(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't add the task.");
+      notify(err.message || "Couldn't add the task.");
     }
   }
 
@@ -900,7 +940,7 @@ export default function App() {
       await api.updateTask(id, taskId, patch);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't update the task.");
+      notify(err.message || "Couldn't update the task.");
     }
   }
 
@@ -909,7 +949,7 @@ export default function App() {
       await api.completeTask(id, taskId);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't complete the task.");
+      notify(err.message || "Couldn't complete the task.");
     }
   }
 
@@ -918,7 +958,7 @@ export default function App() {
       await api.reopenTask(id, taskId);
       await afterMutation();
     } catch (err) {
-      window.alert(err.message || "Couldn't reopen the task.");
+      notify(err.message || "Couldn't reopen the task.");
     }
   }
 
@@ -929,7 +969,37 @@ export default function App() {
       await afterMutation();
       setShowAddNote(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't log that update.");
+      notify(err.message || "Couldn't log that update.");
+    }
+  }
+
+  // ---- Corrections: edit / delete items added by mistake ----
+  async function deleteItem(matterId, kind, item, label) {
+    const ok = await confirmAction(`Delete ${label}? This can't be undone, but the deletion is recorded in the matter's history.`, { confirmLabel: "Delete", danger: true });
+    if (!ok) return;
+    try {
+      await api.deleteItem(matterId, kind, item.id);
+      await afterMutation();
+      notify(`Deleted ${label}.`, "success");
+    } catch (err) {
+      notify(err.message || "Couldn't delete that.");
+    }
+  }
+
+  async function saveEditedItem(matterId, kind, itemId, patch) {
+    await api.editItem(matterId, kind, itemId, patch);
+    await afterMutation();
+    setEditingItem(null);
+    notify("Changes saved.", "success");
+  }
+
+  // Save a few matter fields directly (API field names) — e.g. file notes on blur.
+  async function saveMatterFields(id, patch) {
+    try {
+      await api.updateMatter(id, patch);
+      await afterMutation();
+    } catch (err) {
+      notify(err.message || "Couldn't save that change.");
     }
   }
 
@@ -948,7 +1018,7 @@ export default function App() {
       await afterMutation();
       setShowEditMatter(false);
     } catch (err) {
-      window.alert(err.message || "Couldn't save those changes.");
+      notify(err.message || "Couldn't save those changes.");
     }
   }
 
@@ -983,6 +1053,7 @@ export default function App() {
   return (
     <DictationContext.Provider value={settings.dictationEnabled !== false}>
     <div className="ac-root">
+      <Notifications />
       <style>{`
         .ac-root {
           --ink: #16212f;
@@ -1061,6 +1132,40 @@ export default function App() {
         .ac-hidelist:hover { color: var(--ink); }
         .ac-task-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .ac-task-controls select, .ac-task-controls input { max-width: 190px; }
+        .ac-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; max-width: min(440px, calc(100vw - 32px)); }
+        .ac-toast {
+          display: flex; gap: 10px; align-items: flex-start; padding: 11px 12px; border-radius: 4px; font-size: 13px;
+          background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--slate); box-shadow: 0 6px 20px rgba(22, 33, 47, 0.18);
+        }
+        .ac-toast.error { border-left-color: var(--danger); }
+        .ac-toast.error > svg { color: var(--danger); }
+        .ac-toast.success { border-left-color: var(--success); }
+        .ac-toast.success > svg { color: var(--success); }
+        .ac-toast .msg { flex: 1; white-space: pre-line; color: var(--ink); }
+        .ac-toast button { background: none; border: none; padding: 0; color: var(--slate); }
+        .ac-tablebtn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+        .ac-rowactions { display: inline-flex; gap: 2px; margin-left: 4px; vertical-align: middle; }
+        .ac-rowactions button { background: none; border: none; padding: 4px; color: var(--slate-light); border-radius: 3px; display: inline-flex; }
+        .ac-rowactions button:hover { color: var(--ink); background: var(--paper); }
+        .ac-rowactions button[title="Delete"]:hover { color: var(--danger); }
+        .ac-week-row { display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px dashed var(--line); align-items: flex-start; }
+        .ac-week-date { width: 96px; flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+        .ac-week-date .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate); font-weight: 600; }
+        .ac-week-date .small { font-size: 10.5px; font-weight: 400; color: #8a3b1f; }
+        .ac-week-date.overdue, .ac-week-date.overdue .k { color: #8a3b1f; }
+        .ac-week-date.today { color: var(--brass); }
+        .ac-linkbtn { background: none; border: none; padding: 0; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); text-align: left; }
+        .ac-linkbtn:hover { color: var(--brass); }
+        .ac-ready-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+        .ac-ready { font-size: 11px; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+        .ac-ready.ok { background: var(--success-bg); color: var(--success); }
+        .ac-ready.no { background: #f6ddd0; color: #8a3b1f; }
+        .ac-ready.neutral { background: var(--paper); color: var(--slate); border: 1px solid var(--line); }
+        .ac-sdlt { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 2px; margin-bottom: 12px; background: var(--card); }
+        .ac-sdlt-result { font-size: 12.5px; margin-bottom: 10px; }
+        .ac-sdlt-total { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .ac-sdlt-band { display: flex; justify-content: space-between; color: var(--ink-soft); font-family: var(--font-mono); font-size: 11.5px; padding: 1px 0; }
+        .ac-sdlt-note { font-size: 11.5px; color: var(--slate); margin-top: 4px; }
         .ac-dict { position: relative; }
         .ac-dict > textarea { width: 100%; }
         .ac-dict-btn {
@@ -1422,6 +1527,9 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          <button className="ac-iconbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
+            <Gavel size={18} />
+          </button>
           {authUser.role === "admin" && (
             <button className="ac-iconbtn" onClick={() => setShowStaff(true)} title="Staff">
               <Users size={18} />
@@ -1555,6 +1663,8 @@ export default function App() {
                 </div>
               )}
 
+              <ThisWeekCard refreshKey={homeRefresh} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />
+
               {(() => {
                 const openTasks = myTasks;
                 const stale = staleFiles(matters, settings.staleDays);
@@ -1669,7 +1779,9 @@ export default function App() {
               onResetReview={() => resetPreCompletionReview(selected.id)}
               staleDays={settings.staleDays}
               onOpenLinked={(id) => { setSelectedId(id); setActiveTab("overview"); }}
-              onSaveField={(patch) => updateMatter(selected.id, (m) => ({ ...m, ...patch }))}
+              onSaveField={(patch) => saveMatterFields(selected.id, patch)}
+              onEditItem={(kind, item) => setEditingItem({ kind, item })}
+              onDeleteItem={(kind, item, label) => deleteItem(selected.id, kind, item, label)}
               saveState={saveState}
             />
           )}
@@ -1719,6 +1831,14 @@ export default function App() {
         />
       )}
       {showChangePassword && <ChangePasswordForm onClose={() => setShowChangePassword(false)} />}
+      {editingItem && selected && (
+        <EditItemForm
+          kind={editingItem.kind}
+          item={editingItem.item}
+          onClose={() => setEditingItem(null)}
+          onSave={(patch) => saveEditedItem(selected.id, editingItem.kind, editingItem.item.id, patch)}
+        />
+      )}
       {stageRequestDraft && (
         <StageRequestForm
           stageIndex={stageRequestDraft.stageIndex}
@@ -1732,6 +1852,12 @@ export default function App() {
           users={users}
           onClose={() => setShowStandardTasks(false)}
           onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
+        />
+      )}
+      {showUndertakings && (
+        <UndertakingsPanel
+          onClose={() => setShowUndertakings(false)}
+          onOpenMatter={(id) => { setSelectedId(id); setActiveTab("undertakings"); setShowUndertakings(false); }}
         />
       )}
       {showStaff && (
@@ -1832,7 +1958,7 @@ function StageRequestForm({ stageIndex, onClose, onSubmit }) {
           <label>Note for the fee earner (optional)</label>
           <DictTextarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
         </div>
-        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5, whiteSpace: "pre-line" }}>{error}</p>}
         <button className="ac-submit" type="submit" disabled={busy}><Send size={14} /> {busy ? "Sending…" : "Send for sign-off"}</button>
       </form>
     </div>
@@ -1850,7 +1976,7 @@ function StageRequestBanner({ matter, currentUserId, onDecide, onWithdraw }) {
   async function decide(approve) {
     setBusy(true);
     try { await onDecide(r.id, approve, note); setDeclining(false); setNote(""); }
-    catch (err) { window.alert(err.message || "Couldn't record the decision."); }
+    catch (err) { notify(err.message || "Couldn't record the decision."); }
     finally { setBusy(false); }
   }
 
@@ -1941,9 +2067,9 @@ function StageTimeline({ matter, onSetStage }) {
   );
 }
 
-function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAddComment }) {
+function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAddComment, onEdit, onDelete }) {
   const [mode, setMode] = useState(null); // "reply" | "comment" | null
-  const [reply, setReply] = useState({ text: "", date: new Date().toISOString().slice(0, 10), emailId: "", status: "Pending Review" });
+  const [reply, setReply] = useState({ text: "", date: todayISO(), emailId: "", status: "Pending Review" });
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1951,7 +2077,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
 
   function close() {
     setMode(null); setError("");
-    setReply({ text: "", date: new Date().toISOString().slice(0, 10), emailId: "", status: "Pending Review" });
+    setReply({ text: "", date: todayISO(), emailId: "", status: "Pending Review" });
     setComment("");
   }
 
@@ -1974,6 +2100,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
             {q.comments.length > 0 && ` · ${q.comments.length} comment${q.comments.length === 1 ? "" : "s"}`}
           </div>
         </div>
+        <RowActions onEdit={onEdit} onDelete={onDelete} />
         <select className={`ac-enq-status ac-pill--${st.pill}`} value={q.status} onChange={(e) => onSetStatus(e.target.value)} title="Change status">
           {ENQUIRY_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select>
@@ -2070,7 +2197,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   const [tasksMineOnly, setTasksMineOnly] = useState(false);
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
@@ -2189,7 +2316,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div className="ac-kv"><span className="k">Registered owner</span><span className="v">{matter.property.registeredProprietor || "—"}</span></div>
               {isLeasehold(matter.property.tenure) && (
                 <>
-                  <div className="ac-kv"><span className="k">Lease term</span><span className="v">{matter.property.leaseTerm || "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Lease term</span><span className="v">{matter.property.leaseTerm || "—"}{matter.property.leaseYearsRemaining !== "" ? ` (${matter.property.leaseYearsRemaining} years left)` : ""}</span></div>
                   <div className="ac-kv"><span className="k">Ground rent</span><span className="v">{matter.property.groundRent || "—"}</span></div>
                   <div className="ac-kv"><span className="k">Service charge</span><span className="v">{matter.property.serviceCharge || "—"}</span></div>
                 </>
@@ -2197,7 +2324,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               {matter.type !== "Sale" && (
                 <>
                   <div className="ac-kv"><span className="k">Deposit</span><span className="v mono">{matter.money.deposit !== "" ? formatMoney(matter.money.deposit) : "—"}</span></div>
-                  <div className="ac-kv"><span className="k">SDLT payable</span><span className="v mono">{matter.money.sdlt !== "" ? formatMoney(matter.money.sdlt) : "—"}</span></div>
+                  <div className="ac-kv"><span className="k">Deposit received</span><span className="v mono">{matter.money.depositReceivedDate ? formatDate(matter.money.depositReceivedDate) : "—"}</span></div>
+                  <div className="ac-kv"><span className="k">SDLT payable</span><span className="v mono">{matter.money.sdlt !== "" ? formatMoney(matter.money.sdlt) : "—"}{matter.money.sdltBuyerType ? ` · ${BUYER_TYPES.find((b) => b.value === matter.money.sdltBuyerType)?.label.split(" (")[0]}` : ""}</span></div>
                 </>
               )}
               {matter.parties.lender && (
@@ -2222,6 +2350,9 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div className="ac-kv"><span className="k">Actual exchange</span><span className="v mono">{formatDate(matter.keyDates.actualExchange)}</span></div>
               <div className="ac-kv"><span className="k">Target completion</span><span className="v mono">{formatDate(matter.keyDates.targetCompletion)}</span></div>
               <div className="ac-kv"><span className="k">Actual completion</span><span className="v mono">{formatDate(matter.keyDates.actualCompletion)}</span></div>
+              {matter.keyDates.os1PriorityExpiry && (
+                <div className="ac-kv"><span className="k">OS1 priority expires</span><span className="v mono">{formatDate(matter.keyDates.os1PriorityExpiry)}</span></div>
+              )}
               {(matter.type === "Purchase" || matter.type === "Remortgage") && (() => {
                 const mtg = mortgageExpiryInfo(matter);
                 const warn = mtg && (mtg.conflict || mtg.expired || mtg.expiringSoon);
@@ -2243,7 +2374,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                 style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--card)", minHeight: 90, outline: "none" }}
                 value={notesDraft}
                 onChange={(e) => setNotesDraft(e.target.value)}
-                onBlur={() => onSaveField({ notes: notesDraft })}
+                onBlur={() => { if (notesDraft !== (matter.notes || "")) onSaveField({ notes: notesDraft }); }}
                 placeholder="Attendance notes, chain details, anything the next fee-earner should know…"
               />
             </div>
@@ -2335,6 +2466,14 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   <div style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 10px" }}>
                     {matter.preCompletionReview.checkedItems.length} of {PRE_COMPLETION_CHECKLIST.length} checked
                   </div>
+                  {matter.type === "Purchase" && (
+                    <div className="ac-kv" style={{ marginBottom: 10 }}>
+                      <span className="k">Deposit received</span>
+                      {matter.money.depositReceivedDate
+                        ? <span className="v mono">{formatDate(matter.money.depositReceivedDate)}</span>
+                        : <button className="ac-tablebtn" onClick={() => onSaveField({ depositReceivedDate: todayISO() })}>Mark received today</button>}
+                    </div>
+                  )}
                   <button
                     className="ac-submit"
                     style={{ marginTop: 0 }}
@@ -2387,6 +2526,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                 onSetStatus={(status) => onSetEnquiryStatus(q.id, status)}
                 onLogReply={(payload) => onLogEnquiryReply(q.id, payload)}
                 onAddComment={(comment) => onAddEnquiryComment(q.id, comment)}
+                onEdit={() => onEditItem("enquiries", q)}
+                onDelete={() => onDeleteItem("enquiries", q, `enquiry ${q.number} with its replies and comments`)}
               />
             ))}
             {!matter.parties.otherSideSolicitorEmail && matter.enquiries.length > 0 && (
@@ -2430,7 +2571,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                     <th style={{ width: 100 }}>Expected</th>
                     <th style={{ width: 100 }}>Received</th>
                     <th style={{ width: 120 }}>Status</th>
-                    <th style={{ width: 70 }}></th>
+                    <th style={{ width: 130 }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2444,7 +2585,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                           <td className="mono">{formatDate(s.expectedReturn)}</td>
                           <td className="mono">{formatDate(s.dateReceived)}</td>
                           <td><span className={`ac-pill ac-pill--${st === "ordered" ? "setup" : st === "overdue" ? "critical" : st === "received" ? "closed" : "issue"}`}>{SEARCH_STATUS_LABEL[st]}</span></td>
-                          <td><button className="ac-tablebtn" onClick={() => onUpdateSearch(s)}>Update</button></td>
+                          <td style={{ whiteSpace: "nowrap" }}>
+                            <button className="ac-tablebtn" onClick={() => onUpdateSearch(s)}>Update</button>
+                            <RowActions onDelete={() => onDeleteItem("searches", s, `the ${s.type}`)} />
+                          </td>
                         </tr>
                         {s.issue && s.issueNotes && (
                           <tr className="ac-row-issue">
@@ -2494,7 +2638,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                       <td>{u.party}</td>
                       <td className="mono">{formatDate(u.dateGiven)}</td>
                       <td><span className={`ac-pill ac-pill--${u.status === "Discharged" ? "closed" : "issue"}`}>{u.status}</span></td>
-                      <td>{u.status === "Outstanding" && <button className="ac-tablebtn" onClick={() => onDischargeUndertaking(u)}>Discharge</button>}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {u.status === "Outstanding" && <button className="ac-tablebtn" onClick={() => onDischargeUndertaking(u)}>Discharge</button>}
+                        <RowActions onEdit={() => onEditItem("undertakings", u)} onDelete={() => onDeleteItem("undertakings", u, `the undertaking “${u.description}”`)} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2546,6 +2693,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                         <input type="date" className="ac-tablebtn" value={t.dueDate ? String(t.dueDate).slice(0, 10) : ""} title="Due date"
                           onChange={(e) => onUpdateTask(t.id, { dueDate: e.target.value || null })} />
                         <button className="ac-tablebtn" onClick={() => onCompleteTask(t.id)}>Mark done</button>
+                        <RowActions onDelete={() => onDeleteItem("tasks", t, `the task “${t.description}”`)} />
                       </div>
                     </div>
                   );
@@ -2567,6 +2715,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                       <div className="ac-doc-meta">Completed {formatDate(t.dateCompleted)}{t.assignedToName ? ` · ${t.assignedToName}` : ""}</div>
                     </div>
                     <button className="ac-tablebtn" onClick={() => onReopenTask(t.id)}>Reopen</button>
+                    <RowActions onDelete={() => onDeleteItem("tasks", t, `the task “${t.description}”`)} />
                   </div>
                 ))}
               </>
@@ -2593,6 +2742,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   {d.notes && <div className="ac-doc-notes">{d.notes}</div>}
                 </div>
                 <div className="ac-doc-actions">
+                  <RowActions onEdit={() => onEditItem("documents", d)} onDelete={() => onDeleteItem("documents", d, `document “${d.name}”${d.fileName ? " and its file" : ""}`)} />
                   {d.fileName ? (
                     <>
                       <button className="ac-tablebtn" onClick={() => onOpenFile(d, false)}>View</button>
@@ -2651,7 +2801,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div key={e.id} className="ac-email-row">
                 <div className={`ac-email-dir ${e.direction}`}>{e.direction === "in" ? "In" : "Out"}</div>
                 <div style={{ flex: 1 }}>
-                  <div className="ac-email-subject">{e.subject}</div>
+                  <div className="ac-email-subject" style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span>{e.subject}</span>
+                    <RowActions onEdit={() => onEditItem("emails", e)} onDelete={() => onDeleteItem("emails", e, `the email log “${e.subject}”`)} />
+                  </div>
                   <div className="ac-email-meta">{e.direction === "in" ? `From ${e.from}` : `To ${e.to}`} · {formatDate(e.date)}</div>
                   <div className="ac-email-body">{e.body}</div>
                   {e.direction === "in" && matter.enquiries.length > 0 && (
@@ -2666,7 +2819,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                         value=""
                         onChange={(ev) => {
                           if (!ev.target.value) return;
-                          onLogEnquiryReply(ev.target.value, { emailId: e.id }).catch((err) => window.alert(err.message || "Couldn't log the reply."));
+                          onLogEnquiryReply(ev.target.value, { emailId: e.id }).catch((err) => notify(err.message || "Couldn't log the reply."));
                         }}
                         title="Log this whole email as the reply to one enquiry"
                       >
@@ -2756,7 +2909,7 @@ function NewMatterForm({ onClose, onCreate, users }) {
         lender: f.lender,
       },
       keyDates: {
-        instructed: new Date().toISOString().slice(0, 10),
+        instructed: todayISO(),
         targetExchange: f.targetExchange,
         targetCompletion: f.targetCompletion,
         actualExchange: "",
@@ -2967,6 +3120,19 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectO
         </div>
 
         <div className="ac-card">
+          <h3><Gavel size={12} /> Checks before exchange</h3>
+          <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
+            When on, a matter can't move to Exchange until the pre-exchange review is confirmed, the mortgage offer
+            (if there's a lender) runs past the target completion date, and — on purchases — the deposit is marked as received.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, textTransform: "none", fontWeight: 500, color: "var(--ink)" }}>
+            <input type="checkbox" checked={settings.requireExchangeChecks !== false} disabled={!isAdmin}
+              onChange={(e) => onSave({ requireExchangeChecks: e.target.checked })} style={{ width: "auto" }} />
+            Require these checks before exchange
+          </label>
+        </div>
+
+        <div className="ac-card">
           <h3><Mic size={12} /> Dictation</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
             Shows a microphone button on notes, emails, enquiry replies and tasks so staff can speak instead of type.
@@ -3028,7 +3194,7 @@ function OutlookConsentModal({ onCancel, onApprove }) {
 /* ---------------------------------------------------------------------- */
 
 function AddDocForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: new Date().toISOString().slice(0, 10), notes: "" });
+  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: todayISO(), notes: "" });
   const [file, setFile] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -3109,7 +3275,7 @@ function AddDocForm({ onClose, onAdd }) {
 /* ---------------------------------------------------------------------- */
 
 function AddEmailForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ direction: "in", from: "", to: "", subject: "", date: new Date().toISOString().slice(0, 10), body: "" });
+  const [f, setF] = useState({ direction: "in", from: "", to: "", subject: "", date: todayISO(), body: "" });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -3166,6 +3332,49 @@ function AddEmailForm({ onClose, onAdd }) {
 /* Edit matter details                                                    */
 /* ---------------------------------------------------------------------- */
 
+function SdltCalculator({ price, buyerType, nonResident, sdlt, onChange }) {
+  const result = calculateSdlt(price, { buyerType: buyerType || "standard", nonResident });
+  const fmt = (n) => `£${Math.round(n).toLocaleString("en-GB")}`;
+  return (
+    <div className="ac-sdlt">
+      <div className="ac-row2">
+        <div className="ac-field">
+          <label>SDLT — buyer type</label>
+          <select value={buyerType || ""} onChange={(e) => onChange({ sdltBuyerType: e.target.value })}>
+            <option value="">— Select —</option>
+            {BUYER_TYPES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+          </select>
+        </div>
+        <div className="ac-field">
+          <label>SDLT payable (£)</label>
+          <input type="number" min="0" step="0.01" value={sdlt} onChange={(e) => onChange({ sdlt: e.target.value })} placeholder="0 if none due" />
+        </div>
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, textTransform: "none", fontWeight: 500, color: "var(--ink)", marginBottom: 8 }}>
+        <input type="checkbox" checked={!!nonResident} onChange={(e) => onChange({ sdltNonResident: e.target.checked })} style={{ width: "auto" }} />
+        A buyer is not UK resident (2% surcharge)
+      </label>
+      {Number(price) > 0 && buyerType && (
+        <div className="ac-sdlt-result">
+          <div className="ac-sdlt-total">
+            <span>Calculated SDLT: <strong>{fmt(result.total)}</strong></span>
+            {String(Math.round(Number(sdlt))) !== String(result.total) && (
+              <button type="button" className="ac-tablebtn primary" onClick={() => onChange({ sdlt: String(result.total) })}>Use {fmt(result.total)}</button>
+            )}
+          </div>
+          {result.bands.filter((b) => b.taxable > 0).map((b) => (
+            <div key={b.from} className="ac-sdlt-band">
+              {fmt(b.from)}–{fmt(b.to)} at {b.rate}% <span>{fmt(b.tax)}</span>
+            </div>
+          ))}
+          {result.notes.map((n) => <div key={n} className="ac-sdlt-note">{n}</div>)}
+          <div className="ac-sdlt-note">England &amp; Northern Ireland rates from {RATES_AS_OF}. Check the HMRC calculator for unusual cases (mixed use, linked or multiple dwellings, companies). Not for Scotland or Wales.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ClientDetailsFields({ value, onChange }) {
   return (
     <>
@@ -3213,9 +3422,15 @@ function PropertyFields({ value, onChange }) {
       </div>
       {isLeasehold(value.tenure) && (
         <>
-          <div className="ac-field">
-            <label>Lease term</label>
-            <input value={value.leaseTerm} onChange={onChange("property", "leaseTerm")} placeholder="e.g. 125 years from 1 January 2005 (104 remaining)" />
+          <div className="ac-row2">
+            <div className="ac-field">
+              <label>Lease term</label>
+              <input value={value.leaseTerm} onChange={onChange("property", "leaseTerm")} placeholder="e.g. 125 years from 1 January 2005" />
+            </div>
+            <div className="ac-field">
+              <label>Years remaining</label>
+              <input type="number" min="0" value={value.leaseYearsRemaining ?? ""} onChange={onChange("property", "leaseYearsRemaining")} placeholder="e.g. 104" />
+            </div>
           </div>
           <div className="ac-row2">
             <div className="ac-field">
@@ -3295,6 +3510,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
     actualExchange: matter.keyDates.actualExchange,
     actualCompletion: matter.keyDates.actualCompletion,
     mortgageOfferExpiry: matter.keyDates.mortgageOfferExpiry,
+    os1PriorityExpiry: matter.keyDates.os1PriorityExpiry,
     linkedMatterIds: matter.linkedMatterIds,
     clientDetails: { ...matter.clientDetails },
     property: { ...matter.property },
@@ -3338,6 +3554,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         actualExchange: f.actualExchange,
         actualCompletion: f.actualCompletion,
         mortgageOfferExpiry: f.mortgageOfferExpiry,
+        os1PriorityExpiry: f.os1PriorityExpiry,
       },
       clientDetails: f.clientDetails,
       property: f.property,
@@ -3391,10 +3608,19 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             <input type="number" min="0" step="0.01" value={f.money.deposit} onChange={setIn("money", "deposit")} />
           </div>
           <div className="ac-field">
-            <label>SDLT payable (£)</label>
-            <input type="number" min="0" step="0.01" value={f.money.sdlt} onChange={setIn("money", "sdlt")} placeholder="0 if none due" />
+            <label>Deposit received (cleared)</label>
+            <input type="date" value={f.money.depositReceivedDate || ""} onChange={setIn("money", "depositReceivedDate")} />
           </div>
         </div>
+        {f.type !== "Sale" && (
+          <SdltCalculator
+            price={f.price}
+            buyerType={f.money.sdltBuyerType}
+            nonResident={f.money.sdltNonResident}
+            sdlt={f.money.sdlt}
+            onChange={(patch) => setF((prev) => ({ ...prev, money: { ...prev.money, ...patch } }))}
+          />
+        )}
         <div className="ac-field">
           <label>Mortgage offer special conditions</label>
           <DictTextarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
@@ -3461,9 +3687,15 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             <input type="date" value={f.actualCompletion} onChange={set("actualCompletion")} />
           </div>
         </div>
-        <div className="ac-field">
-          <label>Mortgage offer expiry</label>
-          <input type="date" value={f.mortgageOfferExpiry} onChange={set("mortgageOfferExpiry")} />
+        <div className="ac-row2">
+          <div className="ac-field">
+            <label>Mortgage offer expiry</label>
+            <input type="date" value={f.mortgageOfferExpiry} onChange={set("mortgageOfferExpiry")} />
+          </div>
+          <div className="ac-field">
+            <label>OS1 priority expires</label>
+            <input type="date" value={f.os1PriorityExpiry || ""} onChange={set("os1PriorityExpiry")} title="From the Land Registry OS1 search result" />
+          </div>
         </div>
 
         <div className="ac-fieldset-title">Chain</div>
@@ -3840,7 +4072,7 @@ function EmailEnquiriesModal({ matter, onClose, onSend }) {
 /* ---------------------------------------------------------------------- */
 
 function AddSearchForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ type: SEARCH_TYPES[0], customType: "", dateOrdered: new Date().toISOString().slice(0, 10), expectedReturn: "" });
+  const [f, setF] = useState({ type: SEARCH_TYPES[0], customType: "", dateOrdered: todayISO(), expectedReturn: "" });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -4143,23 +4375,23 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
   }
 
   async function setActive(u, active) {
-    if (!active && !window.confirm(`Deactivate ${u.name}? They'll be logged out straight away and won't be able to log in. Their matters stay as they are.`)) return;
+    if (!active && !(await confirmAction(`Deactivate ${u.name}? They'll be logged out straight away and won't be able to log in. Their matters stay as they are.`, { confirmLabel: "Deactivate", danger: true }))) return;
     try {
       await api.updateUser(u.id, { active });
       await afterChange({ text: `${u.name} ${active ? "reactivated" : "deactivated"}.` });
     } catch (err) {
-      window.alert(err.message);
+      notify(err.message);
     }
   }
 
   async function resetPassword(u) {
     const password = makeTempPassword();
-    if (!window.confirm(`Set a new temporary password for ${u.name}? Their current password will stop working.`)) return;
+    if (!(await confirmAction(`Set a new temporary password for ${u.name}? Their current password will stop working.`, { confirmLabel: "Reset password" }))) return;
     try {
       await api.resetUserPassword(u.id, password);
       await afterChange({ text: `New temporary password for ${u.name}:`, secret: password });
     } catch (err) {
-      window.alert(err.message);
+      notify(err.message);
     }
   }
 
@@ -4356,7 +4588,7 @@ function UpdateSearchForm({ search, onClose, onSave }) {
 /* ---------------------------------------------------------------------- */
 
 function AddUndertakingForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ direction: "given", description: "", party: "", dateGiven: new Date().toISOString().slice(0, 10) });
+  const [f, setF] = useState({ direction: "given", description: "", party: "", dateGiven: todayISO() });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -4405,7 +4637,7 @@ function AddUndertakingForm({ onClose, onAdd }) {
 }
 
 function DischargeUndertakingForm({ undertaking, onClose, onSave }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayISO());
 
   function submit(e) {
     e.preventDefault();
@@ -4508,6 +4740,189 @@ function AddTaskForm({ matter, users, currentUserId, onClose, onAdd }) {
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit"><ListChecks size={14} /> Add task</button>
       </form>
+    </div>
+  );
+}
+
+// Fields editable after the fact, per kind of item (API names → form fields).
+const EDIT_FIELDS = {
+  documents: (d) => ({ title: "Edit document", fields: [
+    { key: "name", label: "Document name", value: d.name, required: true },
+    { key: "category", label: "Category", value: d.category, type: "select", options: DOC_CATEGORIES },
+    { key: "date", label: "Date", value: d.date ? String(d.date).slice(0, 10) : "", type: "date" },
+    { key: "notes", label: "Notes", value: d.notes, type: "textarea" },
+  ] }),
+  emails: (e) => ({ title: "Edit email log", fields: [
+    { key: "subject", label: "Subject", value: e.subject, required: true },
+    { key: "body", label: "Summary", value: e.body, type: "textarea" },
+  ] }),
+  enquiries: (q) => ({ title: `Edit enquiry ${q.number}`, fields: [
+    { key: "question", label: "Enquiry", value: q.question, type: "textarea", required: true },
+  ] }),
+  undertakings: (u) => ({ title: "Edit undertaking", fields: [
+    { key: "direction", label: "Direction", value: u.direction, type: "select", options: ["given", "received"], labels: { given: "Given by us", received: "Received by us" } },
+    { key: "description", label: "Undertaking", value: u.description, type: "textarea", required: true },
+    { key: "party", label: "Given to / received from", value: u.party },
+    { key: "dateGiven", label: "Date", value: u.dateGiven ? String(u.dateGiven).slice(0, 10) : "", type: "date" },
+  ] }),
+};
+
+function EditItemForm({ kind, item, onClose, onSave }) {
+  const config = EDIT_FIELDS[kind](item);
+  const [values, setValues] = useState(Object.fromEntries(config.fields.map((f) => [f.key, f.value ?? ""])));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    const missing = config.fields.find((f) => f.required && !String(values[f.key]).trim());
+    if (missing) return setError(`${missing.label} can't be blank.`);
+    setBusy(true); setError("");
+    try { await onSave(values); } catch (err) { setError(err.message || "Couldn't save."); setBusy(false); }
+  }
+
+  return (
+    <div className="ac-overlay center" onClick={onClose}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="ac-modal-head">
+          <h2>{config.title}</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        {config.fields.map((f) => (
+          <div className="ac-field" key={f.key}>
+            <label>{f.label}</label>
+            {f.type === "textarea" ? (
+              <DictTextarea value={values[f.key]} onChange={(e) => setValues({ ...values, [f.key]: e.target.value })} style={{ minHeight: 80 }} />
+            ) : f.type === "select" ? (
+              <select value={values[f.key]} onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}>
+                {f.options.map((o) => <option key={o} value={o}>{f.labels?.[o] || o}</option>)}
+              </select>
+            ) : (
+              <input type={f.type || "text"} value={values[f.key]} onChange={(e) => setValues({ ...values, [f.key]: e.target.value })} />
+            )}
+          </div>
+        ))}
+        {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
+        <button className="ac-submit" type="submit" disabled={busy}><Check size={14} /> {busy ? "Saving…" : "Save changes"}</button>
+      </form>
+    </div>
+  );
+}
+
+/** Small edit / delete icon buttons for a row. */
+function RowActions({ onEdit, onDelete }) {
+  return (
+    <span className="ac-rowactions">
+      {onEdit && <button type="button" onClick={onEdit} title="Edit" aria-label="Edit"><Pencil size={13} /></button>}
+      {onDelete && <button type="button" onClick={onDelete} title="Delete" aria-label="Delete"><Trash2 size={13} /></button>}
+    </span>
+  );
+}
+
+function ThisWeekCard({ onOpenMatter, refreshKey }) {
+  const [days, setDays] = useState(7);
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api.getUpcoming(days).then(setData).catch(() => setData({ today: todayISO(), matters: [] }));
+  }, [days, refreshKey]);
+  if (!data) return null;
+  const today = data.today;
+  const weekday = (d) => new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+
+  const events = data.matters.flatMap((m) => {
+    const out = [];
+    if (m.target_exchange && !m.actual_exchange && m.current_stage_index < EXCHANGE_INDEX) out.push({ kind: "Exchange", date: m.target_exchange, m });
+    if (m.target_completion && m.current_stage_index < COMPLETION_INDEX + 1) out.push({ kind: "Completion", date: m.target_completion, m });
+    return out;
+  }).filter((e) => e.date <= localISO(new Date(new Date(today).getTime() + days * 86400000)))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const chip = (ok, label, title) => <span className={`ac-ready ${ok ? "ok" : "no"}`} title={title}>{ok ? "✓" : "✗"} {label}</span>;
+
+  return (
+    <div className="ac-card" style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+        <h3 style={{ margin: 0 }}><Calendar size={12} /> Exchanges &amp; completions — next {days} days ({events.length})</h3>
+        <div className="ac-filters">
+          {[7, 14].map((d) => <button key={d} className={`ac-chip ${days === d ? "active" : ""}`} onClick={() => setDays(d)}>{d} days</button>)}
+        </div>
+      </div>
+      {events.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13, margin: 0 }}>Nothing due — and nothing overdue.</p>}
+      {events.map((e) => {
+        const overdue = e.date < today;
+        const isToday = e.date === today;
+        const m = e.m;
+        const mortgageOk = !m.lender || (m.mortgage_offer_expiry && m.mortgage_offer_expiry >= (m.target_completion || today));
+        return (
+          <div key={`${m.id}-${e.kind}`} className="ac-week-row">
+            <div className={`ac-week-date ${overdue ? "overdue" : isToday ? "today" : ""}`}>
+              <div className="k">{e.kind}</div>
+              <div>{overdue ? "Overdue" : isToday ? "Today" : weekday(e.date)}</div>
+              {overdue && <div className="small">was {weekday(e.date)}</div>}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <button className="ac-linkbtn" onClick={() => onOpenMatter(m.id)}>{m.reference} — {m.address}</button>
+              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{m.type} · {m.client}{m.fee_earner_name ? ` · ${m.fee_earner_name}` : ""} · {STAGES[m.current_stage_index].name}</div>
+              <div className="ac-ready-row">
+                {e.kind === "Exchange" && chip(m.pre_exchange_confirmed, "Pre-exchange review")}
+                {m.type === "Purchase" && e.kind === "Exchange" && chip(m.deposit_received, "Deposit")}
+                {m.lender && chip(mortgageOk, "Mortgage offer", m.mortgage_offer_expiry ? `Expires ${formatDate(m.mortgage_offer_expiry)}` : "No expiry date recorded")}
+                {m.searches_awaited > 0 && chip(false, `${m.searches_awaited} search${m.searches_awaited === 1 ? "" : "es"} awaited`)}
+                {m.open_enquiries > 0 && chip(false, `${m.open_enquiries} enquir${m.open_enquiries === 1 ? "y" : "ies"} open`)}
+                {m.open_tasks > 0 && <span className="ac-ready neutral">{m.open_tasks} open task{m.open_tasks === 1 ? "" : "s"}</span>}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function UndertakingsPanel({ onClose, onOpenMatter }) {
+  const [status, setStatus] = useState("Outstanding");
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    setRows(null);
+    api.getUndertakings(status === "All" ? undefined : status).then(setRows).catch(() => setRows([]));
+  }, [status]);
+  const today = new Date(todayISO());
+  const age = (d) => (d ? Math.floor((today - new Date(d)) / 86400000) : null);
+
+  return (
+    <div className="ac-overlay" onClick={onClose}>
+      <div className="ac-panel wide" onClick={(e) => e.stopPropagation()}>
+        <div className="ac-panel-head">
+          <h2>Undertakings register</h2>
+          <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 12.5, color: "var(--slate)", marginTop: -8 }}>Every undertaking on the matters you can see. Outstanding ones come first, oldest first; anything still outstanding after completion is highlighted.</p>
+        <div className="ac-filters" style={{ marginBottom: 12 }}>
+          {["Outstanding", "Discharged", "All"].map((st) => <button key={st} className={`ac-chip ${status === st ? "active" : ""}`} onClick={() => setStatus(st)}>{st}</button>)}
+        </div>
+        {rows === null && <p style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</p>}
+        {rows && rows.length === 0 && <p style={{ fontSize: 13, color: "var(--slate)" }}>No {status === "All" ? "" : status.toLowerCase()} undertakings.</p>}
+        {rows && rows.map((u) => {
+          const afterCompletion = u.status === "Outstanding" && u.actual_completion;
+          const days = age(u.date_given);
+          return (
+            <div key={u.id} className="ac-doc-row" style={{ background: afterCompletion ? "#fdf1ea" : "var(--card)", marginBottom: 8 }}>
+              <div className="ac-doc-icon" style={afterCompletion ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><Gavel size={16} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="ac-doc-name">{u.description}</div>
+                <div className="ac-doc-meta">
+                  {u.direction === "given" ? "Given to" : "Received from"} {u.party || "—"}
+                  {u.date_given ? ` · ${formatDate(u.date_given)}${u.status === "Outstanding" && days !== null ? ` (${days} days ago)` : ""}` : ""}
+                  {u.status === "Discharged" && u.date_discharged ? ` · discharged ${formatDate(u.date_discharged)}` : ""}
+                </div>
+                {afterCompletion && <div className="ac-doc-meta" style={{ color: "#8a3b1f", fontWeight: 600 }}>Still outstanding — matter completed {formatDate(u.actual_completion)}</div>}
+                <button className="ac-linkbtn" onClick={() => onOpenMatter(u.matter_id)}>{u.reference} — {u.address}{u.fee_earner_name ? ` · ${u.fee_earner_name}` : ""}</button>
+              </div>
+              <span className={`ac-pill ${u.status === "Outstanding" ? "ac-pill--critical" : "ac-pill--closed"}`}>{u.status}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

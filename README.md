@@ -136,6 +136,9 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/matters/:id/tasks/bulk` | Add several tasks at once (standard task list), each with optional `assignedTo` |
 | PATCH | `/matters/:id/tasks/:tid` | Edit a task: `description`, `dueDate`, `assignedTo` (null to unassign) |
 | GET | `/tasks?mine=true` | Open tasks across every matter you can see (`mine` = assigned to you) |
+| GET | `/matters/upcoming?days=7` | Exchanges/completions due or overdue, with readiness flags |
+| GET | `/undertakings?status=Outstanding` | Firm-wide undertakings register |
+| PATCH / DELETE | `/matters/:id/{documents,emails,enquiries,undertakings}/:itemId` | Correct or remove an item (logged); DELETE also for searches and tasks |
 | POST | `/matters/:id/notes` | Log a free-text update |
 | POST | `/matters/:id/documents` | Add a document record |
 | PUT | `/matters/:id/documents/:docId/file` | Upload (or replace) the file for a document — multipart field `file`, max 10 MB, PDF/Office/images/text/Outlook only |

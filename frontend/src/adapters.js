@@ -95,6 +95,7 @@ export function adaptMatter(m, users) {
       actualExchange: m.actual_exchange || "",
       actualCompletion: m.actual_completion || "",
       mortgageOfferExpiry: m.mortgage_offer_expiry || "",
+      os1PriorityExpiry: m.os1_priority_expiry || "",
     },
     clientDetails: {
       address: m.client_address || "",
@@ -109,11 +110,15 @@ export function adaptMatter(m, users) {
       leaseTerm: m.lease_term || "",
       groundRent: m.ground_rent || "",
       serviceCharge: m.service_charge || "",
+      leaseYearsRemaining: m.lease_years_remaining ?? "",
     },
     money: {
       deposit: m.deposit !== null && m.deposit !== undefined ? Number(m.deposit) : "",
       sdlt: m.sdlt !== null && m.sdlt !== undefined ? Number(m.sdlt) : "",
       mortgageConditions: m.mortgage_conditions || "",
+      depositReceivedDate: m.deposit_received_date || "",
+      sdltBuyerType: m.sdlt_buyer_type || "",
+      sdltNonResident: !!m.sdlt_non_resident,
     },
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
@@ -165,11 +170,15 @@ function detailFields(f) {
     out.leaseTerm = f.property.leaseTerm;
     out.groundRent = f.property.groundRent;
     out.serviceCharge = f.property.serviceCharge;
+    if ("leaseYearsRemaining" in f.property) out.leaseYearsRemaining = f.property.leaseYearsRemaining === "" ? "" : Number(f.property.leaseYearsRemaining);
   }
   if (f.money) {
     out.deposit = f.money.deposit;
     out.sdlt = f.money.sdlt;
     out.mortgageConditions = f.money.mortgageConditions;
+    if ("depositReceivedDate" in f.money) out.depositReceivedDate = f.money.depositReceivedDate;
+    if ("sdltBuyerType" in f.money) out.sdltBuyerType = f.money.sdltBuyerType;
+    if ("sdltNonResident" in f.money) out.sdltNonResident = !!f.money.sdltNonResident;
   }
   return out;
 }
@@ -209,6 +218,7 @@ export function toApiMatterPatch(patch) {
     out.actualExchange = patch.keyDates.actualExchange;
     out.actualCompletion = patch.keyDates.actualCompletion;
     out.mortgageOfferExpiry = patch.keyDates.mortgageOfferExpiry;
+    if ("os1PriorityExpiry" in patch.keyDates) out.os1PriorityExpiry = patch.keyDates.os1PriorityExpiry;
   }
   Object.assign(out, detailFields(patch));
   return out;

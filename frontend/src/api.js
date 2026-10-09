@@ -110,6 +110,10 @@ export const api = {
   addTasks: (id, tasks) => request(`/matters/${id}/tasks/bulk`, { method: "POST", body: { tasks } }),
   updateTask: (id, taskId, patch) => request(`/matters/${id}/tasks/${taskId}`, { method: "PATCH", body: patch }),
   getTasks: (mine) => request(`/tasks${mine ? "?mine=true" : ""}`),
+  getUpcoming: (days = 7) => request(`/matters/upcoming?days=${days}`),
+  getUndertakings: (status) => request(`/undertakings${status ? `?status=${status}` : ""}`),
+  deleteItem: (id, kind, itemId) => request(`/matters/${id}/${kind}/${itemId}`, { method: "DELETE" }),
+  editItem: (id, kind, itemId, patch) => request(`/matters/${id}/${kind}/${itemId}`, { method: "PATCH", body: patch }),
   completeTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/complete`, { method: "PATCH" }),
   reopenTask: (id, taskId) => request(`/matters/${id}/tasks/${taskId}/reopen`, { method: "PATCH" }),
 
