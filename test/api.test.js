@@ -195,6 +195,8 @@ test("a malformed id gives a 400, not a server error", async () => {
 });
 
 test("matters can be moved to every stage, including Closed, and the log names the right stage", async () => {
+  const admin = { Authorization: `Bearer ${await tokenFor("david")}` };
+  await request(app).patch("/settings").set(admin).send({ requireExchangeChecks: false }); // gate tested separately
   const david = { Authorization: `Bearer ${await tokenFor("sarah")}` }; // the matter's fee earner moves it
   const matterId = (await request(app).get("/matters?showClosed=false").set(david)).body.matters[0].id;
 
@@ -211,6 +213,7 @@ test("matters can be moved to every stage, including Closed, and the log names t
 
   const open = await request(app).get("/matters?showClosed=false&limit=100").set(david);
   assert.ok(open.body.matters.every((m) => m.id !== matterId), "closed matter still listed when hiding closed");
+  await request(app).patch("/settings").set(admin).send({ requireExchangeChecks: true });
 });
 
 test("files can be attached to documents and downloaded again", async () => {
@@ -573,6 +576,7 @@ test("stage sign-off follows the chain: assistants request, the matter's fee ear
   assert.equal(created.status, 201);
   const amy = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1" })).body.token}` };
 
+  await request(app).patch("/settings").set(david).send({ requireExchangeChecks: false }); // gate tested separately
   // Amy sees exactly Sarah's matters
   const amyList = (await request(app).get("/matters?limit=100").set(amy)).body.matters;
   const sarahList = (await request(app).get("/matters?limit=100").set(sarah)).body.matters;
@@ -629,6 +633,7 @@ test("stage sign-off follows the chain: assistants request, the matter's fee ear
   assert.equal((await request(app).post(`/matters/${matter.id}/stage`).set(amy).send({ stageIndex: to })).status, 200);
   await request(app).patch("/settings").set(david).send({ requireStageSignoff: true });
   await request(app).post(`/matters/${matter.id}/stage`).set(sarah).send({ stageIndex: from });
+  await request(app).patch("/settings").set(david).send({ requireExchangeChecks: true });
 });
 
 test("standard tasks can be added in bulk", async () => {
@@ -700,4 +705,167 @@ test("admins can switch dictation off for the firm", async () => {
   assert.equal((await request(app).patch("/settings").set(david).send({ dictationEnabled: "no" })).status, 400);
   assert.equal((await request(app).patch("/settings").set(david).send({ dictationEnabled: false })).body.dictation_enabled, false);
   await request(app).patch("/settings").set(david).send({ dictationEnabled: true });
+});
+
+test("checks before exchange: review, mortgage offer and deposit must be in place", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const created = (await request(app).post("/matters").set(sarah).send({
+    address: "1 Gate Lane", client: "G Client", type: "Purchase", feeEarnerId: (await request(app).get("/auth/me").set(sarah)).body.id,
+    lender: "Halifax", targetCompletion: "2026-12-20", mortgageOfferExpiry: "2026-12-01",
+  })).body;
+  await request(app).post(`/matters/${created.id}/stage`).set(sarah).send({ stageIndex: 7 });
+
+  const blocked = await request(app).post(`/matters/${created.id}/stage`).set(sarah).send({ stageIndex: 8 });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.exchangeBlockers.length, 3);
+  assert.match(blocked.body.exchangeBlockers.join(" "), /pre-exchange review/);
+  assert.match(blocked.body.exchangeBlockers.join(" "), /expires \(2026-12-01\) before the target completion date \(2026-12-20\)/);
+  assert.match(blocked.body.exchangeBlockers.join(" "), /deposit/);
+  // Requests are refused for the same reasons
+  assert.equal((await request(app).post(`/matters/${created.id}/stage-requests`).set(sarah).send({ stageIndex: 8 })).status, 400);
+
+  await request(app).patch(`/matters/${created.id}`).set(sarah).send({
+    preExchangeConfirmedBy: "Sarah Ncube", preExchangeConfirmedDate: "2026-10-09", mortgageOfferExpiry: "2027-01-31", depositReceivedDate: "2026-10-09",
+  });
+  assert.equal((await request(app).post(`/matters/${created.id}/stage`).set(sarah).send({ stageIndex: 8 })).status, 200);
+  // Moving back and forth after exchange isn't re-checked
+  assert.equal((await request(app).post(`/matters/${created.id}/stage`).set(sarah).send({ stageIndex: 9 })).status, 200);
+});
+
+test("upcoming exchanges/completions, undertakings register, SDLT fields", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const soon = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+  const later = new Date(Date.now() + 40 * 86400000).toISOString().slice(0, 10);
+  const a = (await request(app).post("/matters").set(sarah).send({ address: "2 Soon St", client: "S", type: "Purchase", feeEarnerId: me, targetCompletion: soon })).body;
+  const b = (await request(app).post("/matters").set(sarah).send({ address: "3 Later St", client: "L", type: "Sale", feeEarnerId: me, targetCompletion: later })).body;
+  const up = (await request(app).get("/matters/upcoming?days=7").set(sarah)).body;
+  assert.ok(up.matters.some((m) => m.id === a.id && m.deposit_received === false && m.pre_exchange_confirmed === false));
+  assert.ok(!up.matters.some((m) => m.id === b.id));
+  assert.match(up.today, /^\d{4}-\d{2}-\d{2}$/);
+
+  await request(app).post(`/matters/${a.id}/undertakings`).set(sarah).send({ direction: "given", description: "Redeem mortgage", party: "Seller's solicitor", dateGiven: "2026-09-01" });
+  const reg = (await request(app).get("/undertakings?status=Outstanding").set(sarah)).body;
+  assert.ok(reg.some((u) => u.matter_id === a.id && u.reference === a.reference && u.description === "Redeem mortgage"));
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.ok(!(await request(app).get("/undertakings").set(marcus)).body.some((u) => u.matter_id === a.id));
+
+  const p = await request(app).patch(`/matters/${a.id}`).set(sarah).send({ sdltBuyerType: "first_time", sdltNonResident: false, leaseYearsRemaining: 80, os1PriorityExpiry: soon });
+  assert.equal(p.status, 200);
+  assert.equal(p.body.sdlt_buyer_type, "first_time");
+  assert.equal(p.body.lease_years_remaining, 80);
+  assert.equal((await request(app).patch(`/matters/${a.id}`).set(sarah).send({ sdltBuyerType: "investor" })).status, 400);
+});
+
+test("corrections: items added by mistake can be edited or deleted, and it's logged", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const matterId = (await request(app).get("/matters").set(sarah)).body.matters[0].id;
+  const base = `/matters/${matterId}`;
+  const doc = (await request(app).post(`${base}/documents`).set(sarah).send({ name: "Wrong name", category: "Other" })).body;
+  assert.equal((await request(app).patch(`${base}/documents/${doc.id}`).set(sarah).send({ name: "Signed TR1", category: "Contract" })).body.name, "Signed TR1");
+  assert.equal((await request(app).patch(`${base}/documents/${doc.id}`).set(sarah).send({ name: " " })).status, 400);
+  assert.equal((await request(app).delete(`${base}/documents/${doc.id}`).set(sarah)).status, 204);
+  assert.equal((await request(app).delete(`${base}/documents/${doc.id}`).set(sarah)).status, 404);
+
+  const q = (await request(app).post(`${base}/enquiries`).set(sarah).send({ question: "Typo questoin" })).body;
+  assert.equal((await request(app).patch(`${base}/enquiries/${q.id}`).set(sarah).send({ question: "Fixed question" })).body.question, "Fixed question");
+  const email = (await request(app).post(`${base}/emails`).set(sarah).send({ direction: "in", subject: "Reply", body: "x", date: "2026-10-01" })).body.email;
+  await request(app).post(`${base}/enquiries/${q.id}/replies`).set(sarah).send({ emailId: email.id });
+  assert.equal((await request(app).delete(`${base}/emails/${email.id}`).set(sarah)).status, 204); // reply stays, link cleared
+  const after = (await request(app).get(base).set(sarah)).body;
+  assert.equal(after.enquiries.find((x) => x.id === q.id).replies.length, 1);
+  assert.equal((await request(app).delete(`${base}/enquiries/${q.id}`).set(sarah)).status, 204);
+
+  const u = (await request(app).post(`${base}/undertakings`).set(sarah).send({ direction: "given", description: "Old" })).body;
+  assert.equal((await request(app).patch(`${base}/undertakings/${u.id}`).set(sarah).send({ direction: "sideways" })).status, 400);
+  assert.equal((await request(app).patch(`${base}/undertakings/${u.id}`).set(sarah).send({ description: "New wording" })).status, 200);
+  assert.equal((await request(app).delete(`${base}/undertakings/${u.id}`).set(sarah)).status, 204);
+  const t = (await request(app).post(`${base}/tasks`).set(sarah).send({ description: "Oops" })).body;
+  assert.equal((await request(app).delete(`${base}/tasks/${t.id}`).set(sarah)).status, 204);
+  const s2 = (await request(app).post(`${base}/searches`).set(sarah).send({ type: "Wrong search" })).body;
+  assert.equal((await request(app).delete(`${base}/searches/${s2.id}`).set(sarah)).status, 204);
+
+  const log = (await request(app).get(base).set(sarah)).body.activity.map((a) => a.text);
+  for (const t of ['Deleted document "Signed TR1"', "Edited enquiry", 'Deleted email log "Reply"', 'Deleted task "Oops"', 'Deleted search "Wrong search"', 'Edited undertaking "New wording"']) {
+    assert.ok(log.some((x) => x.startsWith(t)), `missing log: ${t}`);
+  }
+  // Another fee earner can't delete on this matter
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  const t2 = (await request(app).post(`${base}/tasks`).set(sarah).send({ description: "Keep" })).body;
+  assert.equal((await request(app).delete(`${base}/tasks/${t2.id}`).set(marcus)).status, 404);
+});
+
+function docxBody(r, cb) { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); }
+async function docxText(res) {
+  const JSZip = require("jszip");
+  const xml = await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string");
+  return xml.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&apos;/g, "'");
+}
+
+test("completion statement: costs are validated and the figures add up", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const m = (await request(app).post("/matters").set(sarah).send({ address: "9 Figures Way", client: "Pat Buyer", type: "Purchase", feeEarnerId: me, price: 300000 })).body;
+
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(sarah).send({ costs: [{ description: "", amount: 10 }] })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(sarah).send({ costs: [{ description: "Fee", amount: -1 }] })).status, 400);
+  const ok = await request(app).patch(`/matters/${m.id}`).set(sarah).send({
+    sdlt: 5000, mortgageAdvance: 200000, fundsReceived: 30000,
+    costs: [{ description: "Legal fee", amount: 1000, vat: true }, { description: "Land Registry fee", amount: 150, vat: false }],
+  });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual(ok.body.costs[0], { description: "Legal fee", amount: 1000, vat: true });
+
+  const templates = (await request(app).get("/matters/document-templates").set(sarah)).body;
+  assert.ok(templates.some((t) => t.key === "completion-statement"));
+
+  const res = await request(app).get(`/matters/${m.id}/generate/completion-statement`).set(sarah).buffer(true).parse(docxBody);
+  assert.equal(res.status, 200);
+  assert.match(res.headers["content-disposition"], /Completion%20statement/);
+  const text = await docxText(res);
+  // 300,000 + 5,000 + 1,150 + 200 VAT = 306,350; less 200,000 and 30,000 = 76,350
+  for (const expected of ["£306,350.00", "VAT at 20%", "£200.00", "£76,350.00", "Balance required from you before completion", "Pat Buyer"]) {
+    assert.ok(text.includes(expected), `statement is missing: ${expected}`);
+  }
+  for (const t of templates) {
+    const r = await request(app).get(`/matters/${m.id}/generate/${t.key}`).set(sarah).buffer(true).parse(docxBody);
+    assert.equal(r.status, 200, t.key);
+    assert.ok((await docxText(r)).includes(m.reference), `${t.key} is missing the reference`);
+  }
+  assert.equal((await request(app).get(`/matters/${m.id}/generate/nonsense`).set(sarah)).status, 404);
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/matters/${m.id}/generate/client-care`).set(marcus)).status, 404);
+  const log = (await request(app).get(`/matters/${m.id}`).set(sarah)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("Completion statement draft generated"));
+});
+
+test("bank details: new details start unverified, replace the old ones, and only the fee earner can verify", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const jess = { Authorization: `Bearer ${await tokenFor("jess")}` };
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const m = (await request(app).post("/matters").set(sarah).send({ address: "4 Proceeds Rd", client: "Sam Seller", type: "Sale", feeEarnerId: me })).body;
+  const base = `/matters/${m.id}/bank-details`;
+
+  assert.equal((await request(app).post(base).set(sarah).send({ accountName: "Sam", sortCode: "12345", accountNumber: "12345678" })).status, 400);
+  assert.equal((await request(app).post(base).set(sarah).send({ accountName: "Sam", sortCode: "12-34-56", accountNumber: "1234" })).status, 400);
+  const first = await request(app).post(base).set(jess).send({ accountName: "Sam Seller", sortCode: "12-34-56", accountNumber: "1234 5678", bankName: "Barclays" });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(first.body.sort_code, "123456");
+  assert.equal(first.body.status, "unverified");
+
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(jess).send({ method: "Phone call to number on file" })).status, 403);
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Other" })).status, 400);
+  const v = await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Phone call to number on file", note: "Spoke to Sam on 07700 900000" });
+  assert.equal(v.status, 200);
+  assert.equal(v.body.status, "verified");
+
+  const second = (await request(app).post(base).set(jess).send({ accountName: "Sam Seller", sortCode: "654321", accountNumber: "87654321" })).body;
+  const detail = (await request(app).get(`/matters/${m.id}`).set(sarah)).body;
+  assert.deepEqual(detail.bankDetails.map((b) => b.status), ["unverified", "superseded"]);
+  assert.equal(detail.bankDetails[0].id, second.id);
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Video call" })).status, 404);
+  assert.ok(detail.activity.some((a) => a.text.startsWith("Client bank details CHANGED (account ending 4321)")));
+
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).post(base).set(marcus).send({ accountName: "X", sortCode: "111111", accountNumber: "11111111" })).status, 404);
 });

@@ -69,6 +69,8 @@ function adaptActivity(a) {
  * A future enhancement would have the backend return a precomputed
  * attention flag per row; out of scope for this pass.
  */
+const numOrBlank = (v) => (v !== null && v !== undefined ? Number(v) : "");
+
 export function adaptMatter(m, users) {
   return {
     id: m.id,
@@ -95,6 +97,7 @@ export function adaptMatter(m, users) {
       actualExchange: m.actual_exchange || "",
       actualCompletion: m.actual_completion || "",
       mortgageOfferExpiry: m.mortgage_offer_expiry || "",
+      os1PriorityExpiry: m.os1_priority_expiry || "",
     },
     clientDetails: {
       address: m.client_address || "",
@@ -109,12 +112,28 @@ export function adaptMatter(m, users) {
       leaseTerm: m.lease_term || "",
       groundRent: m.ground_rent || "",
       serviceCharge: m.service_charge || "",
+      leaseYearsRemaining: m.lease_years_remaining ?? "",
     },
     money: {
       deposit: m.deposit !== null && m.deposit !== undefined ? Number(m.deposit) : "",
       sdlt: m.sdlt !== null && m.sdlt !== undefined ? Number(m.sdlt) : "",
       mortgageConditions: m.mortgage_conditions || "",
+      depositReceivedDate: m.deposit_received_date || "",
+      sdltBuyerType: m.sdlt_buyer_type || "",
+      sdltNonResident: !!m.sdlt_non_resident,
+      mortgageAdvance: numOrBlank(m.mortgage_advance),
+      redemptionAmount: numOrBlank(m.redemption_amount),
+      agentFee: numOrBlank(m.agent_fee),
+      fundsReceived: numOrBlank(m.funds_received),
+      costs: Array.isArray(m.costs) ? m.costs.map((c) => ({ description: c.description, amount: Number(c.amount), vat: !!c.vat })) : [],
     },
+    // Client's bank details, newest first: [0] is the current set unless superseded.
+    bankDetails: (m.bankDetails || []).map((b) => ({
+      id: b.id, accountName: b.account_name, sortCode: b.sort_code, accountNumber: b.account_number, bankName: b.bank_name || "",
+      status: b.status, enteredByName: b.entered_by_name || "", enteredAt: b.entered_at,
+      verifiedByName: b.verified_by_name || "", verifiedAt: b.verified_at, verificationMethod: b.verification_method || "",
+      verificationNote: b.verification_note || "",
+    })),
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
     emails: (m.emails || []).map(adaptEmail),
@@ -165,11 +184,17 @@ function detailFields(f) {
     out.leaseTerm = f.property.leaseTerm;
     out.groundRent = f.property.groundRent;
     out.serviceCharge = f.property.serviceCharge;
+    if ("leaseYearsRemaining" in f.property) out.leaseYearsRemaining = f.property.leaseYearsRemaining === "" ? "" : Number(f.property.leaseYearsRemaining);
   }
   if (f.money) {
     out.deposit = f.money.deposit;
     out.sdlt = f.money.sdlt;
     out.mortgageConditions = f.money.mortgageConditions;
+    if ("depositReceivedDate" in f.money) out.depositReceivedDate = f.money.depositReceivedDate;
+    if ("sdltBuyerType" in f.money) out.sdltBuyerType = f.money.sdltBuyerType;
+    if ("sdltNonResident" in f.money) out.sdltNonResident = !!f.money.sdltNonResident;
+    for (const k of ["mortgageAdvance", "redemptionAmount", "agentFee", "fundsReceived"]) if (k in f.money) out[k] = f.money[k];
+    if ("costs" in f.money) out.costs = f.money.costs;
   }
   return out;
 }
@@ -209,6 +234,7 @@ export function toApiMatterPatch(patch) {
     out.actualExchange = patch.keyDates.actualExchange;
     out.actualCompletion = patch.keyDates.actualCompletion;
     out.mortgageOfferExpiry = patch.keyDates.mortgageOfferExpiry;
+    if ("os1PriorityExpiry" in patch.keyDates) out.os1PriorityExpiry = patch.keyDates.os1PriorityExpiry;
   }
   Object.assign(out, detailFields(patch));
   return out;
