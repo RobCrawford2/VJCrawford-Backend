@@ -1033,8 +1033,10 @@ export default function App() {
     try {
       await api.updateMatter(id, patch);
       await afterMutation();
+      return true;
     } catch (err) {
       notify(err.message || "Couldn't save that change.");
+      return false;
     }
   }
 
@@ -1112,12 +1114,16 @@ export default function App() {
           font-family: var(--font-body);
           color: var(--ink);
           background: var(--paper);
-          min-height: 100vh;
+          /* Fixed to the window so the matter list and main panel scroll on their own. */
+          height: 100vh;
+          height: 100dvh;
+          overflow: hidden;
           display: flex;
           flex-direction: column;
           font-size: 14px;
           line-height: 1.5;
         }
+        body { margin: 0; }
         .ac-root * { box-sizing: border-box; }
         .ac-root button { font-family: inherit; cursor: pointer; }
         .ac-root input, .ac-root select, .ac-root textarea { font-family: inherit; }
@@ -1207,6 +1213,8 @@ export default function App() {
         .ac-bank-status.verified { background: #e7f0e6; color: #2f5a2c; }
         .ac-bank-status.unverified { background: #f8e3dc; color: #8a3b1f; font-weight: 600; }
         .ac-sdlt { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 2px; margin-bottom: 12px; background: var(--card); }
+        .ac-sdlt-card .ac-sdlt { border: none; padding: 0; background: none; }
+        .ac-sdlt-card .ac-row2 { grid-template-columns: 1fr; }
         .ac-sdlt-result { font-size: 12.5px; margin-bottom: 10px; }
         .ac-sdlt-total { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
         .ac-sdlt-band { display: flex; justify-content: space-between; color: var(--ink-soft); font-family: var(--font-mono); font-size: 11.5px; padding: 1px 0; }
@@ -1932,6 +1940,38 @@ export default function App() {
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
 
+/** Stamp duty calculator on the Overview, saving straight to the matter. */
+function SdltCard({ matter, onSave }) {
+  const saved = { sdltBuyerType: matter.money.sdltBuyerType || "", sdltNonResident: !!matter.money.sdltNonResident, sdlt: matter.money.sdlt === "" ? "" : String(matter.money.sdlt) };
+  const [v, setV] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const dirty = JSON.stringify(v) !== JSON.stringify(saved);
+
+  async function save() {
+    setBusy(true);
+    try {
+      if (await onSave({ sdltBuyerType: v.sdltBuyerType || null, sdltNonResident: v.sdltNonResident, sdlt: v.sdlt === "" ? "" : Number(v.sdlt) })) {
+        notify("Stamp duty saved.", "success");
+      }
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-card ac-sdlt-card" style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 10 }}><PoundSterling size={12} /> Stamp duty (SDLT)</h3>
+      {!(Number(matter.price) > 0) && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>Add the price in Edit details to calculate.</div>}
+      <SdltCalculator price={matter.price} buyerType={v.sdltBuyerType} nonResident={v.sdltNonResident} sdlt={v.sdlt}
+        onChange={(patch) => setV((prev) => ({ ...prev, ...patch }))} />
+      {dirty && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="ac-tablebtn" onClick={() => setV(saved)}>Cancel</button>
+          <button type="button" className="ac-tablebtn primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Letters and statements drafted from the matter (Word, with yellow gaps to fill). */
 const DOCUMENT_TEMPLATES = [
   { key: "completion-statement", title: "Completion statement", types: ["Purchase", "Sale", "Remortgage"] },
@@ -2619,6 +2659,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
           <div className="ac-col-side">
             {(matter.type === "Purchase" || matter.type === "Remortgage") && <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />}
+            {matter.type !== "Sale" && <SdltCard key={matter.id} matter={matter} onSave={onSaveField} />}
             <DocumentsCard matter={matter} onGenerate={onGenerateDocument} />
             <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />
             <div className="ac-card" style={{ marginBottom: 18 }}>
