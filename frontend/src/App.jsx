@@ -230,6 +230,11 @@ function formatDate(d) {
   return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
+function greeting() {
+  const h = Number(new Date().toLocaleString("en-GB", { hour: "numeric", hour12: false, timeZone: "Europe/London" }));
+  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+}
+
 function formatMoney(n) {
   if (n === "" || n === null || n === undefined || isNaN(n)) return "—";
   return "£" + Number(n).toLocaleString("en-GB");
@@ -1213,6 +1218,34 @@ export default function App() {
         .ac-bank-status.verified { background: #e7f0e6; color: #2f5a2c; }
         .ac-bank-status.unverified { background: #f8e3dc; color: #8a3b1f; font-weight: 600; }
         .ac-sdlt { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 2px; margin-bottom: 12px; background: var(--card); }
+        .ac-card { position: relative; }
+        .ac-detail-body.ac-money { grid-template-columns: 1fr 1fr; }
+        .ac-topbtn { display: inline-flex; align-items: center; gap: 6px; position: relative; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); padding: 5px 8px; }
+        .ac-topbtn .ac-badge { position: static; margin-left: 1px; }
+        @media (max-width: 1200px) { .ac-topbtn .lbl { display: none; } }
+        .ac-card-edit {
+          position: absolute; top: 12px; right: 14px; display: inline-flex; align-items: center; gap: 4px;
+          background: none; border: 1px solid transparent; border-radius: 3px; padding: 2px 7px; font-size: 11.5px; color: var(--slate);
+        }
+        .ac-card-edit:hover { border-color: var(--line); color: var(--ink); background: var(--paper); }
+        .ac-focus { border-color: var(--brass); box-shadow: inset 3px 0 0 var(--brass); }
+        .ac-focus h3 { color: var(--brass); }
+        .ac-focus-hint { font-size: 12px; color: var(--slate); margin: -4px 0 10px; }
+        .ac-focus-item { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+        .ac-focus-item .mark { width: 14px; flex-shrink: 0; font-weight: 700; }
+        .ac-focus-item.ok .mark { color: var(--success); }
+        .ac-focus-item.ok .txt { color: var(--slate); }
+        .ac-focus-item.todo .mark { color: #8a3b1f; }
+        .ac-focus-item .txt { flex: 1; }
+        .ac-focus-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .ac-focus-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
+        .ac-linkbtn.small { font-size: 12px; font-weight: 600; color: var(--brass); white-space: nowrap; }
+        .ac-linkbtn.small:hover { color: var(--ink); text-decoration: underline; }
+        .ac-attn-row { display: flex; gap: 10px; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: #8a3b1f; padding: 5px 0; }
+        .ac-due-tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--brass); background: var(--brass-bg); border-radius: 8px; padding: 1px 6px; vertical-align: 1px; }
+        .ac-gen-row.due { font-weight: 600; }
+        .ac-kv-total { font-weight: 700; border-top: 1px solid var(--line); }
+        .ac-kv-total .k { color: var(--ink); }
         .ac-sdlt-card .ac-sdlt { border: none; padding: 0; background: none; }
         .ac-sdlt-card .ac-row2 { grid-template-columns: 1fr; }
         .ac-sdlt-result { font-size: 12.5px; margin-bottom: 10px; }
@@ -1546,7 +1579,7 @@ export default function App() {
         .ac-resetlink:hover { color: var(--danger); }
 
         @media (max-width: 860px) {
-          .ac-detail-body { grid-template-columns: 1fr; }
+          .ac-detail-body, .ac-detail-body.ac-money { grid-template-columns: 1fr; }
           .ac-sidebar { width: 100%; position: absolute; inset: 0; z-index: 5; }
           .ac-sidebar--hidden-mobile { display: none; }
           .ac-body { position: relative; }
@@ -1570,8 +1603,8 @@ export default function App() {
             <div className="ac-topstat"><span className="n">{activeCount}</span><span className="l">Active files</span></div>
             <div className="ac-topstat"><span className="n">{closedThisYear}</span><span className="l">Closed</span></div>
           </div>
-          <button className="ac-iconbtn" onClick={() => setShowTasksPanel(true)} title="Tasks & reminders" style={{ position: "relative" }}>
-            <Bell size={18} />
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTasksPanel(true)} title="Tasks & reminders">
+            <Bell size={17} /><span className="lbl">Tasks</span>
             {(() => {
               const today = new Date();
               const overdueTaskCount = myTasks.filter((t) => t.dueDate && new Date(t.dueDate) < today).length;
@@ -1580,16 +1613,16 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
-          <button className="ac-iconbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
-            <Gavel size={18} />
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
+            <Gavel size={17} /><span className="lbl">Undertakings</span>
           </button>
           {authUser.role === "admin" && (
-            <button className="ac-iconbtn" onClick={() => setShowStaff(true)} title="Staff">
-              <Users size={18} />
+            <button className="ac-iconbtn ac-topbtn" onClick={() => setShowStaff(true)} title="Staff">
+              <Users size={17} /><span className="lbl">Staff</span>
             </button>
           )}
-          <button className="ac-iconbtn" onClick={() => setShowSettings(true)} title="Settings & integrations">
-            <SettingsIcon size={18} />
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setShowSettings(true)} title="Settings & integrations">
+            <SettingsIcon size={17} /><span className="lbl">Settings</span>
           </button>
           <div className="ac-account">
             <span className="ac-account-name">{authUser.name}</span>
@@ -1627,7 +1660,7 @@ export default function App() {
                 <button key={t} className={`ac-chip ${typeFilter === t ? "active" : ""}`} onClick={() => setTypeFilter(t)}>{t}</button>
               ))}
               <button className={`ac-chip ${showClosed ? "active" : ""}`} onClick={() => setShowClosed((s) => !s)}>
-                {showClosed ? "Hiding: none" : "Closed hidden"}
+                Show closed files
               </button>
               {settings.currentUser && (
                 <button className={`ac-chip ${myMattersOnly ? "active" : ""}`} onClick={() => setMyMattersOnly((s) => !s)}>
@@ -1690,8 +1723,8 @@ export default function App() {
               <div className="ac-home-intro">
                 <div className="mark"><Scale size={30} /></div>
                 <div>
-                  <h2>No matter open</h2>
-                  <p>Select a file from the ledger on the left, or open a new matter to begin tracking it.</p>
+                  <h2>{greeting()}, {authUser.name.split(" ")[0]}</h2>
+                  <p>Here's what needs doing. Pick a file from the list on the left, or open a new matter.</p>
                 </div>
                 <button className="ac-newbtn" style={{ width: "auto", padding: "9px 16px", marginLeft: "auto" }} onClick={() => setShowNewMatter(true)}>
                   <Plus size={15} /> Open new matter
@@ -1814,7 +1847,7 @@ export default function App() {
               onVerifyBankDetails={(bankId, method, note) => verifyBankDetails(selected.id, bankId, method, note)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
-              onEdit={() => setShowEditMatter(true)}
+              onEdit={(section) => setShowEditMatter(typeof section === "string" ? section : true)}
               onAddEnquiry={() => setShowAddEnquiry(true)}
               onLoadStandardEnquiries={() => setShowStandardEnquiries(true)}
               onSetEnquiryStatus={(enquiryId, status) => setEnquiryStatus(selected.id, enquiryId, status)}
@@ -1845,7 +1878,7 @@ export default function App() {
       </div>
 
       {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} />}
-      {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
+      {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} section={showEditMatter === true ? null : showEditMatter} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
       {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
@@ -1972,15 +2005,20 @@ function SdltCard({ matter, onSave }) {
   );
 }
 
-/** Letters and statements drafted from the matter (Word, with yellow gaps to fill). */
+/**
+ * Letters and statements drafted from the matter (Word, with yellow gaps to
+ * fill), in the order they're usually sent. `when` is the range of stages at
+ * which each one is normally due, so it can be flagged "Due now".
+ */
 const DOCUMENT_TEMPLATES = [
-  { key: "completion-statement", title: "Completion statement", types: ["Purchase", "Sale", "Remortgage"] },
-  { key: "client-care", title: "Client care letter", types: ["Purchase", "Sale", "Remortgage"] },
-  { key: "agent-initial", title: "Initial letter to estate agent", types: ["Purchase", "Sale"] },
-  { key: "other-side-initial", title: "Initial letter to other side's solicitors", types: ["Purchase", "Sale"] },
-  { key: "redemption-request", title: "Redemption statement request to lender", types: ["Sale", "Remortgage"] },
-  { key: "exchange-confirmation", title: "Exchange confirmation to client", types: ["Purchase", "Sale"] },
-  { key: "completion-confirmation", title: "Completion confirmation to client", types: ["Purchase", "Sale", "Remortgage"] },
+  { key: "client-care", title: "Client care letter", types: ["Purchase", "Sale", "Remortgage"], when: [0, 1] },
+  { key: "agent-initial", title: "Initial letter to estate agent", types: ["Purchase", "Sale"], when: [0, 2] },
+  { key: "other-side-initial", title: "Initial letter to other side's solicitors", types: ["Purchase", "Sale"], when: [0, 2] },
+  { key: "redemption-request", title: "Redemption statement request to lender", types: ["Sale", "Remortgage"], when: [2, 8] },
+  { key: "report-on-title", title: "Report on Title", types: ["Purchase", "Remortgage"], when: [6, 7] },
+  { key: "exchange-confirmation", title: "Exchange confirmation to client", types: ["Purchase", "Sale"], when: [8, 8] },
+  { key: "completion-statement", title: "Completion statement", types: ["Purchase", "Sale", "Remortgage"], when: [7, 9] },
+  { key: "completion-confirmation", title: "Completion confirmation to client", types: ["Purchase", "Sale", "Remortgage"], when: [9, 10] },
 ];
 
 function completionStatementGaps(matter) {
@@ -1996,32 +2034,40 @@ function completionStatementGaps(matter) {
   ].filter(Boolean);
 }
 
-function DocumentsCard({ matter, onGenerate }) {
+function DocumentsCard({ matter, onGenerate, onReportOnTitle }) {
   const [busy, setBusy] = useState(null);
   const templates = DOCUMENT_TEMPLATES.filter((t) => t.types.includes(matter.type));
   const gaps = completionStatementGaps(matter);
+  const idx = matter.currentStageIndex;
 
   async function generate(t) {
     setBusy(t.key);
-    try { await onGenerate(t); } finally { setBusy(null); }
+    try { await (t.key === "report-on-title" ? onReportOnTitle() : onGenerate(t)); } finally { setBusy(null); }
   }
 
   return (
     <div className="ac-card" style={{ marginBottom: 18 }}>
       <h3 style={{ marginBottom: 10 }}><FileText size={12} /> Letters &amp; documents</h3>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
-        Word drafts filled in from this matter. Anything we don't hold is highlighted in yellow to complete before sending.
+        Word drafts filled in from this matter, in the order they're usually sent. Anything we don't hold is highlighted in yellow to complete before sending.
       </div>
-      {templates.map((t) => (
-        <div key={t.key} className="ac-gen-row">
-          <span>{t.title}{t.key === "completion-statement" && gaps.length > 0 && (
-            <span className="ac-doc-gaps">Missing: {gaps.join(", ")} — add them in Edit details</span>
-          )}</span>
-          <button type="button" className="ac-tablebtn" disabled={!!busy} onClick={() => generate(t)}>
-            <Download size={12} /> {busy === t.key ? "Preparing…" : "Download"}
-          </button>
-        </div>
-      ))}
+      {templates.map((t) => {
+        const due = idx >= t.when[0] && idx <= t.when[1];
+        return (
+          <div key={t.key} className={`ac-gen-row ${due ? "due" : ""}`}>
+            <span>
+              {t.title}
+              {due && <span className="ac-due-tag">Due now</span>}
+              {t.key === "completion-statement" && gaps.length > 0 && (
+                <span className="ac-doc-gaps">Missing: {gaps.join(", ")} — add them on the Money tab</span>
+              )}
+            </span>
+            <button type="button" className="ac-tablebtn" disabled={!!busy} onClick={() => generate(t)}>
+              <Download size={12} /> {busy === t.key ? "Preparing…" : "Download"}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2458,6 +2504,344 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
   );
 }
 
+/** Small "Edit" link in the top-right corner of a card. */
+function CardEdit({ onClick }) {
+  return <button type="button" className="ac-card-edit" onClick={onClick}><Pencil size={11} /> Edit</button>;
+}
+
+/** Where to go to deal with a "Needs attention" item. */
+function attentionAction(reason, matter) {
+  const r = reason.toLowerCase();
+  if (r.includes("bank details")) return { label: "Bank details", tab: "money" };
+  if (r.includes("undertaking")) return { label: "Undertakings", tab: "undertakings" };
+  if (r.includes("search")) return { label: "Searches", tab: "searches" };
+  if (r.includes("enquir")) return { label: "Enquiries", tab: "enquiries" };
+  if (r.includes("task")) return { label: "Tasks", tab: "tasks" };
+  if (r.includes("pre-exchange review")) return { label: "Review", scroll: "stage-focus" };
+  if (r.includes("lease")) return { label: "Property", edit: "property" };
+  if (r.includes("mortgage offer") || r.includes("os1") || r.includes("target exchange") || r.includes("target completion")) return { label: "Dates", edit: "dates" };
+  if (r.includes("no activity")) return { label: "Log update", note: true };
+  return {};
+}
+
+/** Everything to do with money on one tab, in the order it's dealt with. */
+function computeStatement(matter) {
+  const m = matter.money;
+  const n = (v) => (v === "" || v === null || v === undefined ? 0 : Number(v));
+  const costs = m.costs || [];
+  const net = costs.reduce((t, c) => t + n(c.amount), 0);
+  const vat = Math.round(costs.filter((c) => c.vat).reduce((t, c) => t + n(c.amount), 0) * 0.2 * 100) / 100;
+  const fees = net + vat;
+  if (matter.type === "Purchase") {
+    const total = n(matter.price) + n(m.sdlt) + fees;
+    return { lines: [["Purchase price", n(matter.price)], ["Stamp duty", n(m.sdlt)], ["Our fees and disbursements (inc. VAT)", fees], ["Total required", total, "total"], ["Less mortgage advance", -n(m.mortgageAdvance)], ["Less money received from client", -n(m.fundsReceived)]], balance: total - n(m.mortgageAdvance) - n(m.fundsReceived), payer: "client" };
+  }
+  if (matter.type === "Sale") {
+    return { lines: [["Sale price", n(matter.price)], ["Less mortgage redemption", -n(m.redemptionAmount)], ["Less estate agent's fee", -n(m.agentFee)], ["Less our fees and disbursements (inc. VAT)", -fees], ["Add money received from client", n(m.fundsReceived)]], balance: n(matter.price) - n(m.redemptionAmount) - n(m.agentFee) - fees + n(m.fundsReceived), payer: "us" };
+  }
+  return { lines: [["New mortgage advance", n(m.mortgageAdvance)], ["Less existing mortgage redemption", -n(m.redemptionAmount)], ["Less our fees and disbursements (inc. VAT)", -fees], ["Add money received from client", n(m.fundsReceived)]], balance: n(m.mortgageAdvance) - n(m.redemptionAmount) - fees + n(m.fundsReceived), payer: "us" };
+}
+
+function MoneyTab({ matter, onEdit, onSaveField, onGenerateDocument, onAddBankDetails, onVerifyBankDetails }) {
+  const m = matter.money;
+  const money2 = (v) => (v === "" || v === null || v === undefined ? "—" : `£${Number(v).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+  const st = computeStatement(matter);
+  const gaps = completionStatementGaps(matter);
+  const mtg = mortgageExpiryInfo(matter);
+  const mtgWarn = mtg && (mtg.conflict || mtg.expired || mtg.expiringSoon);
+  const owedByClient = st.payer === "client" ? st.balance > 0 : st.balance < 0;
+  const [busy, setBusy] = useState(false);
+
+  async function downloadStatement() {
+    setBusy(true);
+    try { await onGenerateDocument(DOCUMENT_TEMPLATES.find((t) => t.key === "completion-statement")); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="ac-detail-body ac-money">
+      <div className="ac-col-main">
+        <div className="ac-card">
+          <h3><PoundSterling size={12} /> Price{matter.type === "Purchase" ? " & deposit" : ""}</h3>
+          <CardEdit onClick={() => onEdit("money")} />
+          <div className="ac-kv"><span className="k">{matter.type === "Remortgage" ? "Property value" : matter.type === "Sale" ? "Sale price" : "Purchase price"}</span><span className="v mono">{money2(matter.price)}</span></div>
+          {matter.type === "Purchase" && (
+            <>
+              <div className="ac-kv"><span className="k">Deposit</span><span className="v mono">{money2(m.deposit)}</span></div>
+              <div className="ac-kv">
+                <span className="k">Deposit received (cleared)</span>
+                {m.depositReceivedDate
+                  ? <span className="v mono">{formatDate(m.depositReceivedDate)}</span>
+                  : <button className="ac-tablebtn" onClick={() => onSaveField({ depositReceivedDate: todayISO() })}>Mark received today</button>}
+              </div>
+            </>
+          )}
+        </div>
+
+        {(matter.type !== "Sale" || matter.parties.lender) && (
+          <div className="ac-card">
+            <h3><Landmark size={12} /> Mortgage</h3>
+            <CardEdit onClick={() => onEdit("money")} />
+            <div className="ac-kv"><span className="k">Lender</span><span className="v">{matter.parties.lender || "—"}</span></div>
+            {matter.type !== "Sale" && <div className="ac-kv"><span className="k">Advance</span><span className="v mono">{money2(m.mortgageAdvance)}</span></div>}
+            <div className="ac-kv">
+              <span className="k" style={mtgWarn ? { color: "#8a3b1f", fontWeight: 600 } : {}}>{mtgWarn && <AlertTriangle size={11} />} Offer expires</span>
+              <span className="v mono" style={mtgWarn ? { color: "#8a3b1f", fontWeight: 700 } : {}}>{formatDate(matter.keyDates.mortgageOfferExpiry)}</span>
+            </div>
+            <div className="ac-kv"><span className="k">Special conditions</span><span className="v" style={{ textAlign: "right" }}>{m.mortgageConditions || "—"}</span></div>
+            {matter.type !== "Purchase" && <div className="ac-kv"><span className="k">Existing mortgage — redemption figure</span><span className="v mono">{money2(m.redemptionAmount)}</span></div>}
+          </div>
+        )}
+
+        {matter.type !== "Sale" && <SdltCard key={matter.id} matter={matter} onSave={onSaveField} />}
+      </div>
+
+      <div className="ac-col-side">
+        <div className="ac-card">
+          <h3><FileText size={12} /> Completion statement</h3>
+          <CardEdit onClick={() => onEdit("money")} />
+          {st.lines.map(([label, amount, kind]) => (
+            <div key={label} className={`ac-kv ${kind === "total" ? "ac-kv-total" : ""}`}>
+              <span className="k">{label}</span>
+              <span className="v mono">{!amount ? "—" : amount < 0 ? `(${money2(-amount)})` : money2(amount)}</span>
+            </div>
+          ))}
+          {(m.costs || []).length > 0 && (
+            <div style={{ fontSize: 11.5, color: "var(--slate)", margin: "2px 0 6px" }}>
+              Fees: {m.costs.map((c) => `${c.description} ${money2(c.amount)}${c.vat ? " + VAT" : ""}`).join(" · ")}
+            </div>
+          )}
+          <div className="ac-kv ac-kv-total">
+            <span className="k">{owedByClient ? "Balance required from client" : "Balance due to client"}</span>
+            <span className="v mono">{money2(Math.abs(st.balance))}</span>
+          </div>
+          {gaps.length > 0 && <div className="ac-doc-gaps" style={{ margin: "8px 0" }}>Still to add: {gaps.join(", ")}</div>}
+          <div className="ac-focus-actions">
+            <button type="button" className="ac-tablebtn" onClick={() => onEdit("money")}><Pencil size={12} /> Edit figures and fees</button>
+            <button type="button" className="ac-tablebtn primary" disabled={busy} onClick={downloadStatement}><Download size={12} /> {busy ? "Preparing…" : "Download statement"}</button>
+          </div>
+        </div>
+        <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />
+      </div>
+    </div>
+  );
+}
+
+/** One line in the stage box: ✓ done / ✗ still to do, with an optional button to go and do it. */
+function FocusItem({ ok, children, action, onAction }) {
+  return (
+    <div className={`ac-focus-item ${ok ? "ok" : "todo"}`}>
+      <span className="mark">{ok ? "✓" : "✗"}</span>
+      <span className="txt">{children}</span>
+      {!ok && action && <button type="button" className="ac-linkbtn small" onClick={onAction}>{action} →</button>}
+    </div>
+  );
+}
+
+/**
+ * "Now: <stage>" — what this file needs at its current stage, with the
+ * tools for it, so nobody has to hunt down the page for them.
+ */
+function StageFocus({ matter, setActiveTab, onEdit, onAddNote, onGenerateDocument, onReportOnTitle, onAddBankDetails, onVerifyBankDetails, reviewProps }) {
+  const idx = matter.currentStageIndex;
+  const stage = STAGES[idx];
+  const isPurchase = matter.type === "Purchase";
+  const hasLender = !!matter.parties.lender || matter.type === "Remortgage";
+  const tpl = (key) => DOCUMENT_TEMPLATES.find((t) => t.key === key);
+  const letter = (key, label) => (
+    <button type="button" className="ac-tablebtn" onClick={() => onGenerateDocument(tpl(key))}><Download size={12} /> {label}</button>
+  );
+  const bank = matter.bankDetails.find((b) => b.status !== "superseded");
+  const openSearches = matter.searches.filter((x) => !x.dateReceived).length;
+  const openEnquiries = matter.enquiries.filter((q) => q.status !== "Answered").length;
+  const openUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding").length;
+  const openTasks = matter.tasks.filter((t) => t.status === "Open").length;
+
+  let body = null;
+  let tool = null;
+  if (idx <= 1) {
+    body = (
+      <>
+        <FocusItem ok={!!matter.clientDetails.address && !!matter.clientDetails.salutation} action="Add" onAction={() => onEdit("client")}>Client's address and how letters start</FocusItem>
+        <FocusItem ok={!!matter.clientDetails.email || !!matter.clientDetails.phone} action="Add" onAction={() => onEdit("client")}>Client's email or phone</FocusItem>
+        <FocusItem ok={!!matter.feeEarnerId} action="Assign" onAction={() => onEdit("team")}>Fee earner assigned</FocusItem>
+        <FocusItem ok={!!matter.parties.otherSideSolicitor} action="Add" onAction={() => onEdit("team")}>Other side's solicitor</FocusItem>
+        {idx === 1 && <FocusItem ok={openTasks === 0} action="Tasks" onAction={() => setActiveTab("tasks")}>ID, AML and source-of-funds tasks done ({openTasks} open)</FocusItem>}
+        <div className="ac-focus-actions">{letter("client-care", "Client care letter")}</div>
+      </>
+    );
+  } else if (idx <= 5 || (idx === 6 && !(isPurchase || matter.type === "Remortgage"))) {
+    body = (
+      <>
+        <FocusItem ok={matter.searches.length > 0 && openSearches === 0} action="Searches" onAction={() => setActiveTab("searches")}>
+          {matter.searches.length ? `Searches back (${matter.searches.length - openSearches} of ${matter.searches.length})` : "Searches ordered"}
+        </FocusItem>
+        <FocusItem ok={matter.enquiries.length > 0 && openEnquiries === 0} action="Enquiries" onAction={() => setActiveTab("enquiries")}>
+          {matter.enquiries.length ? `Enquiries answered (${matter.enquiries.length - openEnquiries} of ${matter.enquiries.length})` : "Enquiries raised"}
+        </FocusItem>
+        {hasLender && <FocusItem ok={!!matter.keyDates.mortgageOfferExpiry} action="Add" onAction={() => onEdit("dates")}>Mortgage offer received (expiry date recorded)</FocusItem>}
+        <div style={{ marginTop: 10 }}><Workstreams matter={matter} /></div>
+      </>
+    );
+  } else if (idx === 6) {
+    body = <div style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>Send the Report on Title and get the client's approval.</div>;
+    tool = <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />;
+  } else if (idx === 7) {
+    body = <PreExchangeReview matter={matter} {...reviewProps} />;
+  } else if (idx === 8) {
+    body = (
+      <>
+        <FocusItem ok={!!matter.keyDates.actualExchange} action="Add" onAction={() => onEdit("dates")}>Exchange date recorded</FocusItem>
+        {isPurchase && <FocusItem ok={!!matter.money.depositReceivedDate} action="Money" onAction={() => setActiveTab("money")}>Deposit received</FocusItem>}
+        <FocusItem ok={!!matter.keyDates.targetCompletion} action="Add" onAction={() => onEdit("dates")}>Completion date agreed</FocusItem>
+        <FocusItem ok={completionStatementGaps(matter).length === 0} action="Money" onAction={() => setActiveTab("money")}>Completion statement figures complete</FocusItem>
+        {!isPurchase && <FocusItem ok={bank?.status === "verified"} action="Money" onAction={() => setActiveTab("money")}>Client bank details verified</FocusItem>}
+        <div className="ac-focus-actions">
+          {letter("exchange-confirmation", "Exchange letter to client")}
+          {letter("completion-statement", "Completion statement")}
+        </div>
+      </>
+    );
+  } else if (idx === 9) {
+    body = (
+      <>
+        <FocusItem ok={completionStatementGaps(matter).length === 0} action="Money" onAction={() => setActiveTab("money")}>Completion statement figures complete</FocusItem>
+        {matter.type !== "Purchase" && <FocusItem ok={matter.money.redemptionAmount !== ""} action="Money" onAction={() => setActiveTab("money")}>Redemption figure recorded</FocusItem>}
+        <FocusItem ok={!!matter.keyDates.actualCompletion} action="Add" onAction={() => onEdit("dates")}>Completion date recorded</FocusItem>
+        <div className="ac-focus-actions">
+          {letter("completion-statement", "Completion statement")}
+          {letter("completion-confirmation", "Completion letter to client")}
+        </div>
+      </>
+    );
+    tool = <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />;
+  } else if (idx === 10) {
+    const sd = sdltInfo(matter);
+    body = (
+      <>
+        {sd && <FocusItem ok={sd.filed} action="Documents" onAction={() => setActiveTab("documents")}>SDLT return filed (due {formatDate(sd.deadline)})</FocusItem>}
+        <FocusItem ok={openUndertakings === 0} action="Undertakings" onAction={() => setActiveTab("undertakings")}>Undertakings discharged ({openUndertakings} outstanding)</FocusItem>
+        <FocusItem ok={openTasks === 0} action="Tasks" onAction={() => setActiveTab("tasks")}>Tasks finished ({openTasks} open)</FocusItem>
+        <div className="ac-focus-actions">{letter("completion-confirmation", "Completion letter to client")}</div>
+      </>
+    );
+  } else {
+    body = <div style={{ fontSize: 12.5, color: "var(--slate)" }}>This file is closed.</div>;
+  }
+
+  return (
+    <>
+      <div className="ac-card ac-focus" id="stage-focus">
+        <h3><ChevronRight size={12} /> Now: {stage.name}</h3>
+        <div className="ac-focus-hint">{stage.hint}</div>
+        {body}
+      </div>
+      {tool}
+      {idx > PRE_EXCHANGE_REVIEW_INDEX && idx < CLOSED_INDEX && !matter.preCompletionReview.confirmedBy && (
+        <div className="ac-card" style={{ marginBottom: 18 }}>
+          <h3>Pre-exchange review — not confirmed</h3>
+          <PreExchangeReview matter={matter} {...reviewProps} />
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Searches / enquiries / mortgage progress and whether the file is ready to exchange. */
+function Workstreams({ matter }) {
+  return (
+    <>
+              {(() => {
+                const w = workstreamStatus(matter);
+                const rows = [
+                  ["Searches", w.searches],
+                  ["Enquiries", w.enquiries],
+                  ["Mortgage", w.mortgage],
+                ];
+                const label = { ready: "Ready", progress: "In progress", pending: "Not started", blocked: "Blocked", "n/a": "Not required" };
+                const cls = { ready: "closed", progress: "progress", pending: "setup", blocked: "issue", "n/a": "setup" };
+                return (
+                  <>
+                    {rows.map(([name, status]) => {
+                      const isMortgageConflict = name === "Mortgage" && status === "blocked";
+                      return (
+                        <div key={name}>
+                          <div className="ac-kv">
+                            <span className="k">{name}</span>
+                            <span className={`ac-pill ac-pill--${cls[status]}`}>{isMortgageConflict ? "Expires too soon" : label[status]}</span>
+                          </div>
+                          {name === "Mortgage" && w.mortgageExpiry && (
+                            <div style={{ fontSize: 11, color: isMortgageConflict ? "#8a3b1f" : "var(--slate-light)", textAlign: "right", marginTop: -6, marginBottom: 6 }}>
+                              Offer expires {formatDate(w.mortgageExpiry)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div style={{
+                      marginTop: 10, padding: "8px 10px", borderRadius: 3, fontSize: 12.5, fontWeight: 600, textAlign: "center",
+                      background: w.readyToExchange ? "var(--success-bg)" : "var(--paper)", color: w.readyToExchange ? "var(--success)" : "var(--slate)",
+                    }}>
+                      {w.readyToExchange ? "✓ Ready to exchange" : "Not yet ready to exchange"}
+                    </div>
+                  </>
+                );
+              })()}
+    </>
+  );
+}
+
+/** The pre-exchange checklist and sign-off. */
+function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onResetReview, onSaveField }) {
+  return (
+    <>
+              {matter.preCompletionReview.confirmedBy ? (
+                <div>
+                  <div style={{ background: "var(--success-bg)", color: "var(--success)", borderRadius: 3, padding: "9px 10px", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                    <Check size={13} /> Reviewed by {matter.preCompletionReview.confirmedBy} on {formatDate(matter.preCompletionReview.confirmedDate)}
+                  </div>
+                  <button className="ac-tablebtn" onClick={onResetReview}>Something changed — reset review</button>
+                </div>
+              ) : (
+                <>
+                  <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 0, marginBottom: 10 }}>
+                    Check the file over before exchange — this is the point contracts become legally binding. Confirming this signs off that it's ready to proceed.
+                  </p>
+                  {PRE_COMPLETION_CHECKLIST.map((item) => (
+                    <label key={item} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, color: "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={matter.preCompletionReview.checkedItems.includes(item)}
+                        onChange={() => onToggleChecklistItem(item)}
+                        style={{ width: "auto", marginTop: 2, flexShrink: 0 }}
+                      />
+                      {item}
+                    </label>
+                  ))}
+                  <div style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 10px" }}>
+                    {matter.preCompletionReview.checkedItems.length} of {PRE_COMPLETION_CHECKLIST.length} checked
+                  </div>
+                  {matter.type === "Purchase" && (
+                    <div className="ac-kv" style={{ marginBottom: 10 }}>
+                      <span className="k">Deposit received</span>
+                      {matter.money.depositReceivedDate
+                        ? <span className="v mono">{formatDate(matter.money.depositReceivedDate)}</span>
+                        : <button className="ac-tablebtn" onClick={() => onSaveField({ depositReceivedDate: todayISO() })}>Mark received today</button>}
+                    </div>
+                  )}
+                  <button
+                    className="ac-submit"
+                    style={{ marginTop: 0 }}
+                    disabled={matter.preCompletionReview.checkedItems.length < PRE_COMPLETION_CHECKLIST.length}
+                    onClick={onConfirmReview}
+                  >
+                    <Check size={14} /> Confirm reviewed &amp; ready to exchange
+                  </button>
+                </>
+              )}
+    </>
+  );
+}
+
 function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onGenerateDocument, onAddBankDetails, onVerifyBankDetails, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   const [tasksMineOnly, setTasksMineOnly] = useState(false);
@@ -2492,12 +2876,13 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div className="ac-savebadge">{saveState === "saving" ? "Saving…" : saveState === "saved" ? <><Check size={12} /> Saved</> : ""}</div>
-            <button className="ac-addbtn" onClick={onEdit}><FileSignature size={13} /> Edit details</button>
+            <button className="ac-addbtn" onClick={() => onEdit()}><FileSignature size={13} /> Edit all details</button>
           </div>
         </div>
         <div className="ac-tabs">
           {[
             ["overview", <><Clock size={13} /> Overview</>],
+            ["money", <><PoundSterling size={13} /> Money</>],
             ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
             ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
@@ -2529,9 +2914,21 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               return (
                 <div className="ac-card" style={{ borderColor: attention.length ? "#e2a06a" : "var(--line)", background: attention.length ? "#fdf1ea" : "var(--card)" }}>
                   <h3><AlertTriangle size={12} /> Needs attention</h3>
-                  {attention.map((r, i) => (
-                    <div key={i} style={{ fontSize: 12.5, color: "#8a3b1f", padding: "5px 0", borderBottom: i < attention.length - 1 || sdlt ? "1px dashed var(--line)" : "none" }}>⚠ {r}</div>
-                  ))}
+                  {attention.map((r, i) => {
+                    const action = attentionAction(r, matter);
+                    const go = () => {
+                      if (action.tab) setActiveTab(action.tab);
+                      else if (action.edit) onEdit(action.edit);
+                      else if (action.note) onAddNote();
+                      else if (action.scroll) document.getElementById(action.scroll)?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    };
+                    return (
+                      <div key={i} className="ac-attn-row" style={{ borderBottom: i < attention.length - 1 || sdlt ? "1px dashed var(--line)" : "none" }}>
+                        <span>⚠ {r}</span>
+                        {action.label && <button type="button" className="ac-linkbtn small" onClick={go}>{action.label} →</button>}
+                      </div>
+                    );
+                  })}
                   {sdlt && (
                     <div style={{ fontSize: 12.5, color: sdlt.overdue ? "#8a3b1f" : sdlt.dueSoon ? "#8a3b1f" : "var(--ink-soft)", padding: "5px 0" }}>
                       {sdlt.filed ? `SDLT return filed (deadline was ${formatDate(sdlt.deadline)})` : sdlt.overdue ? `⚠ SDLT return is overdue — was due ${formatDate(sdlt.deadline)}` : sdlt.dueSoon ? `⚠ SDLT return due ${formatDate(sdlt.deadline)} — ${sdlt.daysLeft} day${sdlt.daysLeft === 1 ? "" : "s"} left` : `SDLT return due ${formatDate(sdlt.deadline)}`}
@@ -2544,6 +2941,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {matter.linkedMatters.length > 0 && (
               <div className="ac-card">
                 <h3><Link2 size={12} /> Chain</h3>
+                <CardEdit onClick={() => onEdit("chain")} />
                 {matter.linkedMatters.map((linked) => {
                   const lid = linked.id;
                   const dateMismatch = matter.keyDates.targetCompletion && linked.targetCompletion && matter.keyDates.targetCompletion !== linked.targetCompletion;
@@ -2563,6 +2961,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
             <div className="ac-card">
               <h3><Users size={12} /> Client</h3>
+              <CardEdit onClick={() => onEdit("client")} />
               <div className="ac-kv"><span className="k">Name</span><span className="v">{matter.client}</span></div>
               <div className="ac-kv"><span className="k">Correspondence address</span><span className="v" style={{ whiteSpace: "pre-line", textAlign: "right" }}>{matter.clientDetails.address || "—"}</span></div>
               <div className="ac-kv"><span className="k">Email</span><span className="v mono">{matter.clientDetails.email || "—"}</span></div>
@@ -2572,6 +2971,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
             <div className="ac-card">
               <h3><Building2 size={12} /> Property &amp; title</h3>
+              <CardEdit onClick={() => onEdit("property")} />
               <div className="ac-kv"><span className="k">Tenure</span><span className="v">{matter.property.tenure || "—"}</span></div>
               <div className="ac-kv"><span className="k">Title number</span><span className="v mono">{matter.property.titleNumber || "—"}</span></div>
               <div className="ac-kv"><span className="k">Registered owner</span><span className="v">{matter.property.registeredProprietor || "—"}</span></div>
@@ -2582,20 +2982,11 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   <div className="ac-kv"><span className="k">Service charge</span><span className="v">{matter.property.serviceCharge || "—"}</span></div>
                 </>
               )}
-              {matter.type !== "Sale" && (
-                <>
-                  <div className="ac-kv"><span className="k">Deposit</span><span className="v mono">{matter.money.deposit !== "" ? formatMoney(matter.money.deposit) : "—"}</span></div>
-                  <div className="ac-kv"><span className="k">Deposit received</span><span className="v mono">{matter.money.depositReceivedDate ? formatDate(matter.money.depositReceivedDate) : "—"}</span></div>
-                  <div className="ac-kv"><span className="k">SDLT payable</span><span className="v mono">{matter.money.sdlt !== "" ? formatMoney(matter.money.sdlt) : "—"}{matter.money.sdltBuyerType ? ` · ${BUYER_TYPES.find((b) => b.value === matter.money.sdltBuyerType)?.label.split(" (")[0]}` : ""}</span></div>
-                </>
-              )}
-              {matter.parties.lender && (
-                <div className="ac-kv"><span className="k">Mortgage conditions</span><span className="v" style={{ textAlign: "right" }}>{matter.money.mortgageConditions || "—"}</span></div>
-              )}
             </div>
 
             <div className="ac-card">
               <h3><Users size={12} /> Parties &amp; team</h3>
+              <CardEdit onClick={() => onEdit("team")} />
               <div className="ac-kv"><span className="k">Fee earner</span><span className="v">{matter.feeEarner || "—"}</span></div>
               <div className="ac-kv"><span className="k">Supervisor</span><span className="v">{matter.supervisor || "—"}</span></div>
               <div className="ac-kv"><span className="k">Other side's solicitor</span><span className="v">{matter.parties.otherSideSolicitor || "—"}</span></div>
@@ -2606,6 +2997,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
             <div className="ac-card">
               <h3><Calendar size={12} /> Key dates</h3>
+              <CardEdit onClick={() => onEdit("dates")} />
               <div className="ac-kv"><span className="k">Instructed</span><span className="v mono">{formatDate(matter.keyDates.instructed)}</span></div>
               <div className="ac-kv"><span className="k">Target exchange</span><span className="v mono">{formatDate(matter.keyDates.targetExchange)}</span></div>
               <div className="ac-kv"><span className="k">Actual exchange</span><span className="v mono">{formatDate(matter.keyDates.actualExchange)}</span></div>
@@ -2658,100 +3050,31 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           </div>
 
           <div className="ac-col-side">
-            {(matter.type === "Purchase" || matter.type === "Remortgage") && <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />}
-            {matter.type !== "Sale" && <SdltCard key={matter.id} matter={matter} onSave={onSaveField} />}
-            <DocumentsCard matter={matter} onGenerate={onGenerateDocument} />
-            <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />
-            <div className="ac-card" style={{ marginBottom: 18 }}>
-              <h3 style={{ marginBottom: 10 }}>Workstreams</h3>
-              {(() => {
-                const w = workstreamStatus(matter);
-                const rows = [
-                  ["Searches", w.searches],
-                  ["Enquiries", w.enquiries],
-                  ["Mortgage", w.mortgage],
-                ];
-                const label = { ready: "Ready", progress: "In progress", pending: "Not started", blocked: "Blocked", "n/a": "Not required" };
-                const cls = { ready: "closed", progress: "progress", pending: "setup", blocked: "issue", "n/a": "setup" };
-                return (
-                  <>
-                    {rows.map(([name, status]) => {
-                      const isMortgageConflict = name === "Mortgage" && status === "blocked";
-                      return (
-                        <div key={name}>
-                          <div className="ac-kv">
-                            <span className="k">{name}</span>
-                            <span className={`ac-pill ac-pill--${cls[status]}`}>{isMortgageConflict ? "Expires too soon" : label[status]}</span>
-                          </div>
-                          {name === "Mortgage" && w.mortgageExpiry && (
-                            <div style={{ fontSize: 11, color: isMortgageConflict ? "#8a3b1f" : "var(--slate-light)", textAlign: "right", marginTop: -6, marginBottom: 6 }}>
-                              Offer expires {formatDate(w.mortgageExpiry)}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    <div style={{
-                      marginTop: 10, padding: "8px 10px", borderRadius: 3, fontSize: 12.5, fontWeight: 600, textAlign: "center",
-                      background: w.readyToExchange ? "var(--success-bg)" : "var(--paper)", color: w.readyToExchange ? "var(--success)" : "var(--slate)",
-                    }}>
-                      {w.readyToExchange ? "✓ Ready to exchange" : "Not yet ready to exchange"}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-
-            <div className="ac-card" style={{ marginBottom: 18 }}>
-              <h3>Pre-Exchange Review</h3>
-              {matter.preCompletionReview.confirmedBy ? (
-                <div>
-                  <div style={{ background: "var(--success-bg)", color: "var(--success)", borderRadius: 3, padding: "9px 10px", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
-                    <Check size={13} /> Reviewed by {matter.preCompletionReview.confirmedBy} on {formatDate(matter.preCompletionReview.confirmedDate)}
-                  </div>
-                  <button className="ac-tablebtn" onClick={onResetReview}>Something changed — reset review</button>
-                </div>
-              ) : (
-                <>
-                  <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 0, marginBottom: 10 }}>
-                    Check the file over before exchange — this is the point contracts become legally binding. Confirming this signs off that it's ready to proceed.
-                  </p>
-                  {PRE_COMPLETION_CHECKLIST.map((item) => (
-                    <label key={item} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, color: "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4, cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={matter.preCompletionReview.checkedItems.includes(item)}
-                        onChange={() => onToggleChecklistItem(item)}
-                        style={{ width: "auto", marginTop: 2, flexShrink: 0 }}
-                      />
-                      {item}
-                    </label>
-                  ))}
-                  <div style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 10px" }}>
-                    {matter.preCompletionReview.checkedItems.length} of {PRE_COMPLETION_CHECKLIST.length} checked
-                  </div>
-                  {matter.type === "Purchase" && (
-                    <div className="ac-kv" style={{ marginBottom: 10 }}>
-                      <span className="k">Deposit received</span>
-                      {matter.money.depositReceivedDate
-                        ? <span className="v mono">{formatDate(matter.money.depositReceivedDate)}</span>
-                        : <button className="ac-tablebtn" onClick={() => onSaveField({ depositReceivedDate: todayISO() })}>Mark received today</button>}
-                    </div>
-                  )}
-                  <button
-                    className="ac-submit"
-                    style={{ marginTop: 0 }}
-                    disabled={matter.preCompletionReview.checkedItems.length < PRE_COMPLETION_CHECKLIST.length}
-                    onClick={onConfirmReview}
-                  >
-                    <Check size={14} /> Confirm reviewed &amp; ready to exchange
-                  </button>
-                </>
-              )}
-            </div>
-
+            <StageFocus
+              matter={matter}
+              setActiveTab={setActiveTab}
+              onEdit={onEdit}
+              onAddNote={onAddNote}
+              onGenerateDocument={onGenerateDocument}
+              onReportOnTitle={onReportOnTitle}
+              onAddBankDetails={onAddBankDetails}
+              onVerifyBankDetails={onVerifyBankDetails}
+              reviewProps={{ onToggleChecklistItem, onConfirmReview, onResetReview, onSaveField }}
+            />
+            <DocumentsCard matter={matter} onGenerate={onGenerateDocument} onReportOnTitle={onReportOnTitle} />
           </div>
         </div>
+      )}
+
+      {activeTab === "money" && (
+        <MoneyTab
+          matter={matter}
+          onEdit={onEdit}
+          onSaveField={onSaveField}
+          onGenerateDocument={onGenerateDocument}
+          onAddBankDetails={onAddBankDetails}
+          onVerifyBankDetails={onVerifyBankDetails}
+        />
       )}
 
       {activeTab === "enquiries" && (
@@ -3809,7 +4132,19 @@ function CompletionFigures({ type, money, onChange }) {
   );
 }
 
-function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
+const EDIT_SECTIONS = {
+  basics: "Matter summary",
+  client: "Client",
+  property: "Property & title",
+  money: "Money",
+  team: "Parties & team",
+  dates: "Key dates",
+  chain: "Chain",
+};
+
+/** Edit form for the whole matter, or (with `section`) just one part of it. */
+function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = null }) {
+  const show = (...names) => !section || names.includes(section);
   const [f, setF] = useState({
     address: matter.address,
     client: matter.client,
@@ -3897,10 +4232,11 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
     <div className="ac-overlay" onClick={onClose}>
       <form className="ac-panel" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <div className="ac-panel-head">
-          <h2>Edit matter details</h2>
+          <h2>{section ? `Edit ${EDIT_SECTIONS[section].toLowerCase()}` : "Edit all matter details"}</h2>
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
 
+        {show("basics") && (<>
         <div className="ac-field">
           <label>Property address</label>
           <input value={f.address} onChange={set("address")} />
@@ -3917,17 +4253,31 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             </select>
           </div>
         </div>
+        </>)}
+        {show("basics", "money") && (<>
         <div className="ac-field">
           <label>Price</label>
           <input type="number" value={f.price} onChange={set("price")} />
         </div>
 
+        </>)}
+        {show("client") && (<>
         <div className="ac-fieldset-title">Client contact</div>
+        {section === "client" && (
+          <div className="ac-field">
+            <label>Client name</label>
+            <input value={f.client} onChange={set("client")} />
+          </div>
+        )}
         <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
 
+        </>)}
+        {show("property") && (<>
         <div className="ac-fieldset-title">Property &amp; title</div>
         <PropertyFields value={f.property} onChange={setIn} />
 
+        </>)}
+        {show("money") && (<>
         <div className="ac-fieldset-title">Money</div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -3948,6 +4298,18 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
             onChange={(patch) => setF((prev) => ({ ...prev, money: { ...prev.money, ...patch } }))}
           />
         )}
+        {section === "money" && (
+          <div className="ac-row2">
+            <div className="ac-field">
+              <label>Lender</label>
+              <input value={f.lender} onChange={set("lender")} />
+            </div>
+            <div className="ac-field">
+              <label>Mortgage offer expiry</label>
+              <input type="date" value={f.mortgageOfferExpiry || ""} onChange={set("mortgageOfferExpiry")} />
+            </div>
+          </div>
+        )}
         <div className="ac-field">
           <label>Mortgage offer special conditions</label>
           <DictTextarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
@@ -3960,6 +4322,8 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           onChange={(patch) => setF((prev) => ({ ...prev, money: { ...prev.money, ...patch } }))}
         />
 
+        </>)}
+        {show("team") && (<>
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -4000,6 +4364,8 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           </div>
         </div>
 
+        </>)}
+        {show("dates") && (<>
         <div className="ac-fieldset-title">Key dates</div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -4032,6 +4398,8 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           </div>
         </div>
 
+        </>)}
+        {show("chain") && (<>
         <div className="ac-fieldset-title">Chain</div>
         <ChainPicker
           matter={matter}
@@ -4040,6 +4408,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           onToggle={toggleLink}
         />
 
+        </>)}
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><Check size={14} /> Save changes</button>
       </form>
