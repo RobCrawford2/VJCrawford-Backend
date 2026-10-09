@@ -691,3 +691,13 @@ test("tasks can be assigned to staff who can see the matter, edited, and listed 
   await request(app).patch(`/matters/${matter.id}/tasks/${t.body.id}`).set(sarah).send({ assignedTo: null });
   assert.equal((await request(app).get(`/matters/${matter.id}`).set(sarah)).body.tasks.find((x) => x.id === t.body.id).assigned_to, null);
 });
+
+test("admins can switch dictation off for the firm", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  assert.equal((await request(app).get("/settings").set(sarah)).body.dictation_enabled, true);
+  assert.equal((await request(app).patch("/settings").set(sarah).send({ dictationEnabled: false })).status, 403);
+  assert.equal((await request(app).patch("/settings").set(david).send({ dictationEnabled: "no" })).status, 400);
+  assert.equal((await request(app).patch("/settings").set(david).send({ dictationEnabled: false })).body.dictation_enabled, false);
+  await request(app).patch("/settings").set(david).send({ dictationEnabled: true });
+});

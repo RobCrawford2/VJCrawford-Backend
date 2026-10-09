@@ -9,7 +9,7 @@ router.use(requireAuth);
 router.get(
   "/",
   asyncHandler(async (req, res) => {
-    const result = await query(`SELECT name, domain, stale_days, require_stage_signoff FROM firms WHERE id = $1`, [req.user.firmId]);
+    const result = await query(`SELECT name, domain, stale_days, require_stage_signoff, dictation_enabled FROM firms WHERE id = $1`, [req.user.firmId]);
     if (!result.rows.length) return res.status(404).json({ error: "Firm not found." });
     res.json(result.rows[0]);
   })
@@ -20,7 +20,7 @@ router.patch(
   "/",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { domain, staleDays, requireStageSignoff } = req.body;
+    const { domain, staleDays, requireStageSignoff, dictationEnabled } = req.body;
     const setClauses = [];
     const params = [];
     if (domain !== undefined) { params.push(domain); setClauses.push(`domain = $${params.length}`); }
@@ -29,11 +29,15 @@ router.patch(
       if (typeof requireStageSignoff !== "boolean") return res.status(400).json({ error: "requireStageSignoff must be true or false." });
       params.push(requireStageSignoff); setClauses.push(`require_stage_signoff = $${params.length}`);
     }
+    if (dictationEnabled !== undefined) {
+      if (typeof dictationEnabled !== "boolean") return res.status(400).json({ error: "dictationEnabled must be true or false." });
+      params.push(dictationEnabled); setClauses.push(`dictation_enabled = $${params.length}`);
+    }
     if (!setClauses.length) return res.status(400).json({ error: "No recognised fields to update." });
 
     params.push(req.user.firmId);
     const result = await query(
-      `UPDATE firms SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING name, domain, stale_days, require_stage_signoff`,
+      `UPDATE firms SET ${setClauses.join(", ")} WHERE id = $${params.length} RETURNING name, domain, stale_days, require_stage_signoff, dictation_enabled`,
       params
     );
     res.json(result.rows[0]);

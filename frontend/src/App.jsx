@@ -4,10 +4,11 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
+import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -492,6 +493,7 @@ export default function App() {
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
           requireStageSignoff: s.require_stage_signoff ?? true,
+          dictationEnabled: s.dictation_enabled ?? true,
           currentUser: authUser.name,
         }))
       )
@@ -507,6 +509,7 @@ export default function App() {
     if ("domain" in patch) firmPatch.domain = patch.domain;
     if ("staleDays" in patch) firmPatch.staleDays = patch.staleDays;
     if ("requireStageSignoff" in patch) firmPatch.requireStageSignoff = patch.requireStageSignoff;
+    if ("dictationEnabled" in patch) firmPatch.dictationEnabled = patch.dictationEnabled;
     if (Object.keys(firmPatch).length) {
       api.updateFirmSettings(firmPatch).catch(() => {});
     }
@@ -978,6 +981,7 @@ export default function App() {
 
 
   return (
+    <DictationContext.Provider value={settings.dictationEnabled !== false}>
     <div className="ac-root">
       <style>{`
         .ac-root {
@@ -1057,6 +1061,19 @@ export default function App() {
         .ac-hidelist:hover { color: var(--ink); }
         .ac-task-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .ac-task-controls select, .ac-task-controls input { max-width: 190px; }
+        .ac-dict { position: relative; }
+        .ac-dict > textarea { width: 100%; }
+        .ac-dict-btn {
+          position: absolute; right: 7px; top: 7px; width: 28px; height: 28px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center; border: 1px solid var(--line);
+          background: var(--card); color: var(--slate);
+        }
+        .ac-dict-btn:hover { color: var(--ink); border-color: var(--ink); }
+        .ac-dict-btn.on { background: #b3261e; border-color: #b3261e; color: #fff; animation: ac-pulse 1.4s ease-in-out infinite; }
+        @keyframes ac-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(179, 38, 30, 0.45); } 50% { box-shadow: 0 0 0 6px rgba(179, 38, 30, 0); } }
+        .ac-dict-hint { font-size: 11.5px; color: var(--slate); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+        .ac-dict-hint .dot { width: 7px; height: 7px; border-radius: 50%; background: #b3261e; flex-shrink: 0; }
+        .ac-dict-hint.error { color: var(--danger); }
         .ac-enq-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--slate); margin-bottom: 12px; align-items: center; }
         .ac-enq { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 12px 14px; margin-bottom: 10px; }
         .ac-enq-head { display: flex; gap: 12px; align-items: flex-start; }
@@ -1733,6 +1750,7 @@ export default function App() {
         />
       )}
     </div>
+    </DictationContext.Provider>
   );
 }
 
@@ -1812,7 +1830,7 @@ function StageRequestForm({ stageIndex, onClose, onSubmit }) {
         </p>
         <div className="ac-field">
           <label>Note for the fee earner (optional)</label>
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
+          <DictTextarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. All searches back and clear; report sent to client" style={{ minHeight: 70 }} autoFocus />
         </div>
         {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
         <button className="ac-submit" type="submit" disabled={busy}><Send size={14} /> {busy ? "Sending…" : "Send for sign-off"}</button>
@@ -2012,7 +2030,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
           </div>
           <div className="ac-field">
             <label>Reply</label>
-            <textarea value={reply.text} onChange={(e) => setReply({ ...reply, text: e.target.value })}
+            <DictTextarea value={reply.text} onChange={(e) => setReply({ ...reply, text: e.target.value })}
               placeholder={chosenEmail ? "Leave blank to use the email's text, or paste just the relevant part" : "Paste or type the other side's reply"} style={{ minHeight: 70 }} autoFocus />
           </div>
           <div className="ac-row2">
@@ -2039,7 +2057,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
         <form className="ac-enq-form" onSubmit={(e) => { e.preventDefault(); run(() => onAddComment(comment)); }}>
           <div className="ac-field">
             <label>Comment</label>
-            <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="e.g. Reply doesn't cover the extension — chase for building regs sign-off" style={{ minHeight: 60 }} autoFocus />
+            <DictTextarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="e.g. Reply doesn't cover the extension — chase for building regs sign-off" style={{ minHeight: 60 }} autoFocus />
           </div>
           {error && <p style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</p>}
           <div className="ac-enq-actions">
@@ -2220,7 +2238,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
             <div className="ac-card">
               <h3><StickyNote size={12} /> File notes</h3>
-              <textarea
+              <DictTextarea
                 className="ac-notes-box"
                 style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--card)", minHeight: 90, outline: "none" }}
                 value={notesDraft}
@@ -2948,6 +2966,22 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectO
           {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
         </div>
 
+        <div className="ac-card">
+          <h3><Mic size={12} /> Dictation</h3>
+          <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
+            Shows a microphone button on notes, emails, enquiry replies and tasks so staff can speak instead of type.
+            It uses the browser's own speech recognition, which sends the audio to the browser maker to convert —
+            <strong> Microsoft for Edge</strong>, Google for Chrome. Edge is recommended for client work. Turn it off if your
+            data-protection policy doesn't allow this.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, textTransform: "none", fontWeight: 500, color: "var(--ink)" }}>
+            <input type="checkbox" checked={settings.dictationEnabled !== false} disabled={!isAdmin}
+              onChange={(e) => onSave({ dictationEnabled: e.target.checked })} style={{ width: "auto" }} />
+            Allow dictation
+          </label>
+          {!dictationSupported && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>This browser doesn't support dictation — use Microsoft Edge or Google Chrome.</p>}
+        </div>
+
         <p style={{ fontSize: 11, color: "var(--slate-light)" }}>
           This prototype simulates the connection flow so the interface and data model are ready — a production build would perform real OAuth against Microsoft Graph and a backend service to receive and file live messages.
         </p>
@@ -3061,7 +3095,7 @@ function AddDocForm({ onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>Notes</label>
-          <textarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />
+          <DictTextarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" disabled={saving}><Paperclip size={14} /> {saving ? (file ? "Uploading…" : "Saving…") : "Add to file"}</button>
@@ -3119,7 +3153,7 @@ function AddEmailForm({ onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>Summary</label>
-          <textarea value={f.body} onChange={set("body")} placeholder="Brief summary of the email content…" />
+          <DictTextarea value={f.body} onChange={set("body")} placeholder="Brief summary of the email content…" />
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><Send size={14} /> Log email</button>
@@ -3363,7 +3397,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         </div>
         <div className="ac-field">
           <label>Mortgage offer special conditions</label>
-          <textarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
+          <DictTextarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
         </div>
 
         <div className="ac-fieldset-title">Our team</div>
@@ -3473,7 +3507,7 @@ function AddNoteForm({ onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>Note</label>
-          <textarea
+          <DictTextarea
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="e.g. Called client re: mortgage offer, they confirmed acceptance. Chasing seller's solicitor for search results tomorrow."
@@ -3517,7 +3551,7 @@ function AddEnquiryForm({ onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>Enquiry</label>
-          <textarea
+          <DictTextarea
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             placeholder="e.g. Please confirm whether any disputes have arisen with neighbouring owners in the last 3 years."
@@ -3792,7 +3826,7 @@ function EmailEnquiriesModal({ matter, onClose, onSend }) {
         </div>
         <div className="ac-field">
           <label>Message</label>
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} style={{ minHeight: 220, fontFamily: "var(--font-mono)", fontSize: 12 }} />
+          <DictTextarea value={body} onChange={(e) => setBody(e.target.value)} style={{ minHeight: 220, fontFamily: "var(--font-mono)", fontSize: 12 }} />
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><Send size={14} /> Open in email client & log</button>
@@ -4308,7 +4342,7 @@ function UpdateSearchForm({ search, onClose, onSave }) {
         {f.issue && (
           <div className="ac-field">
             <label>Issue notes</label>
-            <textarea value={f.issueNotes} onChange={(e) => setF({ ...f, issueNotes: e.target.value })} placeholder="What's the issue and what needs to happen next?" style={{ minHeight: 80 }} />
+            <DictTextarea value={f.issueNotes} onChange={(e) => setF({ ...f, issueNotes: e.target.value })} placeholder="What's the issue and what needs to happen next?" style={{ minHeight: 80 }} />
           </div>
         )}
         <button className="ac-submit" type="submit" onClick={submit}><Check size={14} /> Save</button>
@@ -4351,7 +4385,7 @@ function AddUndertakingForm({ onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>Description</label>
-          <textarea value={f.description} onChange={set("description")} placeholder="e.g. To redeem the existing mortgage from completion monies and forward confirmation of discharge." style={{ minHeight: 80 }} autoFocus />
+          <DictTextarea value={f.description} onChange={set("description")} placeholder="e.g. To redeem the existing mortgage from completion monies and forward confirmation of discharge." style={{ minHeight: 80 }} autoFocus />
         </div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -4459,7 +4493,7 @@ function AddTaskForm({ matter, users, currentUserId, onClose, onAdd }) {
         </div>
         <div className="ac-field">
           <label>What needs to be done</label>
-          <textarea value={f.description} onChange={set("description")} placeholder="e.g. Chase mortgage offer, confirm buildings insurance is in place" style={{ minHeight: 70 }} autoFocus />
+          <DictTextarea value={f.description} onChange={set("description")} placeholder="e.g. Chase mortgage offer, confirm buildings insurance is in place" style={{ minHeight: 70 }} autoFocus />
         </div>
         <div className="ac-row2">
           <div className="ac-field">
