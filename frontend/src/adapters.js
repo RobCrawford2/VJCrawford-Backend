@@ -69,6 +69,8 @@ function adaptActivity(a) {
  * A future enhancement would have the backend return a precomputed
  * attention flag per row; out of scope for this pass.
  */
+const numOrBlank = (v) => (v !== null && v !== undefined ? Number(v) : "");
+
 export function adaptMatter(m, users) {
   return {
     id: m.id,
@@ -119,7 +121,19 @@ export function adaptMatter(m, users) {
       depositReceivedDate: m.deposit_received_date || "",
       sdltBuyerType: m.sdlt_buyer_type || "",
       sdltNonResident: !!m.sdlt_non_resident,
+      mortgageAdvance: numOrBlank(m.mortgage_advance),
+      redemptionAmount: numOrBlank(m.redemption_amount),
+      agentFee: numOrBlank(m.agent_fee),
+      fundsReceived: numOrBlank(m.funds_received),
+      costs: Array.isArray(m.costs) ? m.costs.map((c) => ({ description: c.description, amount: Number(c.amount), vat: !!c.vat })) : [],
     },
+    // Client's bank details, newest first: [0] is the current set unless superseded.
+    bankDetails: (m.bankDetails || []).map((b) => ({
+      id: b.id, accountName: b.account_name, sortCode: b.sort_code, accountNumber: b.account_number, bankName: b.bank_name || "",
+      status: b.status, enteredByName: b.entered_by_name || "", enteredAt: b.entered_at,
+      verifiedByName: b.verified_by_name || "", verifiedAt: b.verified_at, verificationMethod: b.verification_method || "",
+      verificationNote: b.verification_note || "",
+    })),
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
     emails: (m.emails || []).map(adaptEmail),
@@ -179,6 +193,8 @@ function detailFields(f) {
     if ("depositReceivedDate" in f.money) out.depositReceivedDate = f.money.depositReceivedDate;
     if ("sdltBuyerType" in f.money) out.sdltBuyerType = f.money.sdltBuyerType;
     if ("sdltNonResident" in f.money) out.sdltNonResident = !!f.money.sdltNonResident;
+    for (const k of ["mortgageAdvance", "redemptionAmount", "agentFee", "fundsReceived"]) if (k in f.money) out[k] = f.money[k];
+    if ("costs" in f.money) out.costs = f.money.costs;
   }
   return out;
 }

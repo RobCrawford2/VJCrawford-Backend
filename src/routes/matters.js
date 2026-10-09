@@ -13,6 +13,7 @@ const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
 const { ukToday } = require("../utils/dates");
 const { validateRows } = require("../utils/matterImport");
 const { buildReportOnTitle } = require("../reports/reportOnTitle");
+const { buildDocument, TEMPLATE_LIST } = require("../reports/letters");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -28,7 +29,7 @@ function logActivity(client, matterId, userId, type, text) {
  * column so it's cheap even on a large caseload.
  */
 async function loadMatterDetail(matterId) {
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -60,6 +61,12 @@ async function loadMatterDetail(matterId) {
        WHERE e.matter_id = $1 ORDER BY c.created_at ASC`,
       [matterId]
     ),
+    query(
+      `SELECT b.*, eu.name AS entered_by_name, vu.name AS verified_by_name
+       FROM client_bank_details b LEFT JOIN users eu ON eu.id = b.entered_by LEFT JOIN users vu ON vu.id = b.verified_by
+       WHERE b.matter_id = $1 ORDER BY b.entered_at DESC`,
+      [matterId]
+    ),
   ]);
 
   if (!matter.rows.length) return null;
@@ -78,6 +85,7 @@ async function loadMatterDetail(matterId) {
     tasks: tasks.rows,
     activity: activity.rows,
     linkedMatters: links.rows,
+    bankDetails: bank.rows,
   };
 }
 
@@ -432,6 +440,7 @@ router.get(
               to_char(m.mortgage_offer_expiry, 'YYYY-MM-DD') AS mortgage_offer_expiry,
               (m.pre_exchange_confirmed_by IS NOT NULL AND m.pre_exchange_confirmed_by <> '') AS pre_exchange_confirmed,
               (m.deposit_received_date IS NOT NULL) AS deposit_received,
+              (SELECT status FROM client_bank_details b WHERE b.matter_id = m.id AND b.status <> 'superseded' LIMIT 1) AS bank_details_status,
               (SELECT count(*) FROM tasks t WHERE t.matter_id = m.id AND t.status = 'Open')::int AS open_tasks,
               (SELECT count(*) FROM enquiries q WHERE q.matter_id = m.id AND q.status <> 'Answered')::int AS open_enquiries,
               (SELECT count(*) FROM searches x WHERE x.matter_id = m.id AND x.date_received IS NULL)::int AS searches_awaited
@@ -474,6 +483,9 @@ router.get(
     res.json(result.rows.map((r) => ({ ...r, to_stage_name: STAGE_NAMES[r.to_stage], from_stage_name: STAGE_NAMES[r.from_stage] })));
   })
 );
+
+// GET /matters/document-templates — letters and statements we can draft (before /:id)
+router.get("/document-templates", (req, res) => res.json(TEMPLATE_LIST));
 
 // -----------------------------------------------------------------------
 // GET /matters/:id — full detail
@@ -541,6 +553,116 @@ router.get(
 );
 
 // -----------------------------------------------------------------------
+// GET /matters/:id/generate/:template — draft one of them (.docx)
+// -----------------------------------------------------------------------
+
+router.get(
+  "/:id/generate/:template",
+  asyncHandler(async (req, res) => {
+    if (!TEMPLATE_LIST.some((t) => t.key === req.params.template)) return res.status(404).json({ error: "Unknown document template." });
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const [matter, firm] = await Promise.all([
+      query(
+        `SELECT m.*, fe.name AS fee_earner_name, COALESCE(sv.name, fs.name) AS supervisor_name
+         FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
+         LEFT JOIN users sv ON sv.id = m.supervisor_id LEFT JOIN users fs ON fs.id = fe.supervisor_id
+         WHERE m.id = $1`,
+        [req.params.id]
+      ),
+      query(`SELECT name FROM firms WHERE id = $1`, [req.user.firmId]),
+    ]);
+    const m = matter.rows[0];
+    const doc = await buildDocument(req.params.template, {
+      matter: m,
+      firm: firm.rows[0],
+      feeEarner: m.fee_earner_name || null,
+      supervisor: m.supervisor_name || null,
+    });
+    await logActivity({ query }, req.params.id, req.user.id, "doc", `${doc.title} draft generated`);
+
+    const fileName = `${doc.title} - ${m.reference}.docx`;
+    res.set({
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      "Cache-Control": "private, no-store",
+    });
+    res.send(doc.buffer);
+  })
+);
+
+// -----------------------------------------------------------------------
+// Client bank details (where sale proceeds / surplus are sent)
+//   POST /matters/:id/bank-details            — record new details (unverified)
+//   POST /matters/:id/bank-details/:bid/verify — confirm them (fee earner / supervisor)
+// New details always start unverified and replace the previous set, so a
+// change of account (the classic email-interception fraud) can't slip
+// through on an earlier verification.
+// -----------------------------------------------------------------------
+const VERIFY_METHODS = ["Phone call to number on file", "In person with ID", "Video call", "Other"];
+
+router.post(
+  "/:id/bank-details",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const accountName = String(req.body.accountName || "").trim();
+    const sortCode = String(req.body.sortCode || "").replace(/[\s-]/g, "");
+    const accountNumber = String(req.body.accountNumber || "").replace(/\s/g, "");
+    const bankName = String(req.body.bankName || "").trim() || null;
+    if (!accountName) return res.status(400).json({ error: "Enter the name on the account." });
+    if (!/^\d{6}$/.test(sortCode)) return res.status(400).json({ error: "The sort code must be 6 digits." });
+    if (!/^\d{8}$/.test(accountNumber)) return res.status(400).json({ error: "The account number must be 8 digits." });
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const previous = await client.query(
+        `UPDATE client_bank_details SET status = 'superseded' WHERE matter_id = $1 AND status <> 'superseded' RETURNING id`,
+        [req.params.id]
+      );
+      const inserted = await client.query(
+        `INSERT INTO client_bank_details (matter_id, account_name, sort_code, account_number, bank_name, entered_by)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [req.params.id, accountName, sortCode, accountNumber, bankName, req.user.id]
+      );
+      await logActivity(client, req.params.id, req.user.id, "note",
+        `${previous.rows.length ? "Client bank details CHANGED" : "Client bank details recorded"} (account ending ${accountNumber.slice(-4)}) — not yet verified`);
+      await client.query("COMMIT");
+      res.status(201).json(inserted.rows[0]);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+router.post(
+  "/:id/bank-details/:bid/verify",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    if (!(await canSignOff(req.user, req.params.id))) {
+      return res.status(403).json({ error: "Only the matter's fee earner or their supervisor can verify bank details." });
+    }
+    const method = String(req.body.method || "");
+    const note = String(req.body.note || "").trim() || null;
+    if (!VERIFY_METHODS.includes(method)) return res.status(400).json({ error: "Choose how the details were verified." });
+    if (method === "Other" && !note) return res.status(400).json({ error: "Add a note saying how the details were verified." });
+
+    const updated = await query(
+      `UPDATE client_bank_details SET status = 'verified', verified_by = $3, verified_at = now(),
+         verification_method = $4, verification_note = $5
+       WHERE id = $1 AND matter_id = $2 AND status = 'unverified' RETURNING *`,
+      [req.params.bid, req.params.id, req.user.id, method, note]
+    );
+    if (!updated.rows.length) return res.status(404).json({ error: "Those bank details aren't awaiting verification." });
+    await logActivity({ query }, req.params.id, req.user.id, "note",
+      `Client bank details verified (account ending ${updated.rows[0].account_number.slice(-4)}) — ${method}${note ? `: ${note}` : ""}`);
+    res.json(updated.rows[0]);
+  })
+);
+
+// -----------------------------------------------------------------------
 // PATCH /matters/:id — update core fields (address, parties, dates, notes, team, stage)
 // -----------------------------------------------------------------------
 const PATCHABLE_FIELDS = {
@@ -562,6 +684,8 @@ const PATCHABLE_FIELDS = {
   sdltBuyerType: "sdlt_buyer_type", sdltNonResident: "sdlt_non_resident",
   depositReceivedDate: "deposit_received_date", os1PriorityExpiry: "os1_priority_expiry",
   leaseYearsRemaining: "lease_years_remaining",
+  mortgageAdvance: "mortgage_advance", redemptionAmount: "redemption_amount", agentFee: "agent_fee",
+  fundsReceived: "funds_received", costs: "costs",
 };
 
 // Fields that can also be supplied when a matter is first opened (POST /matters).
@@ -578,7 +702,7 @@ const blankToNull = (key, v) => (v === "" && !KEEP_BLANK.has(key) ? null : v);
 
 // JSONB columns need their JS value serialized before going to Postgres —
 // everything else in PATCHABLE_FIELDS is a plain scalar and passes through as-is.
-const JSON_FIELDS = new Set(["preExchangeChecklist"]);
+const JSON_FIELDS = new Set(["preExchangeChecklist", "costs"]);
 
 router.patch(
   "/:id",
@@ -589,6 +713,12 @@ router.patch(
     const params = [];
     if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
+    if (req.body.costs !== undefined) {
+      const ok = Array.isArray(req.body.costs) && req.body.costs.length <= 50 && req.body.costs.every((c) =>
+        c && typeof c.description === "string" && c.description.trim() && Number.isFinite(Number(c.amount)) && Number(c.amount) >= 0);
+      if (!ok) return res.status(400).json({ error: "Each cost needs a description and an amount of £0 or more." });
+      req.body.costs = req.body.costs.map((c) => ({ description: c.description.trim(), amount: Math.round(Number(c.amount) * 100) / 100, vat: !!c.vat }));
     }
     if (req.body.sdltBuyerType && !["standard", "first_time", "additional"].includes(req.body.sdltBuyerType)) {
       return res.status(400).json({ error: "sdltBuyerType must be standard, first_time or additional." });

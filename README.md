@@ -128,6 +128,10 @@ All routes except `/auth/register` and `/auth/login` require
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
 | GET | `/matters/:id/report-on-title` | Draft Report on Title as a Word document (purchases and remortgages) |
+| GET | `/matters/document-templates` | Letters and statements that can be drafted |
+| GET | `/matters/:id/generate/:template` | Draft one as a Word document (completion statement, client care, initial letters, exchange/completion letters, redemption request) |
+| POST | `/matters/:id/bank-details` | Record the client's bank details (start unverified; replaces any previous set) |
+| POST | `/matters/:id/bank-details/:bid/verify` | Fee earner / supervisor records how the details were verified |
 | POST | `/matters/:id/stage` | Move the stage tracker (fee earners get 403 `needsSignoff` when the firm requires sign-off) |
 | POST | `/matters/:id/stage-requests` | Request sign-off to move to a stage (`stageIndex`, `note`) |
 | POST | `/matters/:id/stage-requests/:rid/decision` | Approve (moves the stage) or decline (`approve`, `note`) — the matter's fee earner or their supervisor (not admin) |

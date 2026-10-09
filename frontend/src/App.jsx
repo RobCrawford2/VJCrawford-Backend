@@ -4,7 +4,7 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
@@ -346,6 +346,14 @@ function needsAttention(matter, staleDays = 14) {
     reasons.push(`${outstandingUndertakings.length} undertaking${outstandingUndertakings.length === 1 ? "" : "s"} still outstanding after completion on ${formatDate(matter.keyDates.actualCompletion)}`);
   } else if (outstandingUndertakings.length) {
     reasons.push("Undertaking not yet discharged");
+  }
+  const bank = (matter.bankDetails || []).find((b) => b.status !== "superseded");
+  if (bank && bank.status === "unverified") {
+    const changed = (matter.bankDetails || []).some((b) => b.status === "superseded");
+    reasons.push(`Client bank details ${changed ? "CHANGED and " : ""}not verified — don't send any money until they've been checked by phone on a number already held`);
+  }
+  if (!bank && matter.type !== "Purchase" && matter.currentStageIndex >= EXCHANGE_INDEX && matter.currentStageIndex < CLOSED_INDEX) {
+    reasons.push("No client bank details recorded for the completion monies");
   }
   const today = new Date();
   const daysUntil = (d) => Math.ceil((new Date(d) - new Date(todayISO())) / 86400000);
@@ -759,6 +767,33 @@ export default function App() {
     }
   }
 
+  async function downloadGeneratedDocument(matter, template) {
+    try {
+      const blob = await api.generateDocument(matter.id, template.key);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${template.title} - ${matter.reference}.docx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      await refreshSelected(matter.id);
+    } catch (err) {
+      notify(err.message || "Couldn't generate the document.");
+    }
+  }
+
+  async function addBankDetails(id, details) {
+    await api.addBankDetails(id, details); // errors shown by the form
+    await refreshSelected(id);
+    notify("Bank details saved. They must be verified by phone before any money is sent.", "info");
+  }
+
+  async function verifyBankDetails(id, bankId, method, note) {
+    await api.verifyBankDetails(id, bankId, method, note);
+    await refreshSelected(id);
+    notify("Bank details marked as verified.", "success");
+  }
+
   async function openDocumentFile(id, doc, download) {
     // Open the tab now, while we still have the click — browsers block
     // window.open calls made after an await.
@@ -1161,6 +1196,16 @@ export default function App() {
         .ac-ready.ok { background: var(--success-bg); color: var(--success); }
         .ac-ready.no { background: #f6ddd0; color: #8a3b1f; }
         .ac-ready.neutral { background: var(--paper); color: var(--slate); border: 1px solid var(--line); }
+        .ac-cost-row { display: grid; grid-template-columns: 1fr 110px auto auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+        .ac-cost-vat { display: flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; text-transform: none; letter-spacing: 0; margin: 0; }
+        .ac-cost-vat input[type=checkbox] { width: auto; margin: 0; }
+        .ac-gen-row .ac-tablebtn { white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
+        .ac-gen-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+        .ac-gen-row:last-child { border-bottom: none; }
+        .ac-doc-gaps { display: block; font-size: 11px; color: #8a3b1f; margin-top: 2px; }
+        .ac-bank-status { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; padding: 7px 9px; border-radius: 3px; margin-bottom: 8px; }
+        .ac-bank-status.verified { background: #e7f0e6; color: #2f5a2c; }
+        .ac-bank-status.unverified { background: #f8e3dc; color: #8a3b1f; font-weight: 600; }
         .ac-sdlt { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 2px; margin-bottom: 12px; background: var(--card); }
         .ac-sdlt-result { font-size: 12.5px; margin-bottom: 10px; }
         .ac-sdlt-total { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -1756,6 +1801,9 @@ export default function App() {
               onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
               onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
               onReportOnTitle={() => downloadReportOnTitle(selected)}
+              onGenerateDocument={(template) => downloadGeneratedDocument(selected, template)}
+              onAddBankDetails={(details) => addBankDetails(selected.id, details)}
+              onVerifyBankDetails={(bankId, method, note) => verifyBankDetails(selected.id, bankId, method, note)}
               onAddEmail={() => setShowAddEmail(true)}
               onAddNote={() => setShowAddNote(true)}
               onEdit={() => setShowEditMatter(true)}
@@ -1883,6 +1931,179 @@ export default function App() {
 /* ---------------------------------------------------------------------- */
 /* Matter detail                                                          */
 /* ---------------------------------------------------------------------- */
+
+/** Letters and statements drafted from the matter (Word, with yellow gaps to fill). */
+const DOCUMENT_TEMPLATES = [
+  { key: "completion-statement", title: "Completion statement", types: ["Purchase", "Sale", "Remortgage"] },
+  { key: "client-care", title: "Client care letter", types: ["Purchase", "Sale", "Remortgage"] },
+  { key: "agent-initial", title: "Initial letter to estate agent", types: ["Purchase", "Sale"] },
+  { key: "other-side-initial", title: "Initial letter to other side's solicitors", types: ["Purchase", "Sale"] },
+  { key: "redemption-request", title: "Redemption statement request to lender", types: ["Sale", "Remortgage"] },
+  { key: "exchange-confirmation", title: "Exchange confirmation to client", types: ["Purchase", "Sale"] },
+  { key: "completion-confirmation", title: "Completion confirmation to client", types: ["Purchase", "Sale", "Remortgage"] },
+];
+
+function completionStatementGaps(matter) {
+  const m = matter.money;
+  return [
+    !matter.price && "price",
+    matter.type === "Purchase" && m.sdlt === "" && "SDLT",
+    matter.type !== "Sale" && matter.parties.lender && m.mortgageAdvance === "" && "mortgage advance",
+    matter.type !== "Purchase" && m.redemptionAmount === "" && "redemption figure",
+    matter.type === "Sale" && m.agentFee === "" && "agent's fee",
+    !(m.costs || []).length && "our fees",
+    !matter.keyDates.targetCompletion && "completion date",
+  ].filter(Boolean);
+}
+
+function DocumentsCard({ matter, onGenerate }) {
+  const [busy, setBusy] = useState(null);
+  const templates = DOCUMENT_TEMPLATES.filter((t) => t.types.includes(matter.type));
+  const gaps = completionStatementGaps(matter);
+
+  async function generate(t) {
+    setBusy(t.key);
+    try { await onGenerate(t); } finally { setBusy(null); }
+  }
+
+  return (
+    <div className="ac-card" style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 10 }}><FileText size={12} /> Letters &amp; documents</h3>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 8 }}>
+        Word drafts filled in from this matter. Anything we don't hold is highlighted in yellow to complete before sending.
+      </div>
+      {templates.map((t) => (
+        <div key={t.key} className="ac-gen-row">
+          <span>{t.title}{t.key === "completion-statement" && gaps.length > 0 && (
+            <span className="ac-doc-gaps">Missing: {gaps.join(", ")} — add them in Edit details</span>
+          )}</span>
+          <button type="button" className="ac-tablebtn" disabled={!!busy} onClick={() => generate(t)}>
+            <Download size={12} /> {busy === t.key ? "Preparing…" : "Download"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const VERIFY_METHODS = ["Phone call to number on file", "In person with ID", "Video call", "Other"];
+const maskAccount = (n) => `••••${String(n).slice(-4)}`;
+const formatSortCode = (s) => String(s).replace(/(\d{2})(\d{2})(\d{2})/, "$1-$2-$3");
+
+/**
+ * The client's bank account for sale proceeds / surplus. New or changed
+ * details always start unverified and must be checked by phone, on a number
+ * already on file, before any money goes — the main defence against
+ * email-interception fraud.
+ */
+function BankDetailsCard({ matter, onAdd, onVerify }) {
+  const current = matter.bankDetails.find((b) => b.status !== "superseded") || null;
+  const history = matter.bankDetails.filter((b) => b.status === "superseded");
+  const changed = history.length > 0;
+  const [reveal, setReveal] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [form, setForm] = useState({ accountName: "", bankName: "", sortCode: "", accountNumber: "" });
+  const [check, setCheck] = useState({ method: VERIFY_METHODS[0], note: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function run(fn, done) {
+    setBusy(true); setError("");
+    try { await fn(); done(); } catch (err) { setError(err.message || "Something went wrong."); } finally { setBusy(false); }
+  }
+
+  async function startAdding() {
+    if (current && !(await confirmAction(
+      "Replacing the client's bank details?\n\nIf the request came by email, treat it as suspicious — call the client on a number you already hold before changing anything. The new details will need verifying again.",
+      { confirmLabel: "Enter new details", danger: true }
+    ))) return;
+    setForm({ accountName: matter.client, bankName: "", sortCode: "", accountNumber: "" });
+    setAdding(true);
+  }
+
+  return (
+    <div className="ac-card" style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 10 }}><Landmark size={12} /> Client bank details</h3>
+      {!current && !adding && (
+        <div style={{ fontSize: 12.5, color: "var(--slate)", marginBottom: 8 }}>
+          None recorded. Needed before sending {matter.type === "Purchase" ? "any refund" : "the sale proceeds or surplus"} to the client.
+        </div>
+      )}
+      {current && !adding && (
+        <>
+          <div className={`ac-bank-status ${current.status}`}>
+            {current.status === "verified"
+              ? <><ShieldCheck size={13} /> Verified by {current.verifiedByName || "—"} on {formatDate(current.verifiedAt)} · {current.verificationMethod}</>
+              : <><AlertTriangle size={13} /> {changed ? "CHANGED and not verified" : "Not verified"} — don't send money until they've been checked by phone</>}
+          </div>
+          <div className="ac-kv"><span className="k">Account name</span><span className="v">{current.accountName}</span></div>
+          {current.bankName && <div className="ac-kv"><span className="k">Bank</span><span className="v">{current.bankName}</span></div>}
+          <div className="ac-kv"><span className="k">Sort code</span><span className="v mono">{reveal ? formatSortCode(current.sortCode) : "••-••-" + current.sortCode.slice(-2)}</span></div>
+          <div className="ac-kv">
+            <span className="k">Account number</span>
+            <span className="v mono">{reveal ? current.accountNumber : maskAccount(current.accountNumber)}
+              <button type="button" className="ac-iconbtn" style={{ marginLeft: 6 }} onClick={() => setReveal(!reveal)} aria-label={reveal ? "Hide bank details" : "Show bank details"}>
+                {reveal ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", margin: "4px 0 8px" }}>Entered by {current.enteredByName || "—"} on {formatDate(current.enteredAt)}{current.verificationNote ? ` · ${current.verificationNote}` : ""}</div>
+          {current.status === "unverified" && !verifying && (
+            matter.canSignOffStages
+              ? <button type="button" className="ac-tablebtn primary" onClick={() => { setCheck({ method: VERIFY_METHODS[0], note: "" }); setVerifying(true); }}><ShieldCheck size={12} /> Record verification</button>
+              : <div style={{ fontSize: 12, color: "var(--slate)" }}>The fee earner or their supervisor must verify these.</div>
+          )}
+        </>
+      )}
+      {verifying && current && (
+        <div style={{ marginTop: 8 }}>
+          <div className="ac-field">
+            <label>How were they checked?</label>
+            <select value={check.method} onChange={(e) => setCheck({ ...check, method: e.target.value })}>
+              {VERIFY_METHODS.map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </div>
+          <div className="ac-field">
+            <label>Note {check.method === "Other" ? "(required)" : "(optional)"}</label>
+            <input value={check.note} onChange={(e) => setCheck({ ...check, note: e.target.value })} placeholder="e.g. Called client on 07… from the ID file; read back sort code and account number" />
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>Only use a number you already held — never one given in the same email as the bank details.</div>
+          {error && <p style={{ color: "var(--danger)", fontSize: 12 }}>{error}</p>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="ac-tablebtn" onClick={() => { setVerifying(false); setError(""); }}>Cancel</button>
+            <button type="button" className="ac-tablebtn primary" disabled={busy} onClick={() => run(() => onVerify(current.id, check.method, check.note), () => setVerifying(false))}>Confirm verified</button>
+          </div>
+        </div>
+      )}
+      {adding && (
+        <div>
+          <div className="ac-field"><label>Name on the account</label><input value={form.accountName} onChange={(e) => setForm({ ...form, accountName: e.target.value })} /></div>
+          <div className="ac-field"><label>Bank (optional)</label><input value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} /></div>
+          <div className="ac-row2">
+            <div className="ac-field"><label>Sort code</label><input inputMode="numeric" placeholder="12-34-56" value={form.sortCode} onChange={(e) => setForm({ ...form, sortCode: e.target.value })} /></div>
+            <div className="ac-field"><label>Account number</label><input inputMode="numeric" placeholder="8 digits" value={form.accountNumber} onChange={(e) => setForm({ ...form, accountNumber: e.target.value })} /></div>
+          </div>
+          {error && <p style={{ color: "var(--danger)", fontSize: 12 }}>{error}</p>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="ac-tablebtn" onClick={() => { setAdding(false); setError(""); }}>Cancel</button>
+            <button type="button" className="ac-tablebtn primary" disabled={busy} onClick={() => run(() => onAdd(form), () => { setAdding(false); setReveal(false); })}>Save (unverified)</button>
+          </div>
+        </div>
+      )}
+      {!adding && !verifying && (
+        <button type="button" className="ac-tablebtn" style={{ marginTop: 8 }} onClick={startAdding}>
+          <Plus size={12} /> {current ? "Replace details" : "Add bank details"}
+        </button>
+      )}
+      {history.length > 0 && !adding && (
+        <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 10 }}>
+          Previous: {history.map((b) => `${maskAccount(b.accountNumber)} (entered ${formatDate(b.enteredAt)})`).join("; ")}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ReportOnTitleCard({ matter, onGenerate }) {
   const [busy, setBusy] = useState(false);
@@ -2197,7 +2418,7 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onGenerateDocument, onAddBankDetails, onVerifyBankDetails, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   const [tasksMineOnly, setTasksMineOnly] = useState(false);
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
@@ -2398,6 +2619,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
           <div className="ac-col-side">
             {(matter.type === "Purchase" || matter.type === "Remortgage") && <ReportOnTitleCard matter={matter} onGenerate={onReportOnTitle} />}
+            <DocumentsCard matter={matter} onGenerate={onGenerateDocument} />
+            <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />
             <div className="ac-card" style={{ marginBottom: 18 }}>
               <h3 style={{ marginBottom: 10 }}>Workstreams</h3>
               {(() => {
@@ -3493,6 +3716,58 @@ function ChainPicker({ matter, allMatters, selectedIds, onToggle }) {
   );
 }
 
+/** Fees, disbursements and the other figures the completion statement needs. */
+const STANDARD_COSTS = [
+  { description: "Our legal fee", amount: "", vat: true },
+  { description: "Land Registry fee", amount: "", vat: false },
+  { description: "Search fees", amount: "", vat: false },
+  { description: "Electronic money transfer fee", amount: "", vat: true },
+  { description: "ID and anti-money-laundering checks", amount: "", vat: true },
+];
+
+function CompletionFigures({ type, money, onChange }) {
+  const costs = money.costs || [];
+  const setCost = (i, patch) => onChange({ costs: costs.map((c, j) => (j === i ? { ...c, ...patch } : c)) });
+  const net = costs.reduce((t, c) => t + (Number(c.amount) || 0), 0);
+  const vat = costs.filter((c) => c.vat).reduce((t, c) => t + (Number(c.amount) || 0), 0) * 0.2;
+  const field = (key, label) => (
+    <div className="ac-field">
+      <label>{label}</label>
+      <input type="number" min="0" step="0.01" value={money[key] ?? ""} onChange={(e) => onChange({ [key]: e.target.value })} />
+    </div>
+  );
+  return (
+    <>
+      <div className="ac-row2">
+        {type !== "Sale" && field("mortgageAdvance", type === "Remortgage" ? "New mortgage advance (£)" : "Mortgage advance (£)")}
+        {type !== "Purchase" && field("redemptionAmount", "Mortgage redemption figure (£)")}
+        {type === "Sale" && field("agentFee", "Estate agent's fee inc. VAT (£)")}
+        {field("fundsReceived", "Money received from client so far (£)")}
+      </div>
+      <div className="ac-field">
+        <label>Our fees and disbursements (amounts before VAT)</label>
+        {costs.map((c, i) => (
+          <div key={i} className="ac-cost-row">
+            <input value={c.description} placeholder="Description" onChange={(e) => setCost(i, { description: e.target.value })} aria-label="Cost description" />
+            <input type="number" min="0" step="0.01" value={c.amount} placeholder="£" onChange={(e) => setCost(i, { amount: e.target.value })} aria-label="Cost amount" />
+            <label className="ac-cost-vat"><input type="checkbox" checked={!!c.vat} onChange={(e) => setCost(i, { vat: e.target.checked })} /> VAT</label>
+            <button type="button" className="ac-iconbtn" onClick={() => onChange({ costs: costs.filter((_, j) => j !== i) })} aria-label="Remove cost"><Trash2 size={14} /></button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+          <button type="button" className="ac-tablebtn" onClick={() => onChange({ costs: [...costs, { description: "", amount: "", vat: true }] })}><Plus size={12} /> Add a line</button>
+          {!costs.length && <button type="button" className="ac-tablebtn" onClick={() => onChange({ costs: STANDARD_COSTS.map((c) => ({ ...c })) })}>Use the standard list</button>}
+        </div>
+        {costs.length > 0 && (
+          <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 6 }}>
+            {formatMoney(net)} + VAT {formatMoney(Math.round(vat * 100) / 100)} = <strong>{formatMoney(Math.round((net + vat) * 100) / 100)}</strong>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
   const [f, setF] = useState({
     address: matter.address,
@@ -3533,6 +3808,12 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
       setError("Property address and client name are both required.");
       return;
     }
+    const costs = (f.money.costs || []).filter((c) => String(c.description).trim() || c.amount !== "");
+    if (costs.some((c) => !String(c.description).trim() || c.amount === "" || !(Number(c.amount) >= 0))) {
+      setError("Each fee or disbursement needs a description and an amount.");
+      return;
+    }
+    const num = (v) => (v === "" || v === null || v === undefined ? "" : Number(v));
     onSave({
       address: f.address.trim(),
       client: f.client.trim(),
@@ -3562,6 +3843,11 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
         ...f.money,
         deposit: f.money.deposit === "" ? "" : Number(f.money.deposit),
         sdlt: f.money.sdlt === "" ? "" : Number(f.money.sdlt),
+        mortgageAdvance: num(f.money.mortgageAdvance),
+        redemptionAmount: num(f.money.redemptionAmount),
+        agentFee: num(f.money.agentFee),
+        fundsReceived: num(f.money.fundsReceived),
+        costs: costs.map((c) => ({ description: String(c.description).trim(), amount: Number(c.amount), vat: !!c.vat })),
       },
     });
   }
@@ -3625,6 +3911,13 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave }) {
           <label>Mortgage offer special conditions</label>
           <DictTextarea value={f.money.mortgageConditions} onChange={setIn("money", "mortgageConditions")} placeholder="Leave blank if none / not applicable" />
         </div>
+
+        <div className="ac-fieldset-title">Completion statement figures</div>
+        <CompletionFigures
+          type={f.type}
+          money={f.money}
+          onChange={(patch) => setF((prev) => ({ ...prev, money: { ...prev.money, ...patch } }))}
+        />
 
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
@@ -4869,6 +5162,7 @@ function ThisWeekCard({ onOpenMatter, refreshKey }) {
                 {m.lender && chip(mortgageOk, "Mortgage offer", m.mortgage_offer_expiry ? `Expires ${formatDate(m.mortgage_offer_expiry)}` : "No expiry date recorded")}
                 {m.searches_awaited > 0 && chip(false, `${m.searches_awaited} search${m.searches_awaited === 1 ? "" : "es"} awaited`)}
                 {m.open_enquiries > 0 && chip(false, `${m.open_enquiries} enquir${m.open_enquiries === 1 ? "y" : "ies"} open`)}
+                {e.kind === "Completion" && m.type !== "Purchase" && chip(m.bank_details_status === "verified", "Client bank details", m.bank_details_status === "unverified" ? "Not verified — don't send funds" : m.bank_details_status ? "" : "None recorded")}
                 {m.open_tasks > 0 && <span className="ac-ready neutral">{m.open_tasks} open task{m.open_tasks === 1 ? "" : "s"}</span>}
               </div>
             </div>

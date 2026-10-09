@@ -794,3 +794,78 @@ test("corrections: items added by mistake can be edited or deleted, and it's log
   const t2 = (await request(app).post(`${base}/tasks`).set(sarah).send({ description: "Keep" })).body;
   assert.equal((await request(app).delete(`${base}/tasks/${t2.id}`).set(marcus)).status, 404);
 });
+
+function docxBody(r, cb) { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); }
+async function docxText(res) {
+  const JSZip = require("jszip");
+  const xml = await (await JSZip.loadAsync(res.body)).file("word/document.xml").async("string");
+  return xml.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&apos;/g, "'");
+}
+
+test("completion statement: costs are validated and the figures add up", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const m = (await request(app).post("/matters").set(sarah).send({ address: "9 Figures Way", client: "Pat Buyer", type: "Purchase", feeEarnerId: me, price: 300000 })).body;
+
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(sarah).send({ costs: [{ description: "", amount: 10 }] })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(sarah).send({ costs: [{ description: "Fee", amount: -1 }] })).status, 400);
+  const ok = await request(app).patch(`/matters/${m.id}`).set(sarah).send({
+    sdlt: 5000, mortgageAdvance: 200000, fundsReceived: 30000,
+    costs: [{ description: "Legal fee", amount: 1000, vat: true }, { description: "Land Registry fee", amount: 150, vat: false }],
+  });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual(ok.body.costs[0], { description: "Legal fee", amount: 1000, vat: true });
+
+  const templates = (await request(app).get("/matters/document-templates").set(sarah)).body;
+  assert.ok(templates.some((t) => t.key === "completion-statement"));
+
+  const res = await request(app).get(`/matters/${m.id}/generate/completion-statement`).set(sarah).buffer(true).parse(docxBody);
+  assert.equal(res.status, 200);
+  assert.match(res.headers["content-disposition"], /Completion%20statement/);
+  const text = await docxText(res);
+  // 300,000 + 5,000 + 1,150 + 200 VAT = 306,350; less 200,000 and 30,000 = 76,350
+  for (const expected of ["£306,350.00", "VAT at 20%", "£200.00", "£76,350.00", "Balance required from you before completion", "Pat Buyer"]) {
+    assert.ok(text.includes(expected), `statement is missing: ${expected}`);
+  }
+  for (const t of templates) {
+    const r = await request(app).get(`/matters/${m.id}/generate/${t.key}`).set(sarah).buffer(true).parse(docxBody);
+    assert.equal(r.status, 200, t.key);
+    assert.ok((await docxText(r)).includes(m.reference), `${t.key} is missing the reference`);
+  }
+  assert.equal((await request(app).get(`/matters/${m.id}/generate/nonsense`).set(sarah)).status, 404);
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/matters/${m.id}/generate/client-care`).set(marcus)).status, 404);
+  const log = (await request(app).get(`/matters/${m.id}`).set(sarah)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("Completion statement draft generated"));
+});
+
+test("bank details: new details start unverified, replace the old ones, and only the fee earner can verify", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const jess = { Authorization: `Bearer ${await tokenFor("jess")}` };
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const m = (await request(app).post("/matters").set(sarah).send({ address: "4 Proceeds Rd", client: "Sam Seller", type: "Sale", feeEarnerId: me })).body;
+  const base = `/matters/${m.id}/bank-details`;
+
+  assert.equal((await request(app).post(base).set(sarah).send({ accountName: "Sam", sortCode: "12345", accountNumber: "12345678" })).status, 400);
+  assert.equal((await request(app).post(base).set(sarah).send({ accountName: "Sam", sortCode: "12-34-56", accountNumber: "1234" })).status, 400);
+  const first = await request(app).post(base).set(jess).send({ accountName: "Sam Seller", sortCode: "12-34-56", accountNumber: "1234 5678", bankName: "Barclays" });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(first.body.sort_code, "123456");
+  assert.equal(first.body.status, "unverified");
+
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(jess).send({ method: "Phone call to number on file" })).status, 403);
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Other" })).status, 400);
+  const v = await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Phone call to number on file", note: "Spoke to Sam on 07700 900000" });
+  assert.equal(v.status, 200);
+  assert.equal(v.body.status, "verified");
+
+  const second = (await request(app).post(base).set(jess).send({ accountName: "Sam Seller", sortCode: "654321", accountNumber: "87654321" })).body;
+  const detail = (await request(app).get(`/matters/${m.id}`).set(sarah)).body;
+  assert.deepEqual(detail.bankDetails.map((b) => b.status), ["unverified", "superseded"]);
+  assert.equal(detail.bankDetails[0].id, second.id);
+  assert.equal((await request(app).post(`${base}/${first.body.id}/verify`).set(sarah).send({ method: "Video call" })).status, 404);
+  assert.ok(detail.activity.some((a) => a.text.startsWith("Client bank details CHANGED (account ending 4321)")));
+
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).post(base).set(marcus).send({ accountName: "X", sortCode: "111111", accountNumber: "11111111" })).status, 404);
+});
