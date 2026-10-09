@@ -45,7 +45,10 @@ function adaptUndertaking(u) {
   };
 }
 function adaptTask(t) {
-  return { id: t.id, description: t.description, dueDate: t.due_date || "", status: t.status, dateCompleted: t.date_completed || "" };
+  return {
+    id: t.id, description: t.description, dueDate: t.due_date || "", status: t.status, dateCompleted: t.date_completed || "",
+    assignedTo: t.assigned_to || "", assignedToName: t.assigned_to_name || "",
+  };
 }
 function adaptActivity(a) {
   return { id: a.id, type: a.type, text: a.text, date: a.occurred_at };
@@ -209,4 +212,12 @@ export function toApiMatterPatch(patch) {
   }
   Object.assign(out, detailFields(patch));
   return out;
+}
+
+/** A row from GET /tasks (open tasks across matters). */
+export function adaptTaskRow(t) {
+  return {
+    id: t.id, description: t.description, dueDate: t.due_date || "", assignedTo: t.assigned_to || "",
+    assignedToName: t.assigned_to_name || "", matterId: t.matter_id, matterRef: t.reference, matterAddr: t.address,
+  };
 }

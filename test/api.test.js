@@ -640,3 +640,54 @@ test("standard tasks can be added in bulk", async () => {
   assert.equal(res.body.length, 2);
   assert.equal((await request(app).post(`/matters/${matterId}/tasks/bulk`).set(sarah).send({ tasks: [{ description: " " }] })).status, 400);
 });
+
+test("tasks can be assigned to staff who can see the matter, edited, and listed as 'my tasks'", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const users = (await request(app).get("/users").set(david)).body;
+  const id = (name) => users.find((u) => u.name === name).id;
+  const matter = (await request(app).get("/matters").set(sarah)).body.matters[0];
+
+  // Jess (Sarah's assistant) can be assigned; Marcus (other fee earner) can't see it; Lucy (Marcus's secretary) can't either
+  const t = await request(app).post(`/matters/${matter.id}/tasks`).set(sarah)
+    .send({ description: "Send client care letter", dueDate: "2026-10-12", assignedTo: id("Jess Taylor") });
+  assert.equal(t.status, 201);
+  assert.equal(t.body.assigned_to, id("Jess Taylor"));
+  const bad = await request(app).post(`/matters/${matter.id}/tasks`).set(sarah).send({ description: "x", assignedTo: id("Marcus Webb") });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /can't see this matter/);
+  assert.equal((await request(app).post(`/matters/${matter.id}/tasks`).set(sarah).send({ description: "x", assignedTo: id("Lucy Brown") })).status, 400);
+
+  // Bulk with per-task assignees
+  const bulk = await request(app).post(`/matters/${matter.id}/tasks/bulk`).set(sarah).send({ tasks: [
+    { description: "Review title", assignedTo: id("Sarah Ncube") }, { description: "Order searches", assignedTo: id("Jess Taylor") }, { description: "Unassigned one" },
+  ] });
+  assert.equal(bulk.status, 201);
+  assert.equal((await request(app).post(`/matters/${matter.id}/tasks/bulk`).set(sarah).send({ tasks: [{ description: "x", assignedTo: id("Marcus Webb") }] })).status, 400);
+
+  // Edit: reassign, change date, unassign
+  const edited = await request(app).patch(`/matters/${matter.id}/tasks/${t.body.id}`).set(sarah).send({ assignedTo: id("Sarah Ncube"), dueDate: "2026-10-15" });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.assigned_to, id("Sarah Ncube"));
+  assert.equal((await request(app).patch(`/matters/${matter.id}/tasks/${t.body.id}`).set(sarah).send({ description: " " })).status, 400);
+  const detail = (await request(app).get(`/matters/${matter.id}`).set(sarah)).body;
+  const row = detail.tasks.find((x) => x.id === t.body.id);
+  assert.equal(row.assigned_to_name, "Sarah Ncube");
+  assert.ok(detail.activity.some((a) => a.text.includes("assigned to Sarah Ncube") && a.text.includes("due 2026-10-15")));
+
+  // My tasks for Jess = just "Order searches"; Sarah's include the two of hers; admin's "all" includes everything
+  const jess = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "jess@vjcrawfordconveyancing.co.uk", password: "password123" })).body.token}` };
+  const jessMine = (await request(app).get("/tasks?mine=true").set(jess)).body;
+  assert.deepEqual(jessMine.map((x) => x.description), ["Order searches"]);
+  assert.equal(jessMine[0].reference, matter.reference);
+  const sarahMine = (await request(app).get("/tasks?mine=true").set(sarah)).body.map((x) => x.description);
+  assert.ok(sarahMine.includes("Send client care letter") && sarahMine.includes("Review title"));
+  const all = (await request(app).get("/tasks").set(david)).body.map((x) => x.description);
+  assert.ok(all.includes("Unassigned one"));
+  // Marcus can't see Sarah's matter's tasks at all
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.ok(!(await request(app).get("/tasks").set(marcus)).body.some((x) => x.matter_id === matter.id));
+
+  await request(app).patch(`/matters/${matter.id}/tasks/${t.body.id}`).set(sarah).send({ assignedTo: null });
+  assert.equal((await request(app).get(`/matters/${matter.id}`).set(sarah)).body.tasks.find((x) => x.id === t.body.id).assigned_to, null);
+});

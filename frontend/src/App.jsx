@@ -9,7 +9,7 @@ import {
 import Papa from "papaparse";
 import Login from "./Login";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
-import { adaptMatter, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
+import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
 /* ---------------------------------------------------------------------- */
 /* Domain constants                                                       */
@@ -156,45 +156,46 @@ const STANDARD_ENQUIRIES = [
   },
 ];
 
-// Standard conveyancing tasks, by matter type and stage index (see STAGES).
+// Standard conveyancing tasks, by matter type and stage index (see STAGES),
+// each with the role it's usually done by — used to suggest who to assign.
 // A starting point to be reviewed against the firm's own procedures.
 const STANDARD_TASKS = {
   Purchase: {
-    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account", "Record source of instruction / referral arrangements"],
-    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Obtain evidence of source of funds and source of wealth", "Verify client's bank details by phone (cyber-fraud check)"],
-    2: ["Request contract pack from seller's solicitors", "Review draft contract, title register and title plan", "Review Property Information Form (TA6) and Fittings & Contents Form (TA10)", "Leasehold: review lease and Leasehold Information Form (TA7)"],
-    3: ["Order local authority, water & drainage and environmental searches", "Consider additional searches (coal mining, flood, chancel, highways)", "Review search results and note issues for the report"],
-    4: ["Raise pre-contract enquiries with seller's solicitors", "Chase outstanding enquiry replies", "Review enquiry replies and decide whether satisfactory"],
-    5: ["Receive and review mortgage offer and special conditions", "Check mortgage offer expiry against the proposed completion date", "Report any issues to the lender (UK Finance Mortgage Lenders' Handbook)"],
-    6: ["Send Report on Title to client", "Obtain signed contract, transfer (TR1) and mortgage deed", "Calculate SDLT and prepare completion statement"],
-    7: ["Complete the pre-exchange review checklist", "Receive deposit funds (cleared) into client account", "Confirm buildings insurance will be in place from exchange", "Agree completion date with all parties in the chain"],
-    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client, estate agent and lender", "Send certificate of title and request mortgage advance", "Carry out pre-completion searches (OS1 / bankruptcy)"],
-    9: ["Receive mortgage advance and balance of funds from client", "Send completion monies to seller's solicitors", "Confirm completion to client and agent; arrange release of keys"],
-    10: ["Submit SDLT return and pay SDLT (within 14 days of completion)", "Discharge any undertakings given", "Apply to register at HM Land Registry (AP1)", "Send title information document to client and lender"],
-    11: ["Send final bill and close client ledger", "Archive the file"],
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business and payment on account", "secretary"], ["Record source of instruction / referral arrangements", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"], ["Obtain evidence of source of funds and source of wealth", "assistant"], ["Verify client's bank details by phone (cyber-fraud check)", "assistant"]],
+    2: [["Request contract pack from seller's solicitors", "assistant"], ["Review draft contract, title register and title plan", "fee_earner"], ["Review Property Information Form (TA6) and Fittings & Contents Form (TA10)", "fee_earner"], ["Leasehold: review lease and Leasehold Information Form (TA7)", "fee_earner"]],
+    3: [["Order local authority, water & drainage and environmental searches", "assistant"], ["Consider additional searches (coal mining, flood, chancel, highways)", "fee_earner"], ["Review search results and note issues for the report", "fee_earner"]],
+    4: [["Raise pre-contract enquiries with seller's solicitors", "fee_earner"], ["Chase outstanding enquiry replies", "assistant"], ["Review enquiry replies and decide whether satisfactory", "fee_earner"]],
+    5: [["Receive and review mortgage offer and special conditions", "fee_earner"], ["Check mortgage offer expiry against the proposed completion date", "fee_earner"], ["Report any issues to the lender (UK Finance Mortgage Lenders' Handbook)", "fee_earner"]],
+    6: [["Send Report on Title to client", "fee_earner"], ["Obtain signed contract, transfer (TR1) and mortgage deed", "assistant"], ["Calculate SDLT and prepare completion statement", "fee_earner"]],
+    7: [["Complete the pre-exchange review checklist", "fee_earner"], ["Receive deposit funds (cleared) into client account", "fee_earner"], ["Confirm buildings insurance will be in place from exchange", "fee_earner"], ["Agree completion date with all parties in the chain", "fee_earner"]],
+    8: [["Exchange contracts and record time, method and formula used", "fee_earner"], ["Confirm exchange to client, estate agent and lender", "secretary"], ["Send certificate of title and request mortgage advance", "fee_earner"], ["Carry out pre-completion searches (OS1 / bankruptcy)", "assistant"]],
+    9: [["Receive mortgage advance and balance of funds from client", "fee_earner"], ["Send completion monies to seller's solicitors", "fee_earner"], ["Confirm completion to client and agent; arrange release of keys", "secretary"]],
+    10: [["Submit SDLT return and pay SDLT (within 14 days of completion)", "assistant"], ["Discharge any undertakings given", "fee_earner"], ["Apply to register at HM Land Registry (AP1)", "assistant"], ["Send title information document to client and lender", "secretary"]],
+    11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
   Sale: {
-    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business and payment on account"],
-    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Confirm client's name matches the registered proprietor", "Verify client's bank details by phone (cyber-fraud check)"],
-    2: ["Obtain official copies of the title register and plan", "Client to complete TA6, TA10 (and TA7 if leasehold)", "Draft contract and send contract pack to buyer's solicitors", "Leasehold: request management pack from managing agent"],
-    4: ["Receive buyer's enquiries", "Answer buyer's enquiries with the client"],
-    5: ["Obtain redemption statement for the existing mortgage"],
-    7: ["Obtain signed contract and transfer (TR1) from client", "Agree completion date with all parties in the chain"],
-    8: ["Exchange contracts and record time, method and formula used", "Confirm exchange to client and estate agent", "Obtain final redemption figure for completion day"],
-    9: ["Receive completion monies from buyer's solicitors", "Redeem the seller's mortgage", "Authorise release of keys and confirm completion to client"],
-    10: ["Send DS1 / evidence of discharge to buyer's solicitors", "Pay estate agent's invoice", "Account to client for net sale proceeds", "Discharge any undertakings given"],
-    11: ["Send final bill and close client ledger", "Archive the file"],
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business and payment on account", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"], ["Confirm client's name matches the registered proprietor", "fee_earner"], ["Verify client's bank details by phone (cyber-fraud check)", "assistant"]],
+    2: [["Obtain official copies of the title register and plan", "assistant"], ["Client to complete TA6, TA10 (and TA7 if leasehold)", "assistant"], ["Draft contract and send contract pack to buyer's solicitors", "fee_earner"], ["Leasehold: request management pack from managing agent", "assistant"]],
+    4: [["Receive buyer's enquiries", "assistant"], ["Answer buyer's enquiries with the client", "fee_earner"]],
+    5: [["Obtain redemption statement for the existing mortgage", "assistant"]],
+    7: [["Obtain signed contract and transfer (TR1) from client", "assistant"], ["Agree completion date with all parties in the chain", "fee_earner"]],
+    8: [["Exchange contracts and record time, method and formula used", "fee_earner"], ["Confirm exchange to client and estate agent", "secretary"], ["Obtain final redemption figure for completion day", "assistant"]],
+    9: [["Receive completion monies from buyer's solicitors", "fee_earner"], ["Redeem the seller's mortgage", "fee_earner"], ["Authorise release of keys and confirm completion to client", "fee_earner"]],
+    10: [["Send DS1 / evidence of discharge to buyer's solicitors", "assistant"], ["Pay estate agent's invoice", "secretary"], ["Account to client for net sale proceeds", "fee_earner"], ["Discharge any undertakings given", "fee_earner"]],
+    11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
   Remortgage: {
-    0: ["Send client care letter, terms of business and costs estimate", "Receive signed terms of business"],
-    1: ["Verify client identity (photo ID and proof of address)", "Complete AML risk assessment", "Verify client's bank details by phone (cyber-fraud check)"],
-    2: ["Obtain official copies of the title register and plan", "Check title for restrictions and other charges"],
-    3: ["Order searches, or search indemnity insurance where the lender allows"],
-    5: ["Receive and review mortgage offer and special conditions", "Obtain redemption statement from the existing lender"],
-    6: ["Report to the lender / send certificate of title", "Obtain signed mortgage deed"],
-    9: ["Draw down the new mortgage advance", "Redeem the existing mortgage", "Account to client for any surplus funds"],
-    10: ["Apply to register the new charge at HM Land Registry (AP1 with DS1)", "Send title information document to client and lender"],
-    11: ["Send final bill and close client ledger", "Archive the file"],
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"], ["Verify client's bank details by phone (cyber-fraud check)", "assistant"]],
+    2: [["Obtain official copies of the title register and plan", "assistant"], ["Check title for restrictions and other charges", "fee_earner"]],
+    3: [["Order searches, or search indemnity insurance where the lender allows", "assistant"]],
+    5: [["Receive and review mortgage offer and special conditions", "fee_earner"], ["Obtain redemption statement from the existing lender", "assistant"]],
+    6: [["Report to the lender / send certificate of title", "fee_earner"], ["Obtain signed mortgage deed", "assistant"]],
+    9: [["Draw down the new mortgage advance", "fee_earner"], ["Redeem the existing mortgage", "fee_earner"], ["Account to client for any surplus funds", "fee_earner"]],
+    10: [["Apply to register the new charge at HM Land Registry (AP1 with DS1)", "assistant"], ["Send title information document to client and lender", "secretary"]],
+    11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
 };
 
@@ -279,10 +280,42 @@ function lastActivityDate(matter) {
   return matter.activity.length ? matter.activity[0].date : matter.keyDates.instructed;
 }
 
-function allOpenTasks(matters) {
-  return matters
-    .flatMap((m) => m.tasks.filter((t) => t.status === "Open").map((t) => ({ ...t, matterId: m.id, matterRef: m.reference, matterAddr: m.address })))
-    .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+/**
+ * Staff who can be given tasks on a matter — mirrors the server's visibility
+ * rules: admins, the fee earner, their secretary/assistant, and supervisors
+ * over the matter or its fee earner.
+ */
+function eligibleAssignees(matter, users) {
+  const fe = users.find((u) => u.id === matter.feeEarnerId);
+  return users.filter((u) => u.active !== false && (
+    u.role === "admin" ||
+    u.id === matter.feeEarnerId ||
+    ((u.role === "secretary" || u.role === "assistant") && matter.feeEarnerId && u.supervisor_id === matter.feeEarnerId) ||
+    (u.role === "supervisor" && (u.id === matter.supervisorId || (fe && fe.supervisor_id === u.id)))
+  ));
+}
+
+/** Who a standard task for a given role should go to on this matter, falling back up the chain. */
+function suggestAssignee(role, matter, users) {
+  const team = eligibleAssignees(matter, users);
+  const byRole = (r) => team.find((u) => u.role === r && u.supervisor_id === matter.feeEarnerId);
+  const feeEarner = team.find((u) => u.id === matter.feeEarnerId);
+  const pick = role === "secretary" ? byRole("secretary") || byRole("assistant")
+    : role === "assistant" ? byRole("assistant") || byRole("secretary")
+    : null;
+  return (pick || feeEarner || null)?.id || "";
+}
+
+function AssigneeSelect({ matter, users, value, onChange, compact }) {
+  const options = eligibleAssignees(matter, users);
+  const current = value && !options.some((u) => u.id === value) ? users.find((u) => u.id === value) : null;
+  return (
+    <select value={value || ""} onChange={(e) => onChange(e.target.value)} className={compact ? "ac-tablebtn" : undefined} title="Assigned to">
+      <option value="">Unassigned</option>
+      {current && <option value={current.id}>{current.name}</option>}
+      {options.map((u) => <option key={u.id} value={u.id}>{u.name}{u.role !== "fee_earner" ? ` (${ROLE_LABELS[u.role] || u.role})` : ""}</option>)}
+    </select>
+  );
 }
 
 function staleFiles(matters, staleDays) {
@@ -416,6 +449,12 @@ export default function App() {
   const [stageRequestDraft, setStageRequestDraft] = useState(null);
   const [showStandardTasks, setShowStandardTasks] = useState(false);
   const [pendingSignoffs, setPendingSignoffs] = useState([]);
+  const [myTasks, setMyTasks] = useState([]);
+  const refreshMyTasks = useCallback(() => {
+    if (!authUser) return;
+    api.getTasks(true).then((rows) => setMyTasks(rows.map(adaptTaskRow))).catch(() => {});
+  }, [authUser]);
+  useEffect(() => { refreshMyTasks(); }, [refreshMyTasks]);
   const refreshSignoffs = useCallback(() => {
     if (!authUser || isSupportRole(authUser.role)) return setPendingSignoffs([]);
     api.getPendingSignoffs().then(setPendingSignoffs).catch(() => {});
@@ -534,6 +573,7 @@ export default function App() {
    *  can change as a result of almost any edit. */
   async function afterMutation() {
     await Promise.all([refreshSelected(selectedId), refreshList()]);
+    refreshMyTasks();
   }
 
   // ---- New matter ----
@@ -852,6 +892,15 @@ export default function App() {
     }
   }
 
+  async function updateTask(id, taskId, patch) {
+    try {
+      await api.updateTask(id, taskId, patch);
+      await afterMutation();
+    } catch (err) {
+      window.alert(err.message || "Couldn't update the task.");
+    }
+  }
+
   async function completeTask(id, taskId) {
     try {
       await api.completeTask(id, taskId);
@@ -1006,6 +1055,8 @@ export default function App() {
           font-size: 11.5px; color: var(--slate); margin-bottom: 10px;
         }
         .ac-hidelist:hover { color: var(--ink); }
+        .ac-task-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .ac-task-controls select, .ac-task-controls input { max-width: 190px; }
         .ac-enq-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--slate); margin-bottom: 12px; align-items: center; }
         .ac-enq { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 12px 14px; margin-bottom: 10px; }
         .ac-enq-head { display: flex; gap: 12px; align-items: flex-start; }
@@ -1348,7 +1399,7 @@ export default function App() {
             <Bell size={18} />
             {(() => {
               const today = new Date();
-              const overdueTaskCount = matters.reduce((n, m) => n + m.tasks.filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today).length, 0);
+              const overdueTaskCount = myTasks.filter((t) => t.dueDate && new Date(t.dueDate) < today).length;
               const staleCount = matters.filter((m) => m.currentStageIndex < CLOSED_INDEX && daysSince(lastActivityDate(m)) >= settings.staleDays).length;
               const total = overdueTaskCount + staleCount;
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
@@ -1488,17 +1539,17 @@ export default function App() {
               )}
 
               {(() => {
-                const openTasks = allOpenTasks(matters);
+                const openTasks = myTasks;
                 const stale = staleFiles(matters, settings.staleDays);
                 const today = new Date();
                 return (
                   <div className="ac-home-grid">
                     <div className="ac-card">
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                        <h3 style={{ margin: 0 }}><ListChecks size={12} /> Upcoming tasks ({openTasks.length})</h3>
+                        <h3 style={{ margin: 0 }}><ListChecks size={12} /> My tasks ({openTasks.length})</h3>
                         {openTasks.length > 0 && <button className="ac-tablebtn" onClick={() => setShowTasksPanel(true)}>View all</button>}
                       </div>
-                      {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>Nothing outstanding — everything's up to date.</p>}
+                      {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No open tasks assigned to you.</p>}
                       {openTasks.slice(0, 6).map((t) => {
                         const overdue = t.dueDate && new Date(t.dueDate) < today;
                         return (
@@ -1506,7 +1557,7 @@ export default function App() {
                             <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-soft)" }}>{t.description}</div>
                             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
                               <button onClick={() => { setSelectedId(t.matterId); setActiveTab("tasks"); }} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, color: "var(--brass)", fontWeight: 600 }}>
-                                {t.matterRef}
+                                {t.matterRef} — {t.matterAddr}
                               </button>
                               <span style={{ fontSize: 11.5, color: overdue ? "#8a3b1f" : "var(--slate)", fontWeight: overdue ? 700 : 400 }}>
                                 {t.dueDate ? `${overdue ? "Overdue — was due " : "Due "}${formatDate(t.dueDate)}` : "No due date"}
@@ -1570,6 +1621,8 @@ export default function App() {
               onWithdrawStageRequest={(requestId) => withdrawStageRequest(selected.id, requestId)}
               currentUserId={authUser.id}
               onLoadStandardTasks={() => setShowStandardTasks(true)}
+              users={users}
+              onUpdateTask={(taskId, patch) => updateTask(selected.id, taskId, patch)}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onAddDoc={() => setShowAddDoc(true)}
@@ -1619,7 +1672,7 @@ export default function App() {
       {updatingSearch && selected && <UpdateSearchForm search={updatingSearch} onClose={() => setUpdatingSearch(null)} onSave={(patch) => updateSearch(selected.id, updatingSearch.id, patch)} />}
       {showAddUndertaking && selected && <AddUndertakingForm onClose={() => setShowAddUndertaking(false)} onAdd={(u) => addUndertaking(selected.id, u)} />}
       {dischargingUndertaking && selected && <DischargeUndertakingForm undertaking={dischargingUndertaking} onClose={() => setDischargingUndertaking(null)} onSave={(date) => dischargeUndertaking(selected.id, dischargingUndertaking.id, date)} />}
-      {showAddTask && selected && <AddTaskForm onClose={() => setShowAddTask(false)} onAdd={(t) => addTask(selected.id, t)} />}
+      {showAddTask && selected && <AddTaskForm matter={selected} users={users} currentUserId={authUser.id} onClose={() => setShowAddTask(false)} onAdd={(t) => addTask(selected.id, t)} />}
       {showConfirmReview && selected && (
         <ConfirmReviewForm
           matter={selected}
@@ -1659,6 +1712,7 @@ export default function App() {
       {showStandardTasks && selected && (
         <StandardTasksForm
           matter={selected}
+          users={users}
           onClose={() => setShowStandardTasks(false)}
           onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
         />
@@ -1998,8 +2052,9 @@ function EnquiryCard({ enquiry: q, incomingEmails, onSetStatus, onLogReply, onAd
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
+  const [tasksMineOnly, setTasksMineOnly] = useState(false);
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
   return (
@@ -2446,21 +2501,40 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <p style={{ color: "var(--slate)", fontSize: 13 }}>No tasks on this file.</p>
             )}
 
+            {matter.tasks.some((t) => t.status === "Open") && (
+              <div className="ac-filters" style={{ marginBottom: 10 }}>
+                <button className={`ac-chip ${!tasksMineOnly ? "active" : ""}`} onClick={() => setTasksMineOnly(false)}>Everyone's</button>
+                <button className={`ac-chip ${tasksMineOnly ? "active" : ""}`} onClick={() => setTasksMineOnly(true)}>
+                  Mine ({matter.tasks.filter((t) => t.status === "Open" && t.assignedTo === currentUserId).length})
+                </button>
+              </div>
+            )}
             {matter.tasks.filter((t) => t.status === "Open").length > 0 && (
               <>
-                {matter.tasks.filter((t) => t.status === "Open").sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")).map((t) => {
+                {matter.tasks
+                  .filter((t) => t.status === "Open" && (!tasksMineOnly || t.assignedTo === currentUserId))
+                  .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
+                  .map((t) => {
                   const overdue = t.dueDate && new Date(t.dueDate) < new Date();
                   return (
-                    <div key={t.id} className={`ac-doc-row ${overdue ? "ac-row-issue" : ""}`} style={{ background: overdue ? "#fdf1ea" : "var(--card)" }}>
+                    <div key={t.id} className={`ac-doc-row ${overdue ? "ac-row-issue" : ""}`} style={{ background: overdue ? "#fdf1ea" : "var(--card)", flexWrap: "wrap" }}>
                       <div className="ac-doc-icon" style={overdue ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><ListChecks size={16} /></div>
-                      <div style={{ flex: 1 }}>
+                      <div style={{ flex: 1, minWidth: 200 }}>
                         <div className="ac-doc-name">{t.description}</div>
                         <div className="ac-doc-meta" style={overdue ? { color: "#8a3b1f", fontWeight: 600 } : {}}>{t.dueDate ? `${overdue ? "Overdue — was due" : "Due"} ${formatDate(t.dueDate)}` : "No due date"}</div>
                       </div>
-                      <button className="ac-tablebtn" onClick={() => onCompleteTask(t.id)}>Mark done</button>
+                      <div className="ac-task-controls">
+                        <AssigneeSelect compact matter={matter} users={users} value={t.assignedTo} onChange={(v) => onUpdateTask(t.id, { assignedTo: v || null })} />
+                        <input type="date" className="ac-tablebtn" value={t.dueDate ? String(t.dueDate).slice(0, 10) : ""} title="Due date"
+                          onChange={(e) => onUpdateTask(t.id, { dueDate: e.target.value || null })} />
+                        <button className="ac-tablebtn" onClick={() => onCompleteTask(t.id)}>Mark done</button>
+                      </div>
                     </div>
                   );
                 })}
+                {tasksMineOnly && !matter.tasks.some((t) => t.status === "Open" && t.assignedTo === currentUserId) && (
+                  <p style={{ color: "var(--slate)", fontSize: 13 }}>No open tasks on this file are assigned to you.</p>
+                )}
               </>
             )}
 
@@ -2472,7 +2546,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                     <div className="ac-doc-icon" style={{ background: "var(--success-bg)", color: "var(--success)" }}><Check size={16} /></div>
                     <div style={{ flex: 1 }}>
                       <div className="ac-doc-name" style={{ textDecoration: "line-through" }}>{t.description}</div>
-                      <div className="ac-doc-meta">Completed {formatDate(t.dateCompleted)}</div>
+                      <div className="ac-doc-meta">Completed {formatDate(t.dateCompleted)}{t.assignedToName ? ` · ${t.assignedToName}` : ""}</div>
                     </div>
                     <button className="ac-tablebtn" onClick={() => onReopenTask(t.id)}>Reopen</button>
                   </div>
@@ -3523,15 +3597,19 @@ function StandardEnquiriesModal({ onClose, onAdd }) {
   );
 }
 
-function StandardTasksForm({ matter, onClose, onAdd }) {
+function StandardTasksForm({ matter, users, onClose, onAdd }) {
   const groups = Object.entries(STANDARD_TASKS[matter.type] || {})
-    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items }))
+    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items: items.map(([text, role]) => ({ text, role })) }))
     .sort((a, b) => a.idx - b.idx);
   const existing = new Set(matter.tasks.map((t) => t.description.trim().toLowerCase()));
   const isExisting = (t) => existing.has(t.toLowerCase());
   // Pre-tick everything from the current stage onwards that isn't already on the file.
   const [selected, setSelected] = useState(
-    () => new Set(groups.filter((g) => g.idx >= matter.currentStageIndex).flatMap((g) => g.items).filter((t) => !isExisting(t)))
+    () => new Set(groups.filter((g) => g.idx >= matter.currentStageIndex).flatMap((g) => g.items.map((i) => i.text)).filter((t) => !isExisting(t)))
+  );
+  // Suggested assignee per task, by role: secretary/assistant working for the fee earner, else the fee earner.
+  const [assignees, setAssignees] = useState(
+    () => Object.fromEntries(groups.flatMap((g) => g.items).map((i) => [i.text, suggestAssignee(i.role, matter, users)]))
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -3542,7 +3620,7 @@ function StandardTasksForm({ matter, onClose, onAdd }) {
   function toggleGroup(items, allOn) {
     setSelected((prev) => {
       const next = new Set(prev);
-      items.filter((t) => !isExisting(t)).forEach((t) => (allOn ? next.delete(t) : next.add(t)));
+      items.map((i) => i.text).filter((t) => !isExisting(t)).forEach((t) => (allOn ? next.delete(t) : next.add(t)));
       return next;
     });
   }
@@ -3552,7 +3630,8 @@ function StandardTasksForm({ matter, onClose, onAdd }) {
     if (!selected.size) return;
     setBusy(true); setError("");
     try {
-      await onAdd(groups.flatMap((g) => g.items).filter((t) => selected.has(t)).map((description) => ({ description })));
+      await onAdd(groups.flatMap((g) => g.items).filter((i) => selected.has(i.text))
+        .map((i) => ({ description: i.text, assignedTo: assignees[i.text] || null })));
     } catch (err) {
       setError(err.message || "Couldn't add the tasks.");
       setBusy(false);
@@ -3561,18 +3640,18 @@ function StandardTasksForm({ matter, onClose, onAdd }) {
 
   return (
     <div className="ac-overlay center" onClick={onClose}>
-      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit} style={{ width: 640 }}>
+      <form className="ac-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit} style={{ width: 760 }}>
         <div className="ac-modal-head">
           <h2>Standard tasks — {matter.type.toLowerCase()}</h2>
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: -6, marginBottom: 14 }}>
-          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected. Tasks already on this file are greyed out. Add due dates afterwards where you need reminders.
+          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected, and each is assigned to the usual person for that kind of work — the fee earner, or their secretary/assistant. Change any you like. Tasks already on this file are greyed out.
         </p>
-        <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
+        <div style={{ maxHeight: 440, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
           {groups.map((g) => {
-            const available = g.items.filter((t) => !isExisting(t));
-            const allOn = available.length > 0 && available.every((t) => selected.has(t));
+            const available = g.items.filter((i) => !isExisting(i.text));
+            const allOn = available.length > 0 && available.every((i) => selected.has(i.text));
             return (
               <div key={g.idx} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -3581,11 +3660,16 @@ function StandardTasksForm({ matter, onClose, onAdd }) {
                   </span>
                   {available.length > 0 && <button type="button" className="ac-tablebtn" onClick={() => toggleGroup(g.items, allOn)}>{allOn ? "Deselect all" : "Select all"}</button>}
                 </div>
-                {g.items.map((t) => (
-                  <label key={t} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, textTransform: "none", color: isExisting(t) ? "var(--slate-light)" : "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4 }}>
-                    <input type="checkbox" disabled={isExisting(t)} checked={!isExisting(t) && selected.has(t)} onChange={() => toggle(t)} style={{ width: "auto", marginTop: 2, flexShrink: 0 }} />
-                    {t}{isExisting(t) ? " (already on file)" : ""}
-                  </label>
+                {g.items.map(({ text: t }) => (
+                  <div key={t} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "4px 0" }}>
+                    <label style={{ flex: 1, display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, textTransform: "none", color: isExisting(t) ? "var(--slate-light)" : "var(--ink-soft)", lineHeight: 1.4, margin: 0 }}>
+                      <input type="checkbox" disabled={isExisting(t)} checked={!isExisting(t) && selected.has(t)} onChange={() => toggle(t)} style={{ width: "auto", marginTop: 2, flexShrink: 0 }} />
+                      {t}{isExisting(t) ? " (already on file)" : ""}
+                    </label>
+                    {!isExisting(t) && selected.has(t) && (
+                      <AssigneeSelect compact matter={matter} users={users} value={assignees[t]} onChange={(v) => setAssignees((prev) => ({ ...prev, [t]: v }))} />
+                    )}
+                  </div>
                 ))}
               </div>
             );
@@ -4350,8 +4434,10 @@ function ConfirmReviewForm({ matter, defaultName, onClose, onConfirm }) {
   );
 }
 
-function AddTaskForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ description: "", dueDate: "" });
+function AddTaskForm({ matter, users, currentUserId, onClose, onAdd }) {
+  // Default to whoever is adding it, if they can be assigned on this matter; otherwise the fee earner.
+  const canBeMe = eligibleAssignees(matter, users).some((u) => u.id === currentUserId);
+  const [f, setF] = useState({ description: "", dueDate: "", assignedTo: canBeMe ? currentUserId : matter.feeEarnerId || "" });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -4361,7 +4447,7 @@ function AddTaskForm({ onClose, onAdd }) {
       setError("Enter what needs to be done.");
       return;
     }
-    onAdd(f);
+    onAdd({ ...f, assignedTo: f.assignedTo || null });
   }
 
   return (
@@ -4375,12 +4461,18 @@ function AddTaskForm({ onClose, onAdd }) {
           <label>What needs to be done</label>
           <textarea value={f.description} onChange={set("description")} placeholder="e.g. Chase mortgage offer, confirm buildings insurance is in place" style={{ minHeight: 70 }} autoFocus />
         </div>
-        <div className="ac-field">
-          <label>Due date</label>
-          <input type="date" value={f.dueDate} onChange={set("dueDate")} />
+        <div className="ac-row2">
+          <div className="ac-field">
+            <label>Assign to</label>
+            <AssigneeSelect matter={matter} users={users} value={f.assignedTo} onChange={(v) => setF({ ...f, assignedTo: v })} />
+          </div>
+          <div className="ac-field">
+            <label>Due date</label>
+            <input type="date" value={f.dueDate} onChange={set("dueDate")} />
+          </div>
         </div>
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><ListChecks size={14} /> Add task</button>
+        <button className="ac-submit" type="submit"><ListChecks size={14} /> Add task</button>
       </form>
     </div>
   );
@@ -4388,7 +4480,10 @@ function AddTaskForm({ onClose, onAdd }) {
 
 function GlobalTasksPanel({ matters, settings, onClose, onOpenMatter, onCompleteTask }) {
   const today = new Date();
-  const openTasks = allOpenTasks(matters);
+  const [mine, setMine] = useState(true);
+  const [openTasks, setOpenTasks] = useState([]);
+  const load = useCallback(() => api.getTasks(mine).then((rows) => setOpenTasks(rows.map(adaptTaskRow))).catch(() => {}), [mine]);
+  useEffect(() => { load(); }, [load]);
   const stale = staleFiles(matters, settings.staleDays);
 
   return (
@@ -4399,7 +4494,13 @@ function GlobalTasksPanel({ matters, settings, onClose, onOpenMatter, onComplete
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
 
-        <h3 style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--slate)", margin: "0 0 10px" }}>Open tasks ({openTasks.length})</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 10px" }}>
+          <h3 style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--slate)", margin: 0 }}>Open tasks ({openTasks.length})</h3>
+          <div className="ac-filters">
+            <button className={`ac-chip ${mine ? "active" : ""}`} onClick={() => setMine(true)}>Mine</button>
+            <button className={`ac-chip ${!mine ? "active" : ""}`} onClick={() => setMine(false)}>Everyone's</button>
+          </div>
+        </div>
         {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13, marginBottom: 20 }}>Nothing outstanding — everything's up to date.</p>}
         {openTasks.map((t) => {
           const overdue = t.dueDate && new Date(t.dueDate) < today;
@@ -4411,9 +4512,12 @@ function GlobalTasksPanel({ matters, settings, onClose, onOpenMatter, onComplete
                 <button onClick={() => onOpenMatter(t.matterId)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, color: "var(--brass)", fontWeight: 600 }}>
                   {t.matterRef} — {t.matterAddr}
                 </button>
-                <div className="ac-doc-meta" style={overdue ? { color: "#8a3b1f", fontWeight: 600 } : {}}>{t.dueDate ? `${overdue ? "Overdue — was due" : "Due"} ${formatDate(t.dueDate)}` : "No due date"}</div>
+                <div className="ac-doc-meta" style={overdue ? { color: "#8a3b1f", fontWeight: 600 } : {}}>
+                  {t.dueDate ? `${overdue ? "Overdue — was due" : "Due"} ${formatDate(t.dueDate)}` : "No due date"}
+                  {!mine && ` · ${t.assignedToName || "Unassigned"}`}
+                </div>
               </div>
-              <button className="ac-tablebtn" onClick={() => onCompleteTask(t.matterId, t.id)}>Done</button>
+              <button className="ac-tablebtn" onClick={async () => { await onCompleteTask(t.matterId, t.id); load(); }}>Done</button>
             </div>
           );
         })}

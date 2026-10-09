@@ -5,6 +5,7 @@ const authRoutes = require("./routes/auth");
 const matterRoutes = require("./routes/matters");
 const userRoutes = require("./routes/users");
 const settingsRoutes = require("./routes/settings");
+const taskRoutes = require("./routes/tasks");
 
 const app = express();
 
@@ -49,6 +50,7 @@ app.use("/auth", authRoutes);
 app.use("/matters", matterRoutes);
 app.use("/users", userRoutes);
 app.use("/settings", settingsRoutes);
+app.use("/tasks", taskRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not found." });
