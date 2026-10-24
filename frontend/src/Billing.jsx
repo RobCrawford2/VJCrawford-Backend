@@ -34,10 +34,12 @@ function setTimer(value) {
   try { value ? localStorage.setItem(TIMER_KEY, JSON.stringify(value)) : localStorage.removeItem(TIMER_KEY); } catch { /* private mode */ }
   listeners.forEach((l) => l());
 }
-export function useTimer() {
-  return useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => timerState);
+/** The running timer, if it belongs to `userId` (a timer left by someone else on this computer is ignored). */
+export function useTimer(userId) {
+  const t = useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => timerState);
+  return t && t.userId === userId ? t : null;
 }
-export const startTimer = (matter) => setTimer({ matterId: matter.id, reference: matter.reference, startedAt: Date.now() });
+export const startTimer = (matter, userId) => setTimer({ matterId: matter.id, reference: matter.reference, startedAt: Date.now(), userId });
 export const stopTimer = () => setTimer(null);
 const elapsedText = (ms) => {
   const s = Math.floor(ms / 1000);
@@ -45,8 +47,8 @@ const elapsedText = (ms) => {
 };
 
 /** Top-bar chip while a timer runs: shows the time; Stop opens the record-time form for that matter. */
-export function TimerChip({ onStop }) {
-  const timer = useTimer();
+export function TimerChip({ userId, onStop }) {
+  const timer = useTimer(userId);
   const [, tick] = useState(0);
   useEffect(() => {
     if (!timer) return;
@@ -238,7 +240,7 @@ export function TimeTab({ matter, currentUserId, onChanged, onEditBilling }) {
   const [editing, setEditing] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const [cancelling, setCancelling] = useState(null); // { id, reason }
-  const timer = useTimer();
+  const timer = useTimer(currentUserId);
   const load = () => api.getBilling(matter.id).then(setData).catch((err) => notify(err.message));
   useEffect(() => { load(); }, [matter.id, matter.billing?.costsToDate, matter.billing?.unbilledUnits]);
 
@@ -294,7 +296,7 @@ export function TimeTab({ matter, currentUserId, onChanged, onEditBilling }) {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {timingThis
               ? <span className="ac-timer-note">Timer running — stop it from the top bar</span>
-              : <button className="ac-addbtn" onClick={() => startTimer(matter)} disabled={!!timer} title={timer ? `A timer is already running on ${timer.reference}` : "Start a timer"}><Play size={13} /> Start timer</button>}
+              : <button className="ac-addbtn" onClick={() => startTimer(matter, currentUserId)} disabled={!!timer} title={timer ? `A timer is already running on ${timer.reference}` : "Start a timer"}><Play size={13} /> Start timer</button>}
             <button className="ac-addbtn" onClick={() => { setRecording(true); setEditing(null); }}><Plus size={13} /> Record time</button>
             <button className="ac-addbtn" style={{ background: "var(--brass)" }} onClick={() => setDrafting(true)}><FileText size={13} /> Draft a bill</button>
           </div>

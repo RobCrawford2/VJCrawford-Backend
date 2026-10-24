@@ -529,7 +529,7 @@ export default function App() {
   const [deptFilter, setDeptFilter] = useState("All");
   // The department the list is showing, when it's just one (for its type filters).
   const listDepartment = deptFilter !== "All" ? deptFilter : myDepartments.length === 1 ? myDepartments[0] : null;
-  const [showClosed, setShowClosed] = useState(true);
+  const [showClosed, setShowClosed] = useState(false); // working list: open files unless asked
   const [myMattersOnly, setMyMattersOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
   const [showNewMatter, setShowNewMatter] = useState(false);
@@ -575,6 +575,15 @@ export default function App() {
   const [showTasksPanel, setShowTasksPanel] = useState(false);
   const [showConfirmReview, setShowConfirmReview] = useState(false);
   const [saveState, setSaveState] = useState("idle");
+
+  // Logging out (or being logged out) clears everything the last person was
+  // looking at, so the next person on this computer starts afresh.
+  useEffect(() => {
+    if (authUser) return;
+    setSelectedId(null); setSelectedDetail(null); setMatters([]);
+    setSearch(""); setTypeFilter("All"); setDeptFilter("All"); setShowClosed(false); setMyMattersOnly(false);
+    setActiveTab("overview"); setClientsPanel(null); setShowDiary(false); setShowTimesheet(false); setStoppingTimer(null);
+  }, [authUser]);
 
   // ---- Load users + firm settings once logged in ----
   useEffect(() => {
@@ -1755,7 +1764,7 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
-          <TimerChip onStop={setStoppingTimer} />
+          <TimerChip userId={authUser.id} onStop={setStoppingTimer} />
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTimesheet(true)} title="My time recorded">
             <Clock size={17} /><span className="lbl">Time</span>
           </button>
@@ -1820,7 +1829,7 @@ export default function App() {
               <button className={`ac-chip ${showClosed ? "active" : ""}`} onClick={() => setShowClosed((s) => !s)}>
                 Show closed files
               </button>
-              {settings.currentUser && (
+              {settings.currentUser && ["supervisor", "admin"].includes(authUser.role) && (
                 <button className={`ac-chip ${myMattersOnly ? "active" : ""}`} onClick={() => setMyMattersOnly((s) => !s)}>
                   My matters
                 </button>
