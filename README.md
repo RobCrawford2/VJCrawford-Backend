@@ -22,6 +22,28 @@ with the interface itself barely changing.
 - **Server-enforced** role-based visibility: fee earners see their own
   matters, supervisors see their team's, admins see everything in the
   firm — enforced in every query, not just filtered in the UI.
+- **Departments** (areas of law): Conveyancing, Wills Trusts & Probate,
+  Family, Employment, Litigation, Personal Injury, Corporate & Commercial
+  and Criminal — each with its own matter types, stages and reference
+  prefix (`src/config/areas.js`). Admins switch on the departments the
+  firm runs and give each member of staff access to one or more of them
+  (or "all departments", e.g. partners). Everyone except admins and
+  all-departments staff only sees matters in their own departments, on top
+  of the role rules above — again enforced in every query.
+- **Clients and conflict checks**: a firm-wide client register (with ID /
+  AML checks and risk level) linked to matters, the other parties on each
+  matter, and a conflict check across every client and party in the firm
+  — run when a matter is opened and whenever a client or party is added.
+  Matches in departments the checker can't see are reported by department
+  only.
+- **Court and deadline diary**: hearings, limitation dates, court and
+  filing deadlines per matter, with common deadlines and date rules per
+  department; a diary of everything due (supervisors see their team's)
+  and warnings for missed and approaching critical deadlines.
+- **Time recording and billing**: hourly rates per fee earner, funding type
+  and costs estimate per matter, time in 6-minute units (with a timer),
+  draft bills from unbilled time and disbursements, issued bills with the
+  firm's next number, and the bill as a Word document.
 - Server-side pagination and search on the matter list.
 - A seed script that loads the same demo data (Faulkner purchase + linked
   sale, the Whitfield "problem file", etc.) used in the frontend prototype.
@@ -122,8 +144,8 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/auth/login` | Log in, get a token |
 | GET | `/auth/me` | Current user + firm details |
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
-| GET | `/matters?limit=&offset=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
-| POST | `/matters` | Create a matter |
+| GET | `/matters?limit=&offset=&department=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
+| POST | `/matters` | Create a matter (`department` defaults to conveyancing; `type` must be one of that department's types) |
 | POST | `/matters/import` | Bulk import (admin only) — `{ rows, dryRun }`, rows keyed by spreadsheet header; validates every row, all-or-nothing, max 1000 rows |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
@@ -164,10 +186,24 @@ All routes except `/auth/register` and `/auth/login` require
 | PATCH | `/matters/:id/tasks/:tid/complete` \| `/reopen` | Complete / reopen |
 | PUT/DELETE | `/matters/:id/links/:linkedId` | Link / unlink a matter chain |
 | GET | `/users` | List staff (for fee-earner pickers) |
-| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active (admin only) |
+| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active, `departments`, `allDepartments` (admin only) |
 | POST | `/users/:id/reset-password` | Set a temporary password for a member of staff (admin only) |
 | GET | `/users/audit` | Recent staff account changes (admin only) |
-| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold, `requireStageSignoff`) |
+| POST | `/clients/conflict-check` | Check names against every client and party in the firm (`names`, `excludeClientIds`) |
+| GET/POST | `/clients` | Search / add to the client register |
+| GET/PATCH | `/clients/:id` | A client record (with their matters) / update it |
+| POST | `/clients/:id/id-check` | Record the client's ID / AML check (`verifiedOn`, `method`, `riskLevel`) |
+| POST/DELETE | `/matters/:id/clients[/:clientId]` | Add (conflict-checked) / remove a client on a matter |
+| POST/DELETE | `/matters/:id/parties[/:partyId]` | Add (conflict-checked) / remove another party |
+| POST/PATCH/DELETE | `/matters/:id/deadlines[/:deadlineId]` | Diary entries: hearings, limitation dates, deadlines; `status: done` |
+| GET | `/deadlines?days=14&mine=` | Open deadlines due soon or overdue on matters you can see |
+| GET | `/matters/:id/billing` | Time entries, bills and running totals |
+| POST/PATCH/DELETE | `/matters/:id/time[/:entryId]` | Record / change unbilled time (`workDate`, `minutes` or `units`, `activity`, `description`, `billable`) |
+| POST | `/matters/:id/bills` | Draft a bill (`timeEntryIds`, optional `profitCosts`, `disbursements`, `narrative`) |
+| POST | `/matters/:id/bills/:billId/issue` · `/cancel` | Issue with the next bill number / cancel (with `reason`) |
+| GET | `/matters/:id/bills/:billId/document` | The bill as a Word document |
+| GET | `/time?from=&to=` | Your timesheet |
+| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold, `requireStageSignoff`, `departments`); GET also lists every department's types and stages (`areas`) |
 
 ## Connecting the React frontend to this API
 

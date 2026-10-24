@@ -145,7 +145,7 @@ test("deactivating a user or changing their role takes effect immediately", asyn
 
   // Role change: the token still says admin, but the demotion applies at once.
   assert.ok((await request(app).get("/matters").set(leaver)).body.matters.length > 0);
-  await request(app).patch(`/users/${created.body.id}`).set(david).send({ role: "fee_earner" });
+  await request(app).patch(`/users/${created.body.id}`).set(david).send({ role: "fee_earner", departments: ["conveyancing"] });
   const list = await request(app).get("/matters?limit=100").set(leaver);
   assert.equal(list.body.matters.length, 0, "demoted user still sees the whole firm's matters");
 
@@ -183,7 +183,7 @@ test("the firm's last active admin can't be demoted or deactivated", async () =>
   // With a second admin, demoting one of them is fine.
   const other = await request(app).post("/users").set(david)
     .send({ name: "Second Admin", email: "admin2@vjcrawfordconveyancing.co.uk", password: "second-admin-pw", role: "admin" });
-  assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor" })).status, 200);
+  assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor", departments: ["conveyancing"] })).status, 200);
 
   assert.equal((await request(app).patch(`/users/${davidId}`).set(david).send({ role: "boss" })).status, 400);
 });
@@ -457,7 +457,7 @@ test("staff management: admins add, edit, reset and deactivate staff, and it's a
   const sarahId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("sarah")}` })).body.id;
 
   const added = await request(app).post("/users").set(david)
-    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId });
+    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(added.status, 201);
   assert.equal(added.body.email, "starter@vjcrawfordconveyancing.co.uk");
   const id = added.body.id;
@@ -572,7 +572,7 @@ test("stage sign-off follows the chain: assistants request, the matter's fee ear
 
   // An assistant who works for Sarah
   const created = await request(app).post("/users").set(david)
-    .send({ name: "Amy Assistant", email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId });
+    .send({ name: "Amy Assistant", email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(created.status, 201);
   const amy = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1" })).body.token}` };
 
@@ -868,4 +868,335 @@ test("bank details: new details start unverified, replace the old ones, and only
 
   const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
   assert.equal((await request(app).post(base).set(marcus).send({ accountName: "X", sortCode: "111111", accountNumber: "11111111" })).status, 404);
+});
+
+test("departments: staff only see and open matters in their own departments", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+
+  const priyaList = (await request(app).get("/matters?limit=100").set(priya)).body.matters;
+  assert.ok(priyaList.length > 0 && priyaList.every((m) => m.department === "family"));
+  const family = priyaList[0];
+  assert.match(family.reference, /^FAM-/);
+  assert.ok(!(await request(app).get("/matters?limit=100").set(sarah)).body.matters.some((m) => m.department === "family"));
+  assert.equal((await request(app).get(`/matters/${family.id}`).set(sarah)).status, 404);
+  assert.equal((await request(app).post(`/matters/${family.id}/notes`).set(sarah).send({ text: "x" })).status, 404);
+  const all = (await request(app).get("/matters?limit=100").set(david)).body.matters;
+  assert.ok(all.some((m) => m.department === "family") && all.some((m) => m.department === "conveyancing"));
+  assert.ok((await request(app).get("/matters?department=family&limit=100").set(david)).body.matters.every((m) => m.department === "family"));
+
+  // Opening matters: only in your departments, with that department's types.
+  assert.equal((await request(app).post("/matters").set(sarah).send({ department: "family", address: "Divorce", client: "X", type: "Divorce" })).status, 403);
+  assert.equal((await request(app).post("/matters").set(priya).send({ department: "family", address: "Divorce", client: "X", type: "Purchase" })).status, 400);
+  assert.equal((await request(app).post("/matters").set(david).send({ department: "crime", address: "R v X", client: "X", type: "Crown Court" })).status, 400); // not switched on
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const created = await request(app).post("/matters").set(priya).send({ department: "family", address: "Child arrangements", client: "Y", type: "Children", feeEarnerId: priyaId });
+  assert.equal(created.status, 201);
+  assert.match(created.body.reference, /^FAM-\d{4}-\d{4}$/);
+
+  // Family has its own stages (9, ending in Closed) and no exchange checks.
+  const stages = (await request(app).get("/settings").set(priya)).body.areas.find((a) => a.key === "family").stages;
+  assert.equal(stages.at(-1), "Closed");
+  assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: stages.length })).status, 400);
+  assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: 7 })).status, 200);
+  const log = (await request(app).get(`/matters/${created.body.id}`).set(priya)).body.activity.map((a) => a.text);
+  assert.ok(log.includes(`Moved to ${stages[7]}`));
+  assert.equal((await request(app).patch(`/matters/${created.body.id}`).set(priya).send({ type: "Remortgage" })).status, 400);
+
+  // Can't give tasks to someone outside the department.
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+  assert.equal((await request(app).post(`/matters/${created.body.id}/tasks`).set(priya).send({ description: "x", assignedTo: sarahId })).status, 400);
+
+  // The upcoming-exchanges dashboard is conveyancing only.
+  assert.ok(!(await request(app).get("/matters/upcoming?days=60").set(david)).body.matters.some((m) => m.id === created.body.id));
+});
+
+test("departments: admins switch departments on for the firm and grant staff access, and it's audited", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+
+  const settings = (await request(app).get("/settings").set(david)).body;
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family"]);
+  assert.equal(settings.areas.length, 8);
+  assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
+  const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
+  assert.equal(off.status, 400); // family has matters
+  assert.match(off.body.error, /Family/);
+  const on = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client", "family", "employment"] });
+  assert.equal(on.status, 200);
+  assert.ok(on.body.departments.includes("employment"));
+
+  // Grant Sarah family: she can now open a family matter; take it away and she can't see it.
+  assert.equal((await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing", "nonsense"] })).status, 400);
+  assert.equal((await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: [] })).status, 400);
+  const granted = await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing", "family"] });
+  assert.deepEqual(granted.body.departments, ["conveyancing", "family"]);
+  const fam = await request(app).post("/matters").set(sarah).send({ department: "family", address: "Divorce", client: "Z", type: "Divorce", feeEarnerId: sarahId });
+  assert.equal(fam.status, 201);
+  assert.equal((await request(app).get(`/auth/me`).set(sarah)).body.departments.join(), "conveyancing,family");
+  await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing"] });
+  assert.equal((await request(app).get(`/matters/${fam.body.id}`).set(sarah)).status, 404);
+
+  // "All departments" (e.g. a partner) sees across departments without being admin.
+  const partner = await request(app).post("/users").set(david)
+    .send({ name: "Pat Partner", email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1", role: "supervisor", allDepartments: true });
+  assert.equal(partner.status, 201);
+  assert.equal((await request(app).post("/users").set(david)
+    .send({ name: "No Dept", email: "nodept@vjcrawfordconveyancing.co.uk", password: "nodept-pass-1", role: "fee_earner" })).status, 400);
+  await request(app).patch(`/users/${sarahId}`).set(david).send({ supervisorId: partner.body.id });
+  const pat = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1" })).body.token}` };
+  assert.equal((await request(app).get(`/matters/${fam.body.id}`).set(pat)).status, 200);
+
+  const audit = (await request(app).get("/users/audit").set(david)).body.map((a) => a.details);
+  assert.ok(audit.some((d) => d.includes("departments changed from Conveyancing to Conveyancing, Family")));
+  assert.ok(audit.some((d) => d.includes("all departments")));
+});
+
+test("conflict check: finds clients and other parties firm-wide, but only reveals the department of files you can't see", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const check = async (who, names, extra = {}) => (await request(app).post("/clients/conflict-check").set(who).send({ names, ...extra })).body.results;
+
+  // Mark Morris is the other party on a family matter Sarah can't see.
+  // Same surname as our family client Hannah Morris too — flagged, as relatives can be a conflict.
+  const [mark] = await check(sarah, ["Mr Mark Morris"]);
+  const asParty = mark.matches.find((m) => m.kind === "party");
+  assert.equal(asParty.name, "Mark Morris");
+  assert.deepEqual(asParty.matters[0], { hidden: true, department: "family", departmentName: "Family" });
+  assert.ok(mark.matches.some((m) => m.kind === "client" && m.name === "Hannah Morris"));
+  const [markForDavid] = await check(david, ["Mark Morris"]);
+  assert.match(markForDavid.matches.find((m) => m.kind === "party").matters[0].reference, /^FAM-/);
+
+  // Hannah Morris is a family client: flagged by department only, and not in Sarah's client list.
+  const [hannah] = await check(sarah, ["Hannah Morris"]);
+  assert.equal(hannah.matches[0].kind, "client");
+  assert.equal(hannah.matches[0].matters[0].hidden, true);
+  const sarahClients = (await request(app).get("/clients?search=Morris").set(sarah)).body;
+  assert.ok(!sarahClients.some((c) => c.name === "Hannah Morris"));
+  assert.equal((await request(app).get(`/clients/${hannah.matches[0].clientId}`).set(sarah)).status, 404);
+  assert.equal((await request(app).get(`/clients/${hannah.matches[0].clientId}`).set(david)).status, 200);
+
+  // Unrelated names don't match; titles and initials are ignored.
+  assert.equal((await check(sarah, ["Jane Doe"]))[0].matches.length, 0);
+  assert.ok((await check(sarah, ["Mr R Faulkner"]))[0].matches.some((m) => m.kind === "client" && m.name === "R & J Faulkner"));
+  assert.equal((await request(app).post("/clients/conflict-check").set(sarah).send({ names: [] })).status, 400);
+});
+
+test("opening a matter: clients linked or created, parties recorded, conflicts must be reviewed and are logged", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const faulkner = (await request(app).get("/clients?search=Faulkner").set(sarah)).body.find((c) => c.matter_count === 2);
+  assert.ok(faulkner, "the Faulkners' shared client record");
+
+  const base = { department: "conveyancing", address: "1 Conflict Close", client: "R & J Faulkner", type: "Purchase", feeEarnerId: sarahId };
+  // The other side is our family client → must be reviewed before opening.
+  const blocked = await request(app).post("/matters").set(sarah)
+    .send({ ...base, clientIds: [faulkner.id], parties: [{ name: "Hannah Morris", role: "Seller" }], conflictReview: {} });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.conflicts[0].matches.length, 0); // choosing Faulkner doesn't flag Faulkner
+  assert.equal(blocked.body.conflicts[1].matches[0].matters[0].departmentName, "Family");
+  const opened = await request(app).post("/matters").set(sarah)
+    .send({ ...base, clientIds: [faulkner.id], parties: [{ name: "Hannah Morris", role: "Seller" }], conflictReview: { note: "Checked with Family — different Hannah Morris (different address)" } });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const detail = (await request(app).get(`/matters/${opened.body.id}`).set(sarah)).body;
+  assert.deepEqual(detail.clients.map((c) => c.name), ["R & J Faulkner"]);
+  assert.deepEqual(detail.parties.map((p) => [p.name, p.role]), [["Hannah Morris", "Seller"]]);
+  assert.ok(detail.conflict_checked_at && detail.conflict_check_note.startsWith("Checked with Family"));
+  assert.ok(detail.activity.some((a) => /Conflict check on R & J Faulkner, Hannah Morris: 2 possible matches — reviewed: Checked with Family/.test(a.text)));
+
+  // A new client is created; older callers get a client record made for them.
+  const fresh = await request(app).post("/matters").set(sarah)
+    .send({ ...base, address: "2 Fresh Way", client: "Olu Adeyemi", newClients: [{ name: "Olu Adeyemi", email: "olu@example.com" }], conflictReview: {} });
+  assert.equal(fresh.status, 201);
+  const legacy = await request(app).post("/matters").set(sarah).send({ ...base, address: "3 Old Road", client: "Legacy Client", clientEmail: "legacy@example.com" });
+  const legacyDetail = (await request(app).get(`/matters/${legacy.body.id}`).set(sarah)).body;
+  assert.equal(legacyDetail.clients[0].email, "legacy@example.com");
+  assert.equal((await request(app).post("/matters").set(sarah).send({ ...base, parties: [{ name: "No Role" }] })).status, 400);
+
+  // Parties and clients can be added later — each is conflict-checked — and removed.
+  const added = await request(app).post(`/matters/${fresh.body.id}/parties`).set(sarah).send({ name: "Mark Morris", role: "Seller" });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.conflicts[0].matches[0].matters[0].hidden, true);
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/parties/${added.body.party.id}`).set(sarah)).status, 204);
+  const freshClient = (await request(app).get(`/matters/${fresh.body.id}`).set(sarah)).body.clients[0];
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/clients/${freshClient.id}`).set(sarah)).status, 400); // last client
+  const joint = await request(app).post(`/matters/${fresh.body.id}/clients`).set(sarah).send({ newClient: { name: "Tolu Adeyemi" } });
+  assert.equal(joint.status, 201);
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/clients/${freshClient.id}`).set(sarah)).status, 204);
+});
+
+test("client records: ID / AML checks are validated and noted on the client's matters", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const whitfield = (await request(app).get("/clients?search=Whitfield").set({ Authorization: `Bearer ${await tokenFor("david")}` })).body[0];
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/clients/${whitfield.id}`).set(sarah)).status, 404); // Marcus's client
+  const bad = await request(app).post(`/clients/${whitfield.id}/id-check`).set(marcus).send({ verifiedOn: "2026-10-01", method: "Library card", riskLevel: "low" });
+  assert.equal(bad.status, 400);
+  const ok = await request(app).post(`/clients/${whitfield.id}/id-check`).set(marcus).send({ verifiedOn: "2026-10-01", method: "Passport", riskLevel: "medium" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.risk_level, "medium");
+  const record = (await request(app).get(`/clients/${whitfield.id}`).set(marcus)).body;
+  assert.equal(record.id_verified_by_name, "Marcus Webb");
+  const matterId = record.matters[0].id;
+  const log = (await request(app).get(`/matters/${matterId}`).set(marcus)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("ID checked for Tom Whitfield (Passport) — medium risk"));
+  const edited = await request(app).patch(`/clients/${whitfield.id}`).set(marcus).send({ phone: "07700 900111", name: " " });
+  assert.equal(edited.status, 400);
+  assert.equal((await request(app).patch(`/clients/${whitfield.id}`).set(marcus).send({ phone: "07700 900111" })).body.phone, "07700 900111");
+});
+
+test("diary: deadlines are added, moved, completed and logged; the diary shows the team's, by visibility", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const family = (await request(app).get("/matters?limit=100").set(priya)).body.matters.find((m) => m.reference === "FAM-2026-0001");
+  const base = `/matters/${family.id}/deadlines`;
+  const soon = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const later = new Date(Date.now() + 40 * 86400000).toISOString().slice(0, 10);
+
+  assert.equal((await request(app).post(base).set(priya).send({ title: "", dueDate: soon })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ title: "FDR", dueDate: soon, dueTime: "25:00" })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ title: "FDR", dueDate: soon, kind: "party" })).status, 400);
+  const fdr = await request(app).post(base).set(priya).send({ title: "FDR appointment", kind: "hearing", dueDate: soon, dueTime: "10:00", location: "Bristol Civil & Family Justice Centre", critical: true });
+  assert.equal(fdr.status, 201);
+  assert.equal(fdr.body.due_date, soon);
+  assert.equal(fdr.body.due_time, "10:00");
+  await request(app).post(base).set(priya).send({ title: "Form E exchange", kind: "court_deadline", dueDate: later, critical: true });
+
+  // The diary: due within the window (and overdue); Sarah can't see family deadlines; the supervisor (admin) can.
+  const diary = (await request(app).get("/deadlines?days=14").set(priya)).body;
+  assert.ok(diary.deadlines.some((d) => d.id === fdr.body.id && d.reference === "FAM-2026-0001"));
+  assert.ok(!diary.deadlines.some((d) => d.title === "Form E exchange"));
+  assert.ok((await request(app).get("/deadlines?days=60").set(priya)).body.deadlines.some((d) => d.title === "Form E exchange"));
+  assert.ok(!(await request(app).get("/deadlines?days=60").set(sarah)).body.deadlines.some((d) => d.matter_id === family.id));
+  assert.ok((await request(app).get("/deadlines?days=60").set(david)).body.deadlines.some((d) => d.id === fdr.body.id));
+  assert.ok(!(await request(app).get("/deadlines?days=60&mine=true").set(david)).body.deadlines.some((d) => d.id === fdr.body.id));
+  assert.equal((await request(app).post(base).set(sarah).send({ title: "x", dueDate: soon })).status, 404);
+
+  // Move it, mark it done (drops off the diary), reopen; all logged.
+  const moved = await request(app).patch(`${base}/${fdr.body.id}`).set(priya).send({ dueDate: later });
+  assert.equal(moved.body.due_date, later);
+  const done = await request(app).patch(`${base}/${fdr.body.id}`).set(priya).send({ status: "done" });
+  assert.equal(done.body.status, "done");
+  assert.ok(!(await request(app).get("/deadlines?days=60").set(priya)).body.deadlines.some((d) => d.id === fdr.body.id));
+  const detail = (await request(app).get(`/matters/${family.id}`).set(priya)).body;
+  assert.equal(detail.deadlines.find((d) => d.id === fdr.body.id).done_by_name, "Priya Shah");
+  const log = detail.activity.map((a) => a.text);
+  assert.ok(log.includes(`Diary: FDR appointment — ${soon} (critical)`));
+  assert.ok(log.includes(`Diary: FDR appointment — moved from ${soon} to ${later}`));
+  assert.ok(log.includes("Diary: FDR appointment — done"));
+  assert.equal((await request(app).delete(`${base}/${fdr.body.id}`).set(priya)).status, 204);
+
+  // Common deadlines per department come with the settings.
+  const areas = (await request(app).get("/settings").set(priya)).body.areas;
+  const pi = areas.find((a) => a.key === "personal_injury").deadlines;
+  assert.deepEqual(pi[0].rule, { from: "Date of accident or date of knowledge", years: 3 });
+});
+
+test("time recording: 6-minute units at the fee earner's rate; only your own (unbilled) time can be changed", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const me = (await request(app).get("/auth/me").set(priya)).body;
+  assert.equal(me.hourlyRate, 210);
+  const priyaId = me.id;
+  const m = (await request(app).post("/matters").set(priya).send({ department: "family", address: "Billing test", client: "Bill Payer", type: "Divorce", feeEarnerId: priyaId })).body;
+  assert.equal(m.funding, "hourly");
+  const base = `/matters/${m.id}/time`;
+
+  assert.equal((await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 0, activity: "Drafting" })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 30, activity: "Juggling" })).status, 400);
+  const e1 = await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 20, activity: "Telephone call", description: "Call with client" });
+  assert.equal(e1.status, 201);
+  assert.equal(e1.body.units, 4); // 20 minutes rounds up to 4 × 6 minutes
+  assert.equal(Number(e1.body.amount), 84); // 0.4 h × £210
+  const e2 = (await request(app).post(base).set(priya).send({ workDate: "2026-10-02", units: 10, activity: "Drafting", description: "Petition" })).body;
+  await request(app).post(base).set(priya).send({ workDate: "2026-10-02", units: 2, activity: "Other", description: "Admin", billable: false });
+
+  const billing = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(billing.entries.length, 3);
+  assert.equal(billing.summary.unbilledUnits, 14);
+  assert.equal(billing.summary.unbilledValue, 294);
+  assert.equal(billing.summary.percentOfEstimate, null);
+
+  // Estimate, and the matter detail carries the running totals.
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(priya).send({ funding: "barter" })).status, 400);
+  await request(app).patch(`/matters/${m.id}`).set(priya).send({ feeEstimate: 400 });
+  assert.equal((await request(app).get(`/matters/${m.id}`).set(priya)).body.billing.percentOfEstimate, 74);
+
+  // Editing: your own entry, recalculated; not someone else's unless you supervise the matter.
+  const edited = await request(app).patch(`${base}/${e2.id}`).set(priya).send({ units: 5 });
+  assert.equal(Number(edited.body.amount), 105);
+  assert.equal((await request(app).patch(`${base}/${e2.id}`).set(sarah).send({ units: 1 })).status, 404); // can't see the matter
+  assert.equal((await request(app).patch(`${base}/${e2.id}`).set(david).send({ description: "Petition (revised)" })).status, 200); // admin
+
+  // Rates are only listed for admins; timesheet shows your own.
+  assert.ok((await request(app).get("/users").set(david)).body.some((u) => u.hourly_rate !== undefined));
+  assert.ok((await request(app).get("/users").set(priya)).body.every((u) => u.hourly_rate === undefined));
+  const sheet = (await request(app).get("/time?from=2026-10-01&to=2026-10-02").set(priya)).body;
+  assert.ok(sheet.entries.length >= 3);
+  assert.ok(sheet.totals.units >= 11);
+});
+
+test("billing: draft from unbilled time and disbursements, issue with the next number, cancel, Word bill", async () => {
+  const JSZip = require("jszip");
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const m = (await request(app).post("/matters").set(priya).send({ department: "family", address: "Bill me", client: "Pay Ing", type: "Children", feeEarnerId: priyaId })).body;
+  const entry = (await request(app).post(`/matters/${m.id}/time`).set(priya).send({ workDate: "2026-10-05", units: 10, activity: "Drafting" })).body;
+  const nonBillable = (await request(app).post(`/matters/${m.id}/time`).set(priya).send({ workDate: "2026-10-05", units: 1, activity: "Other", billable: false })).body;
+
+  const bills = `/matters/${m.id}/bills`;
+  assert.equal((await request(app).post(bills).set(priya).send({})).status, 400);
+  assert.equal((await request(app).post(bills).set(priya).send({ timeEntryIds: [nonBillable.id] })).status, 400);
+  const draft = await request(app).post(bills).set(priya).send({
+    timeEntryIds: [entry.id],
+    disbursements: [{ description: "Court fee", amount: 232, vat: false }, { description: "Courier", amount: 10, vat: true }],
+    narrative: "Child arrangements application",
+  });
+  assert.equal(draft.status, 201);
+  assert.equal(Number(draft.body.profit_costs), 210);
+  assert.equal(Number(draft.body.vat), 44); // 20% of (210 + 10)
+  assert.equal(Number(draft.body.total), 496); // 210 + 242 + 44
+  // Time on a draft is locked and can't go on a second bill.
+  assert.equal((await request(app).patch(`/matters/${m.id}/time/${entry.id}`).set(priya).send({ units: 1 })).status, 400);
+  assert.equal((await request(app).post(bills).set(priya).send({ timeEntryIds: [entry.id] })).status, 400);
+
+  // Word draft, then issue (fee earner) with the next firm-wide number.
+  const doc = await request(app).get(`${bills}/${draft.body.id}/document`).set(priya)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  const text = (await (await JSZip.loadAsync(doc.body)).file("word/document.xml").async("string")).replace(/<[^>]+>/g, "");
+  for (const t of ["DRAFT", "Pay Ing", "Child arrangements application", "Court fee", "£496.00", "Schedule of time"]) assert.ok(text.includes(t), `bill missing ${t}`);
+  const issued = await request(app).post(`${bills}/${draft.body.id}/issue`).set(priya);
+  assert.equal(issued.status, 200);
+  assert.ok(issued.body.bill_number >= 1);
+  assert.equal((await request(app).delete(`${bills}/${draft.body.id}`).set(priya)).status, 400);
+  const billing = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(billing.summary.billedCosts, 210);
+  assert.equal(billing.summary.unbilledValue, 0);
+
+  // A fixed fee bill gets the next number; cancelling frees the time.
+  const fixed = (await request(app).post(bills).set(priya).send({ profitCosts: 500 })).body;
+  const second = await request(app).post(`${bills}/${fixed.id}/issue`).set(david);
+  assert.equal(second.body.bill_number, issued.body.bill_number + 1);
+  assert.equal((await request(app).post(`${bills}/${draft.body.id}/cancel`).set(priya).send({})).status, 400);
+  assert.equal((await request(app).post(`${bills}/${draft.body.id}/cancel`).set(priya).send({ reason: "Wrong client" })).status, 204);
+  const after = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(after.summary.unbilledValue, 210);
+  assert.equal(after.summary.billedCosts, 500);
+  const log = (await request(app).get(`/matters/${m.id}`).set(priya)).body.activity.map((a) => a.text);
+  assert.ok(log.includes(`Bill ${issued.body.bill_number} issued: £496.00 including VAT`));
+  assert.ok(log.includes(`Bill ${issued.body.bill_number} cancelled — Wrong client`));
+  // Someone who can't see the matter can't bill it.
+  assert.equal((await request(app).post(bills).set(marcus).send({ profitCosts: 1 })).status, 404);
+
+  // Rates: admin sets them, audited.
+  const r = await request(app).patch(`/users/${priyaId}`).set(david).send({ hourlyRate: 225 });
+  assert.equal(Number(r.body.hourly_rate), 225);
+  assert.equal((await request(app).patch(`/users/${priyaId}`).set(david).send({ hourlyRate: -5 })).status, 400);
+  assert.ok((await request(app).get("/users/audit").set(david)).body.some((a) => a.details.includes("hourly rate changed from £210 to £225")));
 });

@@ -61,6 +61,23 @@ async function runSeed(pool, { password = "password123" } = {}) {
       );
     }
 
+    // Departments: the demo firm runs conveyancing, family and private client.
+    // Everyone above works in conveyancing; Priya is the family fee earner.
+    const priya = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Priya Shah", "priya@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(
+      `INSERT INTO firm_departments (firm_id, department) VALUES ($1,'conveyancing'), ($1,'family'), ($1,'private_client')`,
+      [firm.id]
+    );
+    await client.query(
+      `INSERT INTO user_departments (user_id, department)
+       SELECT id, 'conveyancing' FROM users WHERE firm_id = $1 AND id <> $2 AND role <> 'admin'`,
+      [firm.id, priya.id]
+    );
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'family')`, [priya.id]);
+
     async function insertMatter(m) {
       const row = (await client.query(
         `INSERT INTO matters (
@@ -127,6 +144,16 @@ async function runSeed(pool, { password = "password123" } = {}) {
       notes: "First-time buyer. Awaiting search results before enquiries can be raised.",
     });
 
+    // A family matter — only Priya (and admins / all-departments staff) can see it.
+    const morris = (await client.query(
+      `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+         other_side_solicitor, date_instructed, notes)
+       VALUES ($1,'FAM-2026-0001','family','Divorce and financial settlement','Hannah Morris','Financial settlement',4,$2,$3,
+         'Greaves Family Law','2026-07-14','Form E exchange due before the first appointment.') RETURNING id`,
+      [firm.id, priya.id, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [morris.id, priya.id]);
+
     // A deliberately overdue + issue-flagged search, matching the frontend demo.
     await client.query(
       `INSERT INTO searches (matter_id, type, date_ordered, expected_return, date_received, issue, issue_notes) VALUES
@@ -140,6 +167,51 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [whitfieldId, "Follow up with client for instructions on indemnity insurance re: environmental search", marcus.id]
     );
 
+    // Client records (one per client name — in the demo data the same name is
+    // the same client, so the Faulkners' purchase and sale share theirs) and
+    // the other parties, for the client register and conflict checks.
+    await client.query(
+      `WITH keyed AS (
+         SELECT id, firm_id, client, client_address, client_email, client_phone, client_salutation, created_at,
+                lower(client) AS key
+         FROM matters WHERE firm_id = $1
+       ), made AS (
+         INSERT INTO clients (firm_id, name, address, email, phone, salutation, id_verified_on, id_method, risk_level)
+         SELECT DISTINCT ON (key) firm_id, client, client_address, client_email, client_phone, client_salutation,
+                CASE WHEN client = 'R & J Faulkner' THEN DATE '2026-06-03' END,
+                CASE WHEN client = 'R & J Faulkner' THEN 'Passport' END,
+                CASE WHEN client = 'R & J Faulkner' THEN 'low' END
+         FROM keyed ORDER BY key, client_email NULLS LAST, created_at
+         RETURNING id, lower(name) AS name_key
+       )
+       INSERT INTO matter_clients (matter_id, client_id)
+       SELECT k.id, made.id FROM keyed k JOIN made ON made.name_key = k.key`,
+      [firm.id]
+    );
+    await client.query(
+      `INSERT INTO matter_parties (matter_id, name, role) VALUES
+       ($1, 'Helen Margaret Carver', 'Seller'), ($2, 'Daniel & Sophie Grant', 'Buyer'), ($3, 'Mark Morris', 'Other party (spouse)')`,
+      [faulknerPurchaseId, faulknerSaleId, morris.id]
+    );
+
+    // Hourly rates, an estimate on the family matter and some time recorded on it.
+    await client.query(
+      `UPDATE users SET hourly_rate = CASE email
+         WHEN 'david@vjcrawfordconveyancing.co.uk' THEN 250 WHEN 'sarah@vjcrawfordconveyancing.co.uk' THEN 200
+         WHEN 'marcus@vjcrawfordconveyancing.co.uk' THEN 180 WHEN 'priya@vjcrawfordconveyancing.co.uk' THEN 210
+         WHEN 'jess@vjcrawfordconveyancing.co.uk' THEN 120 END
+       WHERE firm_id = $1`,
+      [firm.id]
+    );
+    await client.query(`UPDATE matters SET fee_estimate = 3000 WHERE id = $1`, [morris.id]);
+    await client.query(
+      `INSERT INTO time_entries (matter_id, user_id, work_date, units, rate, amount, activity, description) VALUES
+       ($1, $2, '2026-07-14', 10, 210, 210, 'Attendance (meeting)', 'Initial meeting — background, finances and options'),
+       ($1, $2, '2026-07-21', 4, 210, 84, 'Letter / email out', 'Letter to Greaves Family Law proposing mediation'),
+       ($1, $2, '2026-08-11', 15, 210, 315, 'Drafting', 'Form A and covering letter')`,
+      [morris.id, priya.id]
+    );
+
     await client.query("COMMIT");
     console.log("[seed] Seed complete.");
     // Only echo the password when it's the well-known local default; a
@@ -150,6 +222,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             david@vjcrawfordconveyancing.co.uk / ${shown} (admin)`);
     console.log(`[seed]             jess@vjcrawfordconveyancing.co.uk / ${shown} (assistant to Sarah)`);
     console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
+    console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
