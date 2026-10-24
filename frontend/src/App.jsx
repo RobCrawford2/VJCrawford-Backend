@@ -15,6 +15,7 @@ import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConve
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
 import { DocumentsTab, FolderTemplatesCard } from "./Documents";
+import { PropertyViewCard } from "./PropertyView";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -1707,6 +1708,19 @@ export default function App() {
         .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-doc-row[draggable="true"] { cursor: grab; }
+        .ac-propview-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+        .ac-propview-tabs button {
+          background: none; border: 1px solid var(--line); border-radius: 2px; padding: 3px 10px; font-size: 11.5px;
+          font-weight: 600; color: var(--slate); cursor: pointer;
+        }
+        .ac-propview-tabs button.on { background: var(--brass-bg); border-color: var(--brass-light); color: var(--ink); }
+        .ac-propview-frame { aspect-ratio: 16 / 9; max-height: 320px; width: 100%; border-radius: 3px; overflow: hidden; background: var(--paper); border: 1px solid var(--line); }
+        .ac-propview-frame iframe, .ac-propview-frame img { width: 100%; height: 100%; border: 0; display: block; object-fit: cover; }
+        .ac-propview-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; text-align: center; }
+        .ac-propview-empty p { font-size: 12px; color: var(--slate); margin: 0; }
+        .ac-propview-empty .ac-addbtn { text-decoration: none; }
+        .ac-propview-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--slate-light); }
+        .ac-propview-foot a { color: var(--brass); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
         .ac-doc-move { font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 2px; background: var(--card); color: var(--ink-soft); max-width: 150px; }
         .ac-docs { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; align-items: start; }
         .ac-folders { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -3292,6 +3306,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             </div>
 
             <MatterClientsCard matter={matter} users={users} onChanged={onMatterChanged} onOpenClient={onOpenClient} />
+
+            {conv && <PropertyViewCard key={matter.id} address={matter.address} />}
 
             {conv && <div className="ac-card">
               <h3><Building2 size={12} /> Property &amp; title</h3>
