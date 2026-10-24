@@ -9,6 +9,10 @@
  *   - fee_earner:  only their own matters
  *   - secretary / assistant: the matters of the fee earner they work for
  *
+ * On top of that, everyone except admins and staff marked "all departments"
+ * only sees matters in the departments they've been given access to
+ * (user.departments, loaded by loadUserAccess).
+ *
  * Returns { clause, params } where `clause` is a SQL fragment starting
  * with "AND ..." ready to append to a query that already filters by
  * firm_id, and `params` are the positional parameters it references
@@ -18,6 +22,15 @@ function matterVisibilityClause(user, startIndex) {
   if (user.role === "admin") {
     return { clause: "", params: [] };
   }
+  const role = roleClause(user, startIndex);
+  if (user.allDepartments) return role;
+  return {
+    clause: `${role.clause} AND m.department = ANY($${startIndex + role.params.length}::text[])`,
+    params: [...role.params, user.departments || []],
+  };
+}
+
+function roleClause(user, startIndex) {
 
   if (user.role === "supervisor") {
     return {
@@ -49,4 +62,29 @@ function matterVisibilityClause(user, startIndex) {
   };
 }
 
-module.exports = { matterVisibilityClause };
+/**
+ * Loads a user with what they're allowed to see: role, active flag and
+ * departments. Re-read on every request (see requireAuth) so access changes
+ * take effect immediately.
+ */
+async function loadUserAccess(db, userId, firmId = null) {
+  const result = await db.query(
+    `SELECT u.id, u.firm_id, u.role, u.name, u.active, u.all_departments,
+            COALESCE(array_agg(d.department ORDER BY d.department) FILTER (WHERE d.department IS NOT NULL), '{}') AS departments
+     FROM users u LEFT JOIN user_departments d ON d.user_id = u.id
+     WHERE u.id = $1 ${firmId ? "AND u.firm_id = $2" : ""}
+     GROUP BY u.id`,
+    firmId ? [userId, firmId] : [userId]
+  );
+  const u = result.rows[0];
+  if (!u) return null;
+  return {
+    id: u.id, firmId: u.firm_id, role: u.role, name: u.name, active: u.active,
+    allDepartments: u.role === "admin" || u.all_departments, departments: u.departments,
+  };
+}
+
+/** Whether the user may work in (open matters in, see) a department. */
+const canUseDepartment = (user, department) => user.allDepartments || (user.departments || []).includes(department);
+
+module.exports = { matterVisibilityClause, loadUserAccess, canUseDepartment };

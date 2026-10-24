@@ -11,6 +11,7 @@ import Login from "./Login";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
+import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel } from "./areas";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -18,27 +19,21 @@ import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch }
 /* Domain constants                                                       */
 /* ---------------------------------------------------------------------- */
 
-const STAGES = [
-  { name: "Instructed",           hint: "File opened, client care letter sent" },
-  { name: "ID & AML Checks",      hint: "Verification and source-of-funds" },
-  { name: "Contract Pack",        hint: "Draft contract and title issued / reviewed" },
-  { name: "Searches",             hint: "Local authority, water & drainage, environmental" },
-  { name: "Enquiries",            hint: "Pre-contract enquiries raised and answered" },
-  { name: "Mortgage Offer",       hint: "Formal mortgage offer received and reviewed" },
-  { name: "Report on Title",      hint: "Report sent to client for approval" },
-  { name: "Pre-Exchange Review",  hint: "File checked over and confirmed ready before contracts become binding" },
-  { name: "Exchange",             hint: "Contracts signed and exchanged, deposit held" },
-  { name: "Completion",           hint: "Funds transferred, keys released" },
-  { name: "Post-Completion",      hint: "SDLT return filed, Land Registry application" },
-  { name: "Closed",               hint: "File closed and archived" },
-];
+// Conveyancing stages; other departments' come from areas.js (stagesOf).
+const STAGES = CONVEYANCING_STAGES;
 
 const EXCHANGE_INDEX = STAGES.findIndex((s) => s.name === "Exchange");
 const COMPLETION_INDEX = STAGES.findIndex((s) => s.name === "Completion");
 const PRE_EXCHANGE_REVIEW_INDEX = STAGES.findIndex((s) => s.name === "Pre-Exchange Review");
 const CLOSED_INDEX = STAGES.length - 1;
 
-function stagePhase(idx) {
+function stagePhase(idx, matter) {
+  if (!isConveyancing(matter)) {
+    const last = closedIndexOf(matter);
+    if (idx >= last) return "closed";
+    if (idx <= 1) return "setup";
+    return idx >= last - 2 ? "critical" : "progress";
+  }
   if (idx === 0 || idx === 1) return "setup";
   if (idx >= 2 && idx <= 6) return "progress";
   if (idx >= 7 && idx <= COMPLETION_INDEX) return "critical";
@@ -299,9 +294,14 @@ function lastActivityDate(matter) {
  * rules: admins, the fee earner, their secretary/assistant, and supervisors
  * over the matter or its fee earner.
  */
+/** Whether a member of staff (raw /users row) works in a department. */
+function worksIn(u, department) {
+  return u.role === "admin" || u.all_departments || (u.departments || ["conveyancing"]).includes(department || "conveyancing");
+}
+
 function eligibleAssignees(matter, users) {
   const fe = users.find((u) => u.id === matter.feeEarnerId);
-  return users.filter((u) => u.active !== false && (
+  return users.filter((u) => u.active !== false && worksIn(u, matter.department) && (
     u.role === "admin" ||
     u.id === matter.feeEarnerId ||
     ((u.role === "secretary" || u.role === "assistant") && matter.feeEarnerId && u.supervisor_id === matter.feeEarnerId) ||
@@ -334,7 +334,7 @@ function AssigneeSelect({ matter, users, value, onChange, compact }) {
 
 function staleFiles(matters, staleDays) {
   return matters
-    .filter((m) => m.currentStageIndex < CLOSED_INDEX)
+    .filter((m) => !isClosed(m))
     .map((m) => ({ matter: m, idle: daysSince(lastActivityDate(m)) }))
     .filter((x) => x.idle !== null && x.idle >= staleDays)
     .sort((a, b) => b.idle - a.idle);
@@ -342,16 +342,31 @@ function staleFiles(matters, staleDays) {
 
 function needsAttention(matter, staleDays = 14) {
   const reasons = [];
-  if (matter.searches.some((s) => s.issue)) reasons.push("Search issue flagged");
-  if (matter.searches.some((s) => searchStatus(s) === "overdue")) reasons.push("A search is overdue");
-  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries raised and not yet answered");
-  if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry responses received — check whether they're satisfactory");
+  const open = !isClosed(matter);
+  const today = new Date();
   const outstandingUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding");
   if (outstandingUndertakings.length && matter.keyDates.actualCompletion) {
     reasons.push(`${outstandingUndertakings.length} undertaking${outstandingUndertakings.length === 1 ? "" : "s"} still outstanding after completion on ${formatDate(matter.keyDates.actualCompletion)}`);
   } else if (outstandingUndertakings.length) {
     reasons.push("Undertaking not yet discharged");
   }
+  if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
+  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today);
+  if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
+  if (open) {
+    const idle = daysSince(lastActivityDate(matter));
+    if (idle !== null && idle >= staleDays) reasons.push(`No activity logged for ${idle} days — file review due`);
+  }
+  return reasons;
+}
+
+/** Conveyancing-only warnings: searches, enquiries, money, dates, title. */
+function conveyancingAttention(matter, today) {
+  const reasons = [];
+  if (matter.searches.some((s) => s.issue)) reasons.push("Search issue flagged");
+  if (matter.searches.some((s) => searchStatus(s) === "overdue")) reasons.push("A search is overdue");
+  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries raised and not yet answered");
+  if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry responses received — check whether they're satisfactory");
   const bank = (matter.bankDetails || []).find((b) => b.status !== "superseded");
   if (bank && bank.status === "unverified") {
     const changed = (matter.bankDetails || []).some((b) => b.status === "superseded");
@@ -360,7 +375,6 @@ function needsAttention(matter, staleDays = 14) {
   if (!bank && matter.type !== "Purchase" && matter.currentStageIndex >= EXCHANGE_INDEX && matter.currentStageIndex < CLOSED_INDEX) {
     reasons.push("No client bank details recorded for the completion monies");
   }
-  const today = new Date();
   const daysUntil = (d) => Math.ceil((new Date(d) - new Date(todayISO())) / 86400000);
 
   // Land Registry OS1 priority: completion and the registration application must be in before it ends.
@@ -386,8 +400,6 @@ function needsAttention(matter, staleDays = 14) {
   if (matter.keyDates.targetCompletion && !matter.keyDates.actualCompletion && new Date(matter.keyDates.targetCompletion) < today && matter.currentStageIndex < COMPLETION_INDEX) {
     reasons.push("Target completion date has passed");
   }
-  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today);
-  if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   const mtg = mortgageExpiryInfo(matter);
   if (mtg) {
     if (mtg.conflict) reasons.push(`Mortgage offer expires ${formatDate(mtg.expiry)} — before completion. Risk of losing the offer.`);
@@ -397,15 +409,11 @@ function needsAttention(matter, staleDays = 14) {
   if (matter.currentStageIndex >= PRE_EXCHANGE_REVIEW_INDEX && matter.currentStageIndex < CLOSED_INDEX && !matter.preCompletionReview.confirmedBy) {
     reasons.push("Pre-exchange review not yet confirmed");
   }
-  if (matter.currentStageIndex < CLOSED_INDEX) {
-    const idle = daysSince(lastActivityDate(matter));
-    if (idle !== null && idle >= staleDays) reasons.push(`No activity logged for ${idle} days — file review due`);
-  }
   return reasons;
 }
 
 function sdltInfo(matter) {
-  if (!matter.keyDates.actualCompletion) return null;
+  if (!isConveyancing(matter) || !matter.keyDates.actualCompletion) return null;
   if (!(matter.type === "Purchase" || matter.type === "Remortgage")) return null;
   const deadline = new Date(matter.keyDates.actualCompletion);
   deadline.setDate(deadline.getDate() + 14);
@@ -420,19 +428,25 @@ function sdltInfo(matter) {
 /* Small UI atoms                                                         */
 /* ---------------------------------------------------------------------- */
 
-function StagePill({ idx }) {
-  const phase = stagePhase(idx);
+function StagePill({ idx, matter }) {
+  const phase = stagePhase(idx, matter);
   return (
     <span className={`ac-pill ac-pill--${phase}`}>
       {phase === "closed" ? <Stamp size={11} /> : null}
-      {STAGES[idx].name}
+      {stagesOf(matter)[idx]?.name || "—"}
     </span>
   );
 }
 
-function TypeTag({ type }) {
-  const icon = type === "Sale" ? <HomeIcon size={11} /> : type === "Purchase" ? <KeyRound size={11} /> : <Landmark size={11} />;
+function TypeTag({ type, department }) {
+  const conv = (department || "conveyancing") === "conveyancing";
+  const icon = !conv ? <Scale size={11} /> : type === "Sale" ? <HomeIcon size={11} /> : type === "Purchase" ? <KeyRound size={11} /> : <Landmark size={11} />;
   return <span className="ac-typetag">{icon}{type}</span>;
+}
+
+/** Department label, shown when someone works across more than one. */
+function DeptTag({ department }) {
+  return <span className="ac-depttag">{areaName(department)}</span>;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -464,6 +478,8 @@ export default function App() {
 
   function handleLoggedIn(user) {
     setAuthUser(user);
+    // The login response doesn't carry departments; /auth/me does.
+    api.me().then(setAuthUser).catch(() => {});
   }
 
   function logOut() {
@@ -480,12 +496,21 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [settings, setSettings] = useState({ outlookConnected: false, autoFile: true, domain: "", staleDays: 14, currentUser: "" });
   const [showSettings, setShowSettings] = useState(false);
+  // Departments this person works in (and the firm runs), in catalogue order.
+  const firmDepartments = settings.departments || ["conveyancing"];
+  const myDepartments = !authUser ? [] : authUser.allDepartments || authUser.role === "admin"
+    ? firmDepartments
+    : firmDepartments.filter((d) => (authUser.departments || ["conveyancing"]).includes(d));
+  const conveyancingUser = myDepartments.includes("conveyancing");
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showOutlookConsent, setShowOutlookConsent] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
+  const [deptFilter, setDeptFilter] = useState("All");
+  // The department the list is showing, when it's just one (for its type filters).
+  const listDepartment = deptFilter !== "All" ? deptFilter : myDepartments.length === 1 ? myDepartments[0] : null;
   const [showClosed, setShowClosed] = useState(true);
   const [myMattersOnly, setMyMattersOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
@@ -535,17 +560,19 @@ export default function App() {
     api.getUsers().then(setUsers).catch(() => {});
     api
       .getFirmSettings()
-      .then((s) =>
+      .then((s) => {
+        registerAreas(s.areas);
         setSettings((prev) => ({
           ...prev,
+          departments: s.departments || ["conveyancing"],
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
           requireStageSignoff: s.require_stage_signoff ?? true,
           dictationEnabled: s.dictation_enabled ?? true,
           requireExchangeChecks: s.require_exchange_checks ?? true,
           currentUser: authUser.name,
-        }))
-      )
+        }));
+      })
       .catch(() => setSettings((prev) => ({ ...prev, currentUser: authUser.name })));
   }, [authUser]);
 
@@ -565,6 +592,15 @@ export default function App() {
     }
   }
 
+  async function saveDepartments(departments) {
+    try {
+      const saved = await api.updateFirmSettings({ departments });
+      setSettings((prev) => ({ ...prev, departments: saved.departments }));
+    } catch (err) {
+      notify(err.message || "Couldn't change the departments.");
+    }
+  }
+
   // ---- Matters list ----
   const refreshList = useCallback(async () => {
     if (!authUser) return;
@@ -575,6 +611,7 @@ export default function App() {
         limit: visibleCount,
         offset: 0,
         type: typeFilter === "All" ? undefined : typeFilter,
+        department: deptFilter === "All" ? undefined : deptFilter,
         showClosed: showClosed ? undefined : "false",
         search: search.trim() || undefined,
         feeEarnerId,
@@ -587,7 +624,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [authUser, visibleCount, typeFilter, showClosed, search, myMattersOnly, users]);
+  }, [authUser, visibleCount, typeFilter, deptFilter, showClosed, search, myMattersOnly, users]);
 
   useEffect(() => {
     refreshList();
@@ -595,7 +632,7 @@ export default function App() {
 
   useEffect(() => {
     setVisibleCount(20);
-  }, [search, typeFilter, showClosed, myMattersOnly]);
+  }, [search, typeFilter, deptFilter, showClosed, myMattersOnly]);
 
   // ---- Selected matter detail ----
   const refreshSelected = useCallback(
@@ -647,7 +684,7 @@ export default function App() {
   async function setStage(id, idx) {
     const matter = id === selectedId ? selectedDetail : matters.find((m) => m.id === id);
     // With the firm's exchange checks on, the server refuses (and explains) — only ask when they're off.
-    if (matter && settings.requireExchangeChecks === false && idx >= EXCHANGE_INDEX && idx > matter.currentStageIndex && !matter.preCompletionReview.confirmedBy) {
+    if (matter && isConveyancing(matter) && settings.requireExchangeChecks === false && idx >= EXCHANGE_INDEX && idx > matter.currentStageIndex && !matter.preCompletionReview.confirmedBy) {
       const proceed = await confirmAction(
         `The pre-exchange review hasn't been confirmed on this file yet. Move to ${STAGES[idx].name} anyway?`,
         { confirmLabel: "Move anyway", danger: true }
@@ -1075,12 +1112,12 @@ export default function App() {
     setListOpen(!selectedId);
   }, [selectedId]);
 
-  const activeCount = matters.filter((m) => m.currentStageIndex !== CLOSED_INDEX).length;
-  const closedThisYear = matters.filter((m) => m.currentStageIndex === CLOSED_INDEX).length;
+  const activeCount = matters.filter((m) => !isClosed(m)).length;
+  const closedThisYear = matters.filter((m) => isClosed(m)).length;
 
   const feeEarners = [...new Set(matters.map((m) => m.feeEarner).filter(Boolean))];
   const workload = feeEarners
-    .map((name) => ({ name, count: matters.filter((m) => m.feeEarner === name && m.currentStageIndex !== CLOSED_INDEX).length }))
+    .map((name) => ({ name, count: matters.filter((m) => m.feeEarner === name && !isClosed(m)).length }))
     .sort((a, b) => b.count - a.count);
   const maxWorkload = Math.max(1, ...workload.map((w) => w.count));
 
@@ -1219,6 +1256,13 @@ export default function App() {
         .ac-bank-status.unverified { background: #f8e3dc; color: #8a3b1f; font-weight: 600; }
         .ac-sdlt { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 2px; margin-bottom: 12px; background: var(--card); }
         .ac-card { position: relative; }
+        .ac-dept-ticks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+        .ac-dept-tick, .ac-field .ac-dept-tick { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 0; }
+        .ac-dept-tick input, .ac-field .ac-dept-tick input { width: auto; margin: 0; }
+        .ac-dept-tick.all, .ac-field .ac-dept-tick.all { flex-basis: 100%; font-weight: 600; }
+        .ac-dept-tick.all span { font-weight: 400; color: var(--slate); }
+        .ac-deptselect { width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--card); font-size: 13px; font-weight: 600; color: var(--ink); }
+        .ac-depttag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); background: var(--brass-bg); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
         .ac-detail-body.ac-money { grid-template-columns: 1fr 1fr; }
         .ac-topbtn { display: inline-flex; align-items: center; gap: 6px; position: relative; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); padding: 5px 8px; }
         .ac-topbtn .ac-badge { position: static; margin-left: 1px; }
@@ -1608,7 +1652,7 @@ export default function App() {
             {(() => {
               const today = new Date();
               const overdueTaskCount = myTasks.filter((t) => t.dueDate && new Date(t.dueDate) < today).length;
-              const staleCount = matters.filter((m) => m.currentStageIndex < CLOSED_INDEX && daysSince(lastActivityDate(m)) >= settings.staleDays).length;
+              const staleCount = matters.filter((m) => !isClosed(m) && daysSince(lastActivityDate(m)) >= settings.staleDays).length;
               const total = overdueTaskCount + staleCount;
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
@@ -1655,8 +1699,14 @@ export default function App() {
               <Search size={14} color="var(--slate-light)" />
               <input placeholder="Search address, client, reference…" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+            {myDepartments.length > 1 && (
+              <select className="ac-deptselect" value={deptFilter} onChange={(e) => { setDeptFilter(e.target.value); setTypeFilter("All"); }} aria-label="Department">
+                <option value="All">All my departments</option>
+                {myDepartments.map((d) => <option key={d} value={d}>{areaName(d)}</option>)}
+              </select>
+            )}
             <div className="ac-filters">
-              {["All", ...TYPES].map((t) => (
+              {listDepartment && ["All", ...areaOf(listDepartment).types].map((t) => (
                 <button key={t} className={`ac-chip ${typeFilter === t ? "active" : ""}`} onClick={() => setTypeFilter(t)}>{t}</button>
               ))}
               <button className={`ac-chip ${showClosed ? "active" : ""}`} onClick={() => setShowClosed((s) => !s)}>
@@ -1674,8 +1724,8 @@ export default function App() {
               </button>
             )}
             <button className="ac-newbtn" onClick={() => setShowNewMatter(true)}><Plus size={15} /> Open new matter</button>
-            {authUser.role === "admin" && (
-              <button className="ac-importbtn" onClick={() => setShowImport(true)}><Upload size={13} /> Import matters from a spreadsheet</button>
+            {authUser.role === "admin" && conveyancingUser && (
+              <button className="ac-importbtn" onClick={() => setShowImport(true)}><Upload size={13} /> Import conveyancing matters from a spreadsheet</button>
             )}
           </div>
           <div className="ac-list">
@@ -1688,14 +1738,15 @@ export default function App() {
                   <span className="ac-item-ref">{m.reference}</span>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     {needsAttention(m, settings.staleDays).length > 0 && <span title={needsAttention(m, settings.staleDays).join(" · ")} style={{ color: "#9a5a1f" }}><AlertTriangle size={13} /></span>}
-                    <TypeTag type={m.type} />
+                    {myDepartments.length > 1 && <DeptTag department={m.department} />}
+                    <TypeTag type={m.type} department={m.department} />
                   </div>
                 </div>
                 <div className="ac-item-addr">{m.address}</div>
                 <div className="ac-item-client">{m.client}</div>
                 <div className="ac-item-bottom">
-                  <StagePill idx={m.currentStageIndex} />
-                  <span style={{ fontSize: 11, color: "var(--slate-light)", fontFamily: "var(--font-mono)" }}>{formatMoney(m.price)}</span>
+                  <StagePill idx={m.currentStageIndex} matter={m} />
+                  {isConveyancing(m) && <span style={{ fontSize: 11, color: "var(--slate-light)", fontFamily: "var(--font-mono)" }}>{formatMoney(m.price)}</span>}
                 </div>
               </div>
             ))}
@@ -1749,7 +1800,7 @@ export default function App() {
                 </div>
               )}
 
-              <ThisWeekCard refreshKey={homeRefresh} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />
+              {conveyancingUser && <ThisWeekCard refreshKey={homeRefresh} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />}
 
               {(() => {
                 const openTasks = myTasks;
@@ -1877,7 +1928,7 @@ export default function App() {
         </div>
       </div>
 
-      {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} />}
+      {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} departments={myDepartments} />}
       {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} section={showEditMatter === true ? null : showEditMatter} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
       {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
@@ -1915,6 +1966,7 @@ export default function App() {
           matters={matters}
           onClose={() => setShowSettings(false)}
           onSave={saveSettings}
+          onSaveDepartments={saveDepartments}
           onConnectOutlook={() => setShowOutlookConsent(true)}
           onDisconnectOutlook={() => saveSettings({ outlookConnected: false })}
         />
@@ -1931,6 +1983,7 @@ export default function App() {
       {stageRequestDraft && (
         <StageRequestForm
           stageIndex={stageRequestDraft.stageIndex}
+          stageName={stagesOf(stageRequestDraft.matterId === selectedId ? selectedDetail : matters.find((m) => m.id === stageRequestDraft.matterId))[stageRequestDraft.stageIndex]?.name}
           onClose={() => setStageRequestDraft(null)}
           onSubmit={(note) => requestStage(stageRequestDraft.matterId, stageRequestDraft.stageIndex, note)}
         />
@@ -1952,6 +2005,7 @@ export default function App() {
       {showStaff && (
         <StaffPanel
           users={users}
+          firmDepartments={firmDepartments}
           currentUserId={authUser.id}
           onClose={() => setShowStaff(false)}
           onChanged={() => api.getUsers().then(setUsers).catch(() => {})}
@@ -2242,7 +2296,7 @@ function ReportOnTitleCard({ matter, onGenerate }) {
   );
 }
 
-function StageRequestForm({ stageIndex, onClose, onSubmit }) {
+function StageRequestForm({ stageIndex, stageName, onClose, onSubmit }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2259,7 +2313,7 @@ function StageRequestForm({ stageIndex, onClose, onSubmit }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 13.5, marginTop: 0 }}>
-          Ask the fee earner to sign off moving this matter to <strong>{STAGES[stageIndex].name}</strong>. It moves once they approve.
+          Ask the fee earner to sign off moving this matter to <strong>{stageName}</strong>. It moves once they approve.
         </p>
         <div className="ac-field">
           <label>Note for the fee earner (optional)</label>
@@ -2292,7 +2346,7 @@ function StageRequestBanner({ matter, currentUserId, onDecide, onWithdraw }) {
       <div style={{ minWidth: 0 }}>
         <div className="txt">
           <ShieldCheck size={13} style={{ verticalAlign: -2 }} /> <strong>Sign-off requested</strong>
-          {" "}by {mine ? "you" : r.requestedByName} to move from <strong>{STAGES[r.fromStage]?.name}</strong> to <strong>{STAGES[r.toStage].name}</strong>
+          {" "}by {mine ? "you" : r.requestedByName} to move from <strong>{stagesOf(matter)[r.fromStage]?.name}</strong> to <strong>{stagesOf(matter)[r.toStage]?.name}</strong>
           {" "}· {new Date(r.requestedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
         </div>
         {r.note && <div className="note">“{r.note}”</div>}
@@ -2323,7 +2377,7 @@ function stageReachedDates(matter) {
   const dates = {};
   for (const a of matter.activity || []) {
     if (a.type !== "stage") continue;
-    const idx = a.text === "Matter opened at Instructed" ? 0 : STAGES.findIndex((s) => a.text === `Moved to ${s.name}`);
+    const idx = a.text === "Matter opened at Instructed" ? 0 : stagesOf(matter).findIndex((s) => a.text === `Moved to ${s.name}`);
     if (idx >= 0 && (!dates[idx] || new Date(a.date) > new Date(dates[idx]))) dates[idx] = a.date;
   }
   if (!dates[0] && matter.keyDates?.instructed) dates[0] = matter.keyDates.instructed;
@@ -2333,7 +2387,8 @@ function stageReachedDates(matter) {
 function StageTimeline({ matter, onSetStage }) {
   const currentIdx = matter.currentStageIndex;
   const reached = stageReachedDates(matter);
-  const current = STAGES[currentIdx];
+  const stages = stagesOf(matter);
+  const current = stages[currentIdx] || stages[0];
   const trackRef = useRef(null);
 
   // On narrow screens the track scrolls sideways — keep the current stage in view.
@@ -2349,17 +2404,17 @@ function StageTimeline({ matter, onSetStage }) {
       <div className="ac-timeline-head">
         <span className="ac-tracker-title" style={{ padding: 0 }}>Matter progress</span>
         <span className="ac-timeline-now">
-          Stage {currentIdx + 1} of {STAGES.length}: <strong>{current.name}</strong> — {current.hint}
+          Stage {currentIdx + 1} of {stages.length}: <strong>{current.name}</strong>{current.hint ? ` — ${current.hint}` : ""}
         </span>
       </div>
       <div className="ac-timeline-track" ref={trackRef}>
-        {STAGES.map((s, idx) => {
+        {stages.map((s, idx) => {
           const state = idx < currentIdx ? "done" : idx === currentIdx ? "current" : "todo";
           const requested = matter.pendingStageRequest?.toStage === idx;
           const date = idx <= currentIdx ? reached[idx] : null;
           return (
             <button key={s.name} type="button" className={`ac-tl-step ${state} ${requested ? "requested" : ""}`} onClick={() => onSetStage(idx)}
-              title={requested ? `${s.name} — awaiting sign-off` : matter.stageMovesNeedSignoff && idx !== currentIdx ? `${s.name} — click to request sign-off to move here` : `${s.name} — ${s.hint}`}>
+              title={requested ? `${s.name} — awaiting sign-off` : matter.stageMovesNeedSignoff && idx !== currentIdx ? `${s.name} — click to request sign-off to move here` : s.hint ? `${s.name} — ${s.hint}` : s.name}>
               <span className={`ac-stamp ${state === "todo" ? "" : state}`}>
                 {state === "done" ? <Check size={12} /> : state === "current" ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} /> : null}
               </span>
@@ -2643,7 +2698,8 @@ function FocusItem({ ok, children, action, onAction }) {
  */
 function StageFocus({ matter, setActiveTab, onEdit, onAddNote, onGenerateDocument, onReportOnTitle, onAddBankDetails, onVerifyBankDetails, reviewProps }) {
   const idx = matter.currentStageIndex;
-  const stage = STAGES[idx];
+  const stage = stagesOf(matter)[idx] || stagesOf(matter)[0];
+  if (!isConveyancing(matter)) return <GeneralStageFocus matter={matter} stage={stage} setActiveTab={setActiveTab} onEdit={onEdit} />;
   const isPurchase = matter.type === "Purchase";
   const hasLender = !!matter.parties.lender || matter.type === "Remortgage";
   const tpl = (key) => DOCUMENT_TEMPLATES.find((t) => t.key === key);
@@ -2746,6 +2802,36 @@ function StageFocus({ matter, setActiveTab, onEdit, onAddNote, onGenerateDocumen
   );
 }
 
+/**
+ * The "Now" box for departments without their own stage checklist yet:
+ * the basics every file needs, and what's open on it.
+ */
+function GeneralStageFocus({ matter, stage, setActiveTab, onEdit }) {
+  const stages = stagesOf(matter);
+  const idx = matter.currentStageIndex;
+  const next = stages[idx + 1];
+  const openTasks = matter.tasks.filter((t) => t.status === "Open").length;
+  const overdue = matter.tasks.filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < new Date()).length;
+  const openUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding").length;
+  return (
+    <div className="ac-card ac-focus" id="stage-focus">
+      <h3><ChevronRight size={12} /> Now: {stage.name}</h3>
+      {idx <= 1 && (
+        <>
+          <FocusItem ok={!!matter.clientDetails.address && !!matter.clientDetails.salutation} action="Add" onAction={() => onEdit("client")}>Client's address and how letters start</FocusItem>
+          <FocusItem ok={!!matter.clientDetails.email || !!matter.clientDetails.phone} action="Add" onAction={() => onEdit("client")}>Client's email or phone</FocusItem>
+          <FocusItem ok={!!matter.feeEarnerId} action="Assign" onAction={() => onEdit("team")}>Fee earner assigned</FocusItem>
+        </>
+      )}
+      <FocusItem ok={overdue === 0} action="Tasks" onAction={() => setActiveTab("tasks")}>
+        {openTasks ? `${openTasks} open task${openTasks === 1 ? "" : "s"}${overdue ? `, ${overdue} overdue` : ""}` : "No open tasks"}
+      </FocusItem>
+      {openUndertakings > 0 && <FocusItem ok={false} action="Undertakings" onAction={() => setActiveTab("undertakings")}>{openUndertakings} undertaking{openUndertakings === 1 ? "" : "s"} outstanding</FocusItem>}
+      {next && <div className="ac-focus-hint" style={{ marginTop: 10, marginBottom: 0 }}>Next stage: {next.name}</div>}
+    </div>
+  );
+}
+
 /** Searches / enquiries / mortgage progress and whether the file is ready to exchange. */
 function Workstreams({ matter }) {
   return (
@@ -2845,6 +2931,11 @@ function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onR
 function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onGenerateDocument, onAddBankDetails, onVerifyBankDetails, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   const [tasksMineOnly, setTasksMineOnly] = useState(false);
+  const conv = isConveyancing(matter);
+  // Conveyancing-only tabs don't exist on other departments' matters.
+  useEffect(() => {
+    if (!conv && ["money", "enquiries", "searches"].includes(activeTab)) setActiveTab("overview");
+  }, [conv, activeTab]);
   useEffect(() => setNotesDraft(matter.notes || ""), [matter.id]);
 
   return (
@@ -2856,9 +2947,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <div className="ac-detail-ref">N° {matter.reference}</div>
             <h2 className="ac-detail-addr">{matter.address}</h2>
             <div className="ac-detail-meta">
-              <TypeTag type={matter.type} />
-              <StagePill idx={matter.currentStageIndex} />
-              <span className="ac-detail-price"><PoundSterling size={11} style={{ verticalAlign: -1 }} /> {formatMoney(matter.price)}</span>
+              {!isConveyancing(matter) && <DeptTag department={matter.department} />}
+              <TypeTag type={matter.type} department={matter.department} />
+              <StagePill idx={matter.currentStageIndex} matter={matter} />
+              {conv && <span className="ac-detail-price"><PoundSterling size={11} style={{ verticalAlign: -1 }} /> {formatMoney(matter.price)}</span>}
               <span style={{ fontSize: 12.5, color: "var(--slate)" }}>Client: <strong style={{ color: "var(--ink)" }}>{matter.client}</strong></span>
             </div>
             {matter.linkedMatters.length > 0 && (
@@ -2882,9 +2974,11 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
         <div className="ac-tabs">
           {[
             ["overview", <><Clock size={13} /> Overview</>],
-            ["money", <><PoundSterling size={13} /> Money</>],
-            ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
-            ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
+            ...(conv ? [
+              ["money", <><PoundSterling size={13} /> Money</>],
+              ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
+              ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
+            ] : []),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -2949,7 +3043,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                     <div key={lid} style={{ padding: "9px 0", borderBottom: "1px dashed var(--line)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                         <button onClick={() => onOpenLinked(lid)} style={{ background: "none", border: "none", padding: 0, fontWeight: 600, fontSize: 13, color: "var(--ink)", cursor: "pointer", textAlign: "left" }}>{linked.address}</button>
-                        <StagePill idx={linked.currentStageIndex} />
+                        <StagePill idx={linked.currentStageIndex} matter={matter} />
                       </div>
                       <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 2 }}>{linked.reference} · {linked.client} · target completion {formatDate(linked.targetCompletion)}</div>
                       {dateMismatch && <div style={{ fontSize: 11.5, color: "#8a3b1f", marginTop: 3 }}>⚠ Target completion dates don't match across the chain — align before exchange.</div>}
@@ -2969,7 +3063,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div className="ac-kv"><span className="k">Letters start</span><span className="v">{matter.clientDetails.salutation ? `Dear ${matter.clientDetails.salutation}` : "—"}</span></div>
             </div>
 
-            <div className="ac-card">
+            {conv && <div className="ac-card">
               <h3><Building2 size={12} /> Property &amp; title</h3>
               <CardEdit onClick={() => onEdit("property")} />
               <div className="ac-kv"><span className="k">Tenure</span><span className="v">{matter.property.tenure || "—"}</span></div>
@@ -2982,7 +3076,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   <div className="ac-kv"><span className="k">Service charge</span><span className="v">{matter.property.serviceCharge || "—"}</span></div>
                 </>
               )}
-            </div>
+            </div>}
 
             <div className="ac-card">
               <h3><Users size={12} /> Parties &amp; team</h3>
@@ -2991,14 +3085,15 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div className="ac-kv"><span className="k">Supervisor</span><span className="v">{matter.supervisor || "—"}</span></div>
               <div className="ac-kv"><span className="k">Other side's solicitor</span><span className="v">{matter.parties.otherSideSolicitor || "—"}</span></div>
               <div className="ac-kv"><span className="k">Their email</span><span className="v mono">{matter.parties.otherSideSolicitorEmail || "—"}</span></div>
-              <div className="ac-kv"><span className="k">Estate agent</span><span className="v">{matter.parties.estateAgent || "—"}</span></div>
-              <div className="ac-kv"><span className="k">Lender</span><span className="v">{matter.parties.lender || "—"}</span></div>
+              {conv && <div className="ac-kv"><span className="k">Estate agent</span><span className="v">{matter.parties.estateAgent || "—"}</span></div>}
+              {conv && <div className="ac-kv"><span className="k">Lender</span><span className="v">{matter.parties.lender || "—"}</span></div>}
             </div>
 
             <div className="ac-card">
               <h3><Calendar size={12} /> Key dates</h3>
-              <CardEdit onClick={() => onEdit("dates")} />
+              {conv && <CardEdit onClick={() => onEdit("dates")} />}
               <div className="ac-kv"><span className="k">Instructed</span><span className="v mono">{formatDate(matter.keyDates.instructed)}</span></div>
+              {conv && <>
               <div className="ac-kv"><span className="k">Target exchange</span><span className="v mono">{formatDate(matter.keyDates.targetExchange)}</span></div>
               <div className="ac-kv"><span className="k">Actual exchange</span><span className="v mono">{formatDate(matter.keyDates.actualExchange)}</span></div>
               <div className="ac-kv"><span className="k">Target completion</span><span className="v mono">{formatDate(matter.keyDates.targetCompletion)}</span></div>
@@ -3018,6 +3113,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   </div>
                 );
               })()}
+              </>}
             </div>
 
             <div className="ac-card">
@@ -3061,7 +3157,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               onVerifyBankDetails={onVerifyBankDetails}
               reviewProps={{ onToggleChecklistItem, onConfirmReview, onResetReview, onSaveField }}
             />
-            <DocumentsCard matter={matter} onGenerate={onGenerateDocument} onReportOnTitle={onReportOnTitle} />
+            {conv && <DocumentsCard matter={matter} onGenerate={onGenerateDocument} onReportOnTitle={onReportOnTitle} />}
           </div>
         </div>
       )}
@@ -3244,7 +3340,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <div className="ac-section-head">
               <h2>Tasks &amp; reminders</h2>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>
+                {conv && <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>}
                 <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
               </div>
             </div>
@@ -3463,9 +3559,10 @@ function MailboxAddress({ reference, domain }) {
 /* New matter form                                                        */
 /* ---------------------------------------------------------------------- */
 
-function NewMatterForm({ onClose, onCreate, users }) {
+function NewMatterForm({ onClose, onCreate, users, departments }) {
   const [f, setF] = useState({
-    address: "", client: "", type: "Purchase", price: "",
+    department: departments[0] || "conveyancing",
+    address: "", client: "", type: areaOf(departments[0]).types[0], price: "",
     otherSideSolicitor: "", otherSideSolicitorEmail: "", estateAgent: "", lender: "",
     targetExchange: "", targetCompletion: "", feeEarnerId: "", supervisorId: "", mortgageOfferExpiry: "",
     clientDetails: { address: "", email: "", phone: "", salutation: "" },
@@ -3474,15 +3571,19 @@ function NewMatterForm({ onClose, onCreate, users }) {
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
+  const conv = f.department === "conveyancing";
+  const staff = users.filter((u) => worksIn(u, f.department));
+  const chooseDepartment = (e) => setF({ ...f, department: e.target.value, type: areaOf(e.target.value).types[0], feeEarnerId: "", supervisorId: "" });
 
   function submit(e) {
     e.preventDefault();
     if (!f.address.trim() || !f.client.trim()) {
-      setError("Property address and client name are both required.");
+      setError(`${describeLabel(f.department)} and client name are both required.`);
       return;
     }
     setError("");
     onCreate({
+      department: f.department,
       address: f.address.trim(),
       client: f.client.trim(),
       type: f.type,
@@ -3516,9 +3617,17 @@ function NewMatterForm({ onClose, onCreate, users }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
 
+        {departments.length > 1 && (
+          <div className="ac-field">
+            <label>Department</label>
+            <select value={f.department} onChange={chooseDepartment}>
+              {departments.map((d) => <option key={d} value={d}>{areaName(d)}</option>)}
+            </select>
+          </div>
+        )}
         <div className="ac-field">
-          <label>Property address</label>
-          <input value={f.address} onChange={set("address")} placeholder="14 Mill Race Lane, Winchcombe, GL54 5LX" />
+          <label>{describeLabel(f.department)}</label>
+          <input value={f.address} onChange={set("address")} placeholder={conv ? "14 Mill Race Lane, Winchcombe, GL54 5LX" : "e.g. Divorce and financial settlement / Estate of John Smith"} />
         </div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -3528,20 +3637,22 @@ function NewMatterForm({ onClose, onCreate, users }) {
           <div className="ac-field">
             <label>Matter type</label>
             <select value={f.type} onChange={set("type")}>
-              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {areaOf(f.department).types.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>
-        <div className="ac-field">
+        {conv && <div className="ac-field">
           <label>Price</label>
           <input type="number" value={f.price} onChange={set("price")} placeholder="465000" />
-        </div>
+        </div>}
 
         <div className="ac-fieldset-title">Client contact</div>
         <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
 
-        <div className="ac-fieldset-title">Property &amp; title</div>
-        <PropertyFields value={f.property} onChange={setIn} />
+        {conv && <>
+          <div className="ac-fieldset-title">Property &amp; title</div>
+          <PropertyFields value={f.property} onChange={setIn} />
+        </>}
 
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
@@ -3549,14 +3660,14 @@ function NewMatterForm({ onClose, onCreate, users }) {
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {staff.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {staff.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -3572,6 +3683,7 @@ function NewMatterForm({ onClose, onCreate, users }) {
             <input value={f.otherSideSolicitorEmail} onChange={set("otherSideSolicitorEmail")} placeholder="conveyancing@…" />
           </div>
         </div>
+        {conv && <>
         <div className="ac-row2">
           <div className="ac-field">
             <label>Estate agent</label>
@@ -3598,6 +3710,7 @@ function NewMatterForm({ onClose, onCreate, users }) {
           <label>Mortgage offer expiry (if known)</label>
           <input type="date" value={f.mortgageOfferExpiry} onChange={set("mortgageOfferExpiry")} />
         </div>
+        </>}
 
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><FileSignature size={14} /> Open matter</button>
@@ -3610,7 +3723,34 @@ function NewMatterForm({ onClose, onCreate, users }) {
 /* Settings & Outlook integration                                         */
 /* ---------------------------------------------------------------------- */
 
-function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectOutlook, onDisconnectOutlook }) {
+/** Admin: which departments the firm runs. Switching one off is refused while it has matters. */
+function DepartmentsSetting({ isAdmin, departments, onSave }) {
+  const [busy, setBusy] = useState(false);
+  async function toggle(key) {
+    const next = departments.includes(key) ? departments.filter((d) => d !== key) : [...departments, key];
+    setBusy(true);
+    try { await onSave(allAreas().map((a) => a.key).filter((k) => next.includes(k))); } finally { setBusy(false); }
+  }
+  return (
+    <div className="ac-card">
+      <h3><Building2 size={12} /> Departments</h3>
+      <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
+        The areas of law the firm runs. Each has its own matter types and stages. Staff only see the departments
+        you give them in Staff (admins see everything).
+      </p>
+      <div className="ac-dept-ticks">
+        {allAreas().map((a) => (
+          <label key={a.key} className="ac-dept-tick">
+            <input type="checkbox" checked={departments.includes(a.key)} disabled={!isAdmin || busy} onChange={() => toggle(a.key)} /> {a.name}
+          </label>
+        ))}
+      </div>
+      {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
+    </div>
+  );
+}
+
+function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepartments, onConnectOutlook, onDisconnectOutlook }) {
   const [domain, setDomain] = useState(settings.domain);
   const [staleDays, setStaleDays] = useState(settings.staleDays);
   const [currentUser, setCurrentUser] = useState(settings.currentUser);
@@ -3706,7 +3846,9 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectO
           {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change this.</p>}
         </div>
 
-        <div className="ac-card">
+        <DepartmentsSetting isAdmin={isAdmin} departments={settings.departments || ["conveyancing"]} onSave={onSaveDepartments} />
+
+        {(settings.departments || ["conveyancing"]).includes("conveyancing") && <div className="ac-card">
           <h3><Gavel size={12} /> Checks before exchange</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
             When on, a matter can't move to Exchange until the pre-exchange review is confirmed, the mortgage offer
@@ -3717,7 +3859,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onConnectO
               onChange={(e) => onSave({ requireExchangeChecks: e.target.checked })} style={{ width: "auto" }} />
             Require these checks before exchange
           </label>
-        </div>
+        </div>}
 
         <div className="ac-card">
           <h3><Mic size={12} /> Dictation</h3>
@@ -4047,7 +4189,7 @@ function ChainPicker({ matter, allMatters, selectedIds, onToggle }) {
   useEffect(() => {
     if (!term.trim()) { setResults(null); return; }
     const handle = setTimeout(() => {
-      api.getMatters({ search: term.trim(), limit: 20 })
+      api.getMatters({ search: term.trim(), limit: 20, department: "conveyancing" })
         .then((r) => setResults(r.matters.map((m) => ({ id: m.id, reference: m.reference, address: m.address, client: m.client }))))
         .catch(() => setResults([]));
     }, 300);
@@ -4057,7 +4199,7 @@ function ChainPicker({ matter, allMatters, selectedIds, onToggle }) {
   // Already-linked first (always shown, so they can be unticked), then search results or the loaded list.
   const known = new Map();
   for (const l of matter.linkedMatters) known.set(l.id, l);
-  for (const m of results ?? allMatters) if (!known.has(m.id)) known.set(m.id, m);
+  for (const m of results ?? allMatters.filter(isConveyancing)) if (!known.has(m.id)) known.set(m.id, m);
   const options = [...known.values()].filter((m) => m.id !== matter.id);
 
   return (
@@ -4144,7 +4286,9 @@ const EDIT_SECTIONS = {
 
 /** Edit form for the whole matter, or (with `section`) just one part of it. */
 function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = null }) {
-  const show = (...names) => !section || names.includes(section);
+  const conv = isConveyancing(matter);
+  // Property, money, dates and chain are conveyancing sections.
+  const show = (...names) => (!section || names.includes(section)) && (conv || names.some((n) => ["basics", "client", "team"].includes(n)));
   const [f, setF] = useState({
     address: matter.address,
     client: matter.client,
@@ -4238,7 +4382,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
 
         {show("basics") && (<>
         <div className="ac-field">
-          <label>Property address</label>
+          <label>{describeLabel(matter.department)}</label>
           <input value={f.address} onChange={set("address")} />
         </div>
         <div className="ac-row2">
@@ -4249,12 +4393,12 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
           <div className="ac-field">
             <label>Matter type</label>
             <select value={f.type} onChange={set("type")}>
-              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {areaOf(matter.department).types.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>
         </>)}
-        {show("basics", "money") && (<>
+        {conv && show("basics", "money") && (<>
         <div className="ac-field">
           <label>Price</label>
           <input type="number" value={f.price} onChange={set("price")} />
@@ -4330,14 +4474,14 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
             <label>Fee earner</label>
             <select value={f.feeEarnerId} onChange={set("feeEarnerId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role) && worksIn(u, matter.department)) || u.id === f.feeEarnerId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
           <div className="ac-field">
             <label>Supervisor</label>
             <select value={f.supervisorId} onChange={set("supervisorId")}>
               <option value="">— Select —</option>
-              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
+              {users.filter((u) => (u.active !== false && isFeeEarnerRole(u.role) && worksIn(u, matter.department)) || u.id === f.supervisorId).map((u) => <option key={u.id} value={u.id}>{u.name}{u.active === false ? " (deactivated)" : ""}</option>)}
             </select>
           </div>
         </div>
@@ -4353,7 +4497,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
             <input value={f.otherSideSolicitorEmail} onChange={set("otherSideSolicitorEmail")} />
           </div>
         </div>
-        <div className="ac-row2">
+        {conv && <div className="ac-row2">
           <div className="ac-field">
             <label>Estate agent</label>
             <input value={f.estateAgent} onChange={set("estateAgent")} />
@@ -4362,7 +4506,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
             <label>Lender</label>
             <input value={f.lender} onChange={set("lender")} />
           </div>
-        </div>
+        </div>}
 
         </>)}
         {show("dates") && (<>
@@ -4988,8 +5132,12 @@ function makeTempPassword() {
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 }
 
-function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
-  const [f, setF] = useState({ name: "", email: "", role: "fee_earner", supervisorId: "", password: isNew ? makeTempPassword() : "", ...initial });
+function StaffForm({ initial, users, selfId, onCancel, onSave, isNew, firmDepartments }) {
+  const [f, setF] = useState({
+    name: "", email: "", role: "fee_earner", supervisorId: "", password: isNew ? makeTempPassword() : "",
+    departments: firmDepartments.length === 1 ? [...firmDepartments] : [], allDepartments: false, ...initial,
+  });
+  const toggleDept = (d) => setF((prev) => ({ ...prev, departments: prev.departments.includes(d) ? prev.departments.filter((x) => x !== d) : [...prev.departments, d] }));
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -4998,6 +5146,7 @@ function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
     e.preventDefault();
     if (!f.name.trim() || !f.email.trim()) return setError("Name and email are required.");
     if (isNew && f.password.length < 10) return setError("The temporary password must be at least 10 characters.");
+    if (f.role !== "admin" && !f.allDepartments && !f.departments.length) return setError("Tick the department(s) they work in, or All departments.");
     setSaving(true);
     setError("");
     try {
@@ -5031,6 +5180,24 @@ function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
           </select>
         </div>
       </div>
+      <div className="ac-field">
+        <label>Departments they can see</label>
+        {f.role === "admin" ? (
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>Admins see every department.</div>
+        ) : (
+          <div className="ac-dept-ticks">
+            <label className="ac-dept-tick all">
+              <input type="checkbox" checked={f.allDepartments} onChange={(e) => setF({ ...f, allDepartments: e.target.checked })} />
+              All departments <span>(e.g. partners, compliance)</span>
+            </label>
+            {!f.allDepartments && firmDepartments.map((d) => (
+              <label key={d} className="ac-dept-tick">
+                <input type="checkbox" checked={f.departments.includes(d)} onChange={() => toggleDept(d)} /> {areaName(d)}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
       {isNew && (
         <div className="ac-field">
           <label>Temporary password — give this to them; they can change it after logging in</label>
@@ -5049,7 +5216,7 @@ function StaffForm({ initial, users, selfId, onCancel, onSave, isNew }) {
   );
 }
 
-function StaffPanel({ users, currentUserId, onClose, onChanged }) {
+function StaffPanel({ users, currentUserId, onClose, onChanged, firmDepartments }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -5066,13 +5233,17 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
   }
 
   async function add(f) {
-    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password });
+    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password, departments: f.departments, allDepartments: f.allDepartments });
     setAdding(false);
     await afterChange({ text: `${f.name} added. Their login is ${f.email.trim().toLowerCase()} with temporary password:`, secret: f.password });
   }
 
   async function save(id, f) {
-    await api.updateUser(id, { name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null });
+    await api.updateUser(id, {
+      name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null,
+      // Only departments the firm still runs (one may have been switched off since).
+      departments: f.departments.filter((d) => firmDepartments.includes(d)), allDepartments: f.allDepartments,
+    });
     setEditingId(null);
     await afterChange({ text: `${f.name} updated.` });
   }
@@ -5129,7 +5300,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
         {adding ? (
           <div className="ac-staff-row">
             <div className="ac-staff-name">New staff member</div>
-            <StaffForm isNew users={users} onCancel={() => setAdding(false)} onSave={add} />
+            <StaffForm isNew users={users} firmDepartments={firmDepartments} onCancel={() => setAdding(false)} onSave={add} />
           </div>
         ) : (
           <button className="ac-newbtn" style={{ marginBottom: 14 }} onClick={() => { setAdding(true); setNotice(null); }}><Plus size={15} /> Add staff member</button>
@@ -5144,6 +5315,9 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
                 <div className="ac-staff-meta">
                   {ROLE_LABELS[u.role]}{u.supervisor_id ? ` · ${isSupportRole(u.role) ? "works for" : "supervised by"} ${nameOf(u.supervisor_id) || "—"}` : ""}
                 </div>
+                <div className="ac-staff-meta">
+                  {u.role === "admin" || u.all_departments ? "All departments" : (u.departments || []).map(areaName).join(", ") || "No departments"}
+                </div>
               </div>
               <span className={`ac-pill ${u.active ? "ac-pill--closed" : "ac-pill--setup"}`}>{u.active ? "Active" : "Deactivated"}</span>
             </div>
@@ -5151,7 +5325,8 @@ function StaffPanel({ users, currentUserId, onClose, onChanged }) {
               <StaffForm
                 users={users}
                 selfId={u.id}
-                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "" }}
+                firmDepartments={firmDepartments}
+                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "", departments: u.departments || [], allDepartments: !!u.all_departments }}
                 onCancel={() => setEditingId(null)}
                 onSave={(f) => save(u.id, f)}
               />

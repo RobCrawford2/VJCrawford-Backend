@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
+const { loadUserAccess } = require("../utils/permissions");
 
 /**
  * Verifies the Bearer token on every request to a protected route and
@@ -27,15 +28,11 @@ async function requireAuth(req, res, next) {
   }
 
   try {
-    const result = await query(
-      `SELECT id, firm_id, role, name, active FROM users WHERE id = $1`,
-      [payload.sub]
-    );
-    const user = result.rows[0];
+    const user = await loadUserAccess({ query }, payload.sub);
     if (!user || !user.active) {
       return res.status(401).json({ error: "Your account is no longer active. Please contact your administrator." });
     }
-    req.user = { id: user.id, firmId: user.firm_id, role: user.role, name: user.name };
+    req.user = user;
     next();
   } catch (err) {
     next(err);

@@ -145,7 +145,7 @@ test("deactivating a user or changing their role takes effect immediately", asyn
 
   // Role change: the token still says admin, but the demotion applies at once.
   assert.ok((await request(app).get("/matters").set(leaver)).body.matters.length > 0);
-  await request(app).patch(`/users/${created.body.id}`).set(david).send({ role: "fee_earner" });
+  await request(app).patch(`/users/${created.body.id}`).set(david).send({ role: "fee_earner", departments: ["conveyancing"] });
   const list = await request(app).get("/matters?limit=100").set(leaver);
   assert.equal(list.body.matters.length, 0, "demoted user still sees the whole firm's matters");
 
@@ -183,7 +183,7 @@ test("the firm's last active admin can't be demoted or deactivated", async () =>
   // With a second admin, demoting one of them is fine.
   const other = await request(app).post("/users").set(david)
     .send({ name: "Second Admin", email: "admin2@vjcrawfordconveyancing.co.uk", password: "second-admin-pw", role: "admin" });
-  assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor" })).status, 200);
+  assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor", departments: ["conveyancing"] })).status, 200);
 
   assert.equal((await request(app).patch(`/users/${davidId}`).set(david).send({ role: "boss" })).status, 400);
 });
@@ -457,7 +457,7 @@ test("staff management: admins add, edit, reset and deactivate staff, and it's a
   const sarahId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("sarah")}` })).body.id;
 
   const added = await request(app).post("/users").set(david)
-    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId });
+    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(added.status, 201);
   assert.equal(added.body.email, "starter@vjcrawfordconveyancing.co.uk");
   const id = added.body.id;
@@ -572,7 +572,7 @@ test("stage sign-off follows the chain: assistants request, the matter's fee ear
 
   // An assistant who works for Sarah
   const created = await request(app).post("/users").set(david)
-    .send({ name: "Amy Assistant", email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId });
+    .send({ name: "Amy Assistant", email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(created.status, 201);
   const amy = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1" })).body.token}` };
 
@@ -868,4 +868,88 @@ test("bank details: new details start unverified, replace the old ones, and only
 
   const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
   assert.equal((await request(app).post(base).set(marcus).send({ accountName: "X", sortCode: "111111", accountNumber: "11111111" })).status, 404);
+});
+
+test("departments: staff only see and open matters in their own departments", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+
+  const priyaList = (await request(app).get("/matters?limit=100").set(priya)).body.matters;
+  assert.ok(priyaList.length > 0 && priyaList.every((m) => m.department === "family"));
+  const family = priyaList[0];
+  assert.match(family.reference, /^FAM-/);
+  assert.ok(!(await request(app).get("/matters?limit=100").set(sarah)).body.matters.some((m) => m.department === "family"));
+  assert.equal((await request(app).get(`/matters/${family.id}`).set(sarah)).status, 404);
+  assert.equal((await request(app).post(`/matters/${family.id}/notes`).set(sarah).send({ text: "x" })).status, 404);
+  const all = (await request(app).get("/matters?limit=100").set(david)).body.matters;
+  assert.ok(all.some((m) => m.department === "family") && all.some((m) => m.department === "conveyancing"));
+  assert.ok((await request(app).get("/matters?department=family&limit=100").set(david)).body.matters.every((m) => m.department === "family"));
+
+  // Opening matters: only in your departments, with that department's types.
+  assert.equal((await request(app).post("/matters").set(sarah).send({ department: "family", address: "Divorce", client: "X", type: "Divorce" })).status, 403);
+  assert.equal((await request(app).post("/matters").set(priya).send({ department: "family", address: "Divorce", client: "X", type: "Purchase" })).status, 400);
+  assert.equal((await request(app).post("/matters").set(david).send({ department: "crime", address: "R v X", client: "X", type: "Crown Court" })).status, 400); // not switched on
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const created = await request(app).post("/matters").set(priya).send({ department: "family", address: "Child arrangements", client: "Y", type: "Children", feeEarnerId: priyaId });
+  assert.equal(created.status, 201);
+  assert.match(created.body.reference, /^FAM-\d{4}-\d{4}$/);
+
+  // Family has its own stages (9, ending in Closed) and no exchange checks.
+  const stages = (await request(app).get("/settings").set(priya)).body.areas.find((a) => a.key === "family").stages;
+  assert.equal(stages.at(-1), "Closed");
+  assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: stages.length })).status, 400);
+  assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: 7 })).status, 200);
+  const log = (await request(app).get(`/matters/${created.body.id}`).set(priya)).body.activity.map((a) => a.text);
+  assert.ok(log.includes(`Moved to ${stages[7]}`));
+  assert.equal((await request(app).patch(`/matters/${created.body.id}`).set(priya).send({ type: "Remortgage" })).status, 400);
+
+  // Can't give tasks to someone outside the department.
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+  assert.equal((await request(app).post(`/matters/${created.body.id}/tasks`).set(priya).send({ description: "x", assignedTo: sarahId })).status, 400);
+
+  // The upcoming-exchanges dashboard is conveyancing only.
+  assert.ok(!(await request(app).get("/matters/upcoming?days=60").set(david)).body.matters.some((m) => m.id === created.body.id));
+});
+
+test("departments: admins switch departments on for the firm and grant staff access, and it's audited", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+
+  const settings = (await request(app).get("/settings").set(david)).body;
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family"]);
+  assert.equal(settings.areas.length, 8);
+  assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
+  const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
+  assert.equal(off.status, 400); // family has matters
+  assert.match(off.body.error, /Family/);
+  const on = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client", "family", "employment"] });
+  assert.equal(on.status, 200);
+  assert.ok(on.body.departments.includes("employment"));
+
+  // Grant Sarah family: she can now open a family matter; take it away and she can't see it.
+  assert.equal((await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing", "nonsense"] })).status, 400);
+  assert.equal((await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: [] })).status, 400);
+  const granted = await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing", "family"] });
+  assert.deepEqual(granted.body.departments, ["conveyancing", "family"]);
+  const fam = await request(app).post("/matters").set(sarah).send({ department: "family", address: "Divorce", client: "Z", type: "Divorce", feeEarnerId: sarahId });
+  assert.equal(fam.status, 201);
+  assert.equal((await request(app).get(`/auth/me`).set(sarah)).body.departments.join(), "conveyancing,family");
+  await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing"] });
+  assert.equal((await request(app).get(`/matters/${fam.body.id}`).set(sarah)).status, 404);
+
+  // "All departments" (e.g. a partner) sees across departments without being admin.
+  const partner = await request(app).post("/users").set(david)
+    .send({ name: "Pat Partner", email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1", role: "supervisor", allDepartments: true });
+  assert.equal(partner.status, 201);
+  assert.equal((await request(app).post("/users").set(david)
+    .send({ name: "No Dept", email: "nodept@vjcrawfordconveyancing.co.uk", password: "nodept-pass-1", role: "fee_earner" })).status, 400);
+  await request(app).patch(`/users/${sarahId}`).set(david).send({ supervisorId: partner.body.id });
+  const pat = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1" })).body.token}` };
+  assert.equal((await request(app).get(`/matters/${fam.body.id}`).set(pat)).status, 200);
+
+  const audit = (await request(app).get("/users/audit").set(david)).body.map((a) => a.details);
+  assert.ok(audit.some((d) => d.includes("departments changed from Conveyancing to Conveyancing, Family")));
+  assert.ok(audit.some((d) => d.includes("all departments")));
 });

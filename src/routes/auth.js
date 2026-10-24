@@ -65,6 +65,7 @@ router.post(
         [firm.id, name, email.toLowerCase(), passwordHash]
       );
       const user = userResult.rows[0];
+      await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'conveyancing')`, [firm.id]);
 
       await client.query("COMMIT");
 
@@ -135,7 +136,11 @@ router.get(
     );
     if (!result.rows.length) return res.status(404).json({ error: "User not found." });
     const u = result.rows[0];
-    res.json({ id: u.id, name: u.name, email: u.email, role: u.role, firmId: u.firm_id, firmName: u.firm_name, domain: u.domain, staleDays: u.stale_days });
+    res.json({
+      id: u.id, name: u.name, email: u.email, role: u.role, firmId: u.firm_id, firmName: u.firm_name, domain: u.domain, staleDays: u.stale_days,
+      // Departments this person can work in (admins / "all departments": every one the firm runs).
+      allDepartments: req.user.allDepartments, departments: req.user.departments,
+    });
   })
 );
 

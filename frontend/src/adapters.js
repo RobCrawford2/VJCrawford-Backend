@@ -75,6 +75,7 @@ export function adaptMatter(m, users) {
   return {
     id: m.id,
     reference: m.reference,
+    department: m.department || "conveyancing",
     address: m.address,
     client: m.client,
     type: m.type,
@@ -202,6 +203,7 @@ function detailFields(f) {
 /** Converts the New Matter form's payload into the shape POST /matters expects. */
 export function toApiNewMatter(f) {
   return {
+    department: f.department || "conveyancing",
     address: f.address, client: f.client, type: f.type, price: f.price,
     feeEarnerId: f.feeEarnerId || null, supervisorId: f.supervisorId || null,
     otherSideSolicitor: f.parties?.otherSideSolicitor, otherSideSolicitorEmail: f.parties?.otherSideSolicitorEmail,

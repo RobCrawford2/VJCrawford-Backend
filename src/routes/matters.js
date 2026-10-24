@@ -4,12 +4,13 @@ const multer = require("multer");
 const { query, pool } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { matterVisibilityClause } = require("../utils/permissions");
+const { matterVisibilityClause, loadUserAccess, canUseDepartment } = require("../utils/permissions");
+const { AREAS, AREA_BY_KEY, stagesFor, CONVEYANCING_STAGES } = require("../config/areas");
 
 const router = express.Router();
 router.use(requireAuth); // every route below requires a valid logged-in user
 
-const { STAGE_NAMES, STAGE_COUNT, CLOSED_INDEX } = require("../utils/stages");
+const { STAGE_NAMES, CLOSED_INDEX } = require("../utils/stages"); // conveyancing (import only)
 const { ukToday } = require("../utils/dates");
 const { validateRows } = require("../utils/matterImport");
 const { buildReportOnTitle } = require("../reports/reportOnTitle");
@@ -90,22 +91,37 @@ async function loadMatterDetail(matterId) {
 }
 
 /**
- * Next free number for CV-<year>-NNNN references in this firm. Uses the
+ * Next free number for <prefix>-<year>-NNNN references in this firm (each
+ * department has its own prefix: CV for conveyancing, FAM for family…). Uses the
  * highest existing number rather than a count, so imported references (which
  * can have gaps or start high) never collide with newly created ones.
  */
-async function nextReferenceNumber(db, firmId, year) {
+async function nextReferenceNumber(db, firmId, year, prefix = "CV") {
   const result = await db.query(
-    `SELECT coalesce(max(substring(reference FROM '^CV-[0-9]{4}-([0-9]+)$')::int), 0) AS max
+    `SELECT coalesce(max(substring(reference FROM '^' || $3 || '-[0-9]{4}-([0-9]+)$')::int), 0) AS max
      FROM matters WHERE firm_id = $1 AND reference LIKE $2`,
-    [firmId, `CV-${year}-%`]
+    [firmId, `${prefix}-${year}-%`, prefix]
   );
   return result.rows[0].max + 1;
 }
 
-const formatReference = (year, n) => `CV-${year}-${String(n).padStart(4, "0")}`;
+const formatReference = (year, n, prefix = "CV") => `${prefix}-${year}-${String(n).padStart(4, "0")}`;
 
-const EXCHANGE_INDEX = STAGE_NAMES.indexOf("Exchange");
+/** SQL for "this matter's Closed stage index", which differs by department. */
+const CLOSED_INDEX_SQL = `(CASE m.department ${AREAS.map((a) => `WHEN '${a.key}' THEN ${a.stages.length - 1}`).join(" ")} END)`;
+
+/** A matter's department, type and stage names (for validating / naming stage moves). */
+async function matterStages(db, matterId) {
+  const m = (await db.query(`SELECT department, type, current_stage_index FROM matters WHERE id = $1`, [matterId])).rows[0];
+  if (!m) return null;
+  return { ...m, stages: stagesFor(m.department, m.type) };
+}
+
+function badStage(res, stages) {
+  return res.status(400).json({ error: `stageIndex must be between 0 and ${stages.length - 1}.` });
+}
+
+const EXCHANGE_INDEX = CONVEYANCING_STAGES.indexOf("Exchange");
 
 /**
  * Checks before a matter may move to Exchange or beyond (from before it),
@@ -117,12 +133,12 @@ async function exchangeBlockers(db, firmId, matterId, toStage) {
   const firm = (await db.query(`SELECT require_exchange_checks FROM firms WHERE id = $1`, [firmId])).rows[0];
   if (firm && firm.require_exchange_checks === false) return [];
   const m = (await db.query(
-    `SELECT current_stage_index, type, lender, pre_exchange_confirmed_by, deposit_received_date,
+    `SELECT current_stage_index, department, type, lender, pre_exchange_confirmed_by, deposit_received_date,
             to_char(mortgage_offer_expiry, 'YYYY-MM-DD') AS expiry, to_char(target_completion, 'YYYY-MM-DD') AS completion
      FROM matters WHERE id = $1`,
     [matterId]
   )).rows[0];
-  if (!m || m.current_stage_index >= EXCHANGE_INDEX) return [];
+  if (!m || m.department !== "conveyancing" || m.current_stage_index >= EXCHANGE_INDEX) return [];
 
   const reasons = [];
   if (!m.pre_exchange_confirmed_by) reasons.push("The pre-exchange review hasn't been confirmed.");
@@ -178,11 +194,10 @@ async function canSignOff(user, matterId) {
  * Returns { user } or { error }.
  */
 async function checkAssignee(db, firmId, matterId, assigneeId) {
-  const found = await db.query(`SELECT id, firm_id, role, name, active FROM users WHERE id = $1 AND firm_id = $2`, [assigneeId, firmId]);
-  const user = found.rows[0];
+  const user = await loadUserAccess(db, assigneeId, firmId);
   if (!user) return { error: "That person isn't a member of staff." };
   if (!user.active) return { error: `${user.name}'s account is deactivated.` };
-  const visibility = matterVisibilityClause({ id: user.id, role: user.role }, 3);
+  const visibility = matterVisibilityClause(user, 3);
   const visible = await db.query(
     `SELECT 1 FROM matters m WHERE m.id = $1 AND m.firm_id = $2 ${visibility.clause}`,
     [matterId, firmId, ...visibility.params]
@@ -218,6 +233,7 @@ router.get(
       limit = 20,
       offset = 0,
       type,
+      department,
       showClosed = "true",
       feeEarnerId,
       search,
@@ -239,8 +255,12 @@ router.get(
       params.push(type);
       conditions.push(`m.type = $${params.length}`);
     }
+    if (department && department !== "All") {
+      params.push(department);
+      conditions.push(`m.department = $${params.length}`);
+    }
     if (showClosed === "false") {
-      conditions.push(`m.current_stage_index <> ${CLOSED_INDEX}`);
+      conditions.push(`m.current_stage_index < ${CLOSED_INDEX_SQL}`);
     }
     if (feeEarnerId) {
       params.push(feeEarnerId);
@@ -286,11 +306,19 @@ router.post(
   asyncHandler(async (req, res) => {
     const { address, client, type, price, feeEarnerId, supervisorId, otherSideSolicitor, otherSideSolicitorEmail, estateAgent, lender, targetExchange, targetCompletion, mortgageOfferExpiry } = req.body;
 
+    const department = req.body.department || "conveyancing";
+    const area = AREA_BY_KEY[department];
     if (!address || !client || !type) {
       return res.status(400).json({ error: "address, client and type are required." });
     }
-    if (!["Sale", "Purchase", "Remortgage"].includes(type)) {
-      return res.status(400).json({ error: "type must be Sale, Purchase or Remortgage." });
+    if (!area) return res.status(400).json({ error: "Unknown department." });
+    if (!area.types.includes(type)) {
+      return res.status(400).json({ error: `type must be one of: ${area.types.join(", ")}.` });
+    }
+    const firmHas = await query(`SELECT 1 FROM firm_departments WHERE firm_id = $1 AND department = $2`, [req.user.firmId, department]);
+    if (!firmHas.rows.length) return res.status(400).json({ error: `The firm doesn't have a ${area.name} department switched on.` });
+    if (!canUseDepartment(req.user, department)) {
+      return res.status(403).json({ error: `You don't have access to the ${area.name} department.` });
     }
     if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
@@ -301,7 +329,7 @@ router.post(
     // unique (firm_id, reference) constraint turns that into a 409 retry
     // rather than a duplicate.
     const year = new Date().getFullYear();
-    const reference = formatReference(year, await nextReferenceNumber({ query }, req.user.firmId, year));
+    const reference = formatReference(year, await nextReferenceNumber({ query }, req.user.firmId, year, area.prefix), area.prefix);
 
     const client_ = await pool.connect();
     try {
@@ -310,12 +338,12 @@ router.post(
         `INSERT INTO matters (
            firm_id, reference, address, client, type, price, fee_earner_id, supervisor_id,
            other_side_solicitor, other_side_solicitor_email, estate_agent, lender,
-           date_instructed, target_exchange, target_completion, mortgage_offer_expiry
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CURRENT_DATE, $13,$14,$15)
+           date_instructed, target_exchange, target_completion, mortgage_offer_expiry, department
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CURRENT_DATE, $13,$14,$15,$16)
          RETURNING *`,
         [req.user.firmId, reference, address, client, type, price || null, feeEarnerId || null, supervisorId || null,
          otherSideSolicitor || null, otherSideSolicitorEmail || null, estateAgent || null, lender || null,
-         targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null]
+         targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null, department]
       );
       let matter = result.rows[0];
       const extras = EXTRA_CREATE_FIELDS.filter((k) => req.body[k] !== undefined && req.body[k] !== "");
@@ -446,6 +474,7 @@ router.get(
               (SELECT count(*) FROM searches x WHERE x.matter_id = m.id AND x.date_received IS NULL)::int AS searches_awaited
        FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
        WHERE m.firm_id = $1 ${visibility.clause}
+         AND m.department = 'conveyancing'
          AND m.current_stage_index < ${CLOSED_INDEX}
          AND (
            (m.actual_exchange IS NULL AND m.target_exchange <= CURRENT_DATE + $2::int)
@@ -470,7 +499,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const result = await query(
       `SELECT r.id, r.matter_id, r.from_stage, r.to_stage, r.note, r.requested_at,
-              rq.name AS requested_by_name, m.reference, m.address, m.client
+              rq.name AS requested_by_name, m.reference, m.address, m.client, m.department, m.type
        FROM stage_requests r
        JOIN matters m ON m.id = r.matter_id
        LEFT JOIN users fe ON fe.id = m.fee_earner_id
@@ -480,7 +509,10 @@ router.get(
        ORDER BY r.requested_at ASC`,
       [req.user.firmId, req.user.role, req.user.id]
     );
-    res.json(result.rows.map((r) => ({ ...r, to_stage_name: STAGE_NAMES[r.to_stage], from_stage_name: STAGE_NAMES[r.from_stage] })));
+    res.json(result.rows.map((r) => {
+      const names = stagesFor(r.department, r.type);
+      return { ...r, to_stage_name: names[r.to_stage], from_stage_name: names[r.from_stage] };
+    }));
   })
 );
 
@@ -714,6 +746,11 @@ router.patch(
     if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
     }
+    if (req.body.type !== undefined) {
+      const { department } = await matterStages({ query }, req.params.id);
+      const types = AREA_BY_KEY[department].types;
+      if (!types.includes(req.body.type)) return res.status(400).json({ error: `type must be one of: ${types.join(", ")}.` });
+    }
     if (req.body.costs !== undefined) {
       const ok = Array.isArray(req.body.costs) && req.body.costs.length <= 50 && req.body.costs.every((c) =>
         c && typeof c.description === "string" && c.description.trim() && Number.isFinite(Number(c.amount)) && Number(c.amount) >= 0);
@@ -755,9 +792,8 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { stageIndex } = req.body;
-    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= STAGE_COUNT) {
-      return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
-    }
+    const { stages } = await matterStages({ query }, req.params.id);
+    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= stages.length) return badStage(res, stages);
 
     const blockers = await exchangeBlockers({ query }, req.user.firmId, req.params.id, stageIndex);
     if (blockers.length) return blockedResponse(res, blockers);
@@ -784,7 +820,7 @@ router.post(
     );
     await query(
       `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage',$3)`,
-      [req.params.id, req.user.id, `Moved to ${STAGE_NAMES[stageIndex]}`]
+      [req.params.id, req.user.id, `Moved to ${stages[stageIndex]}`]
     );
     res.json(result.rows[0]);
   })
@@ -800,9 +836,8 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { stageIndex, note = "" } = req.body;
-    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= STAGE_COUNT) {
-      return res.status(400).json({ error: `stageIndex must be between 0 and ${STAGE_COUNT - 1}.` });
-    }
+    const { stages } = await matterStages({ query }, req.params.id);
+    if (typeof stageIndex !== "number" || stageIndex < 0 || stageIndex >= stages.length) return badStage(res, stages);
     const client_ = await pool.connect();
     try {
       await client_.query("BEGIN");
@@ -826,7 +861,7 @@ router.post(
         [req.params.id, matter.current_stage_index, stageIndex, String(note).trim(), req.user.id]
       );
       await logActivity(client_, req.params.id, req.user.id, "signoff",
-        `Sign-off requested to move to ${STAGE_NAMES[stageIndex]}${String(note).trim() ? ` — ${String(note).trim()}` : ""}`);
+        `Sign-off requested to move to ${stages[stageIndex]}${String(note).trim() ? ` — ${String(note).trim()}` : ""}`);
       await client_.query("COMMIT");
       res.status(201).json(created.rows[0]);
     } catch (err) {
@@ -874,7 +909,7 @@ router.post(
         `UPDATE stage_requests SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
         [approve ? "approved" : "declined", req.user.id, String(note).trim(), request.id]
       );
-      const stageName = STAGE_NAMES[request.to_stage];
+      const stageName = (await matterStages(client_, req.params.id)).stages[request.to_stage];
       if (approve) {
         const blockers = await exchangeBlockers(client_, req.user.firmId, req.params.id, request.to_stage);
         if (blockers.length) {
@@ -912,7 +947,7 @@ router.delete(
     );
     if (!result.rows.length) return res.status(404).json({ error: "No waiting request of yours to withdraw." });
     await query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'signoff',$3)`,
-      [req.params.id, req.user.id, `Sign-off request to move to ${STAGE_NAMES[result.rows[0].to_stage]} withdrawn`]);
+      [req.params.id, req.user.id, `Sign-off request to move to ${(await matterStages({ query }, req.params.id)).stages[result.rows[0].to_stage]} withdrawn`]);
     res.status(204).send();
   })
 );

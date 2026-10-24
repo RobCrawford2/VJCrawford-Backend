@@ -22,6 +22,14 @@ with the interface itself barely changing.
 - **Server-enforced** role-based visibility: fee earners see their own
   matters, supervisors see their team's, admins see everything in the
   firm — enforced in every query, not just filtered in the UI.
+- **Departments** (areas of law): Conveyancing, Wills Trusts & Probate,
+  Family, Employment, Litigation, Personal Injury, Corporate & Commercial
+  and Criminal — each with its own matter types, stages and reference
+  prefix (`src/config/areas.js`). Admins switch on the departments the
+  firm runs and give each member of staff access to one or more of them
+  (or "all departments", e.g. partners). Everyone except admins and
+  all-departments staff only sees matters in their own departments, on top
+  of the role rules above — again enforced in every query.
 - Server-side pagination and search on the matter list.
 - A seed script that loads the same demo data (Faulkner purchase + linked
   sale, the Whitfield "problem file", etc.) used in the frontend prototype.
@@ -122,8 +130,8 @@ All routes except `/auth/register` and `/auth/login` require
 | POST | `/auth/login` | Log in, get a token |
 | GET | `/auth/me` | Current user + firm details |
 | POST | `/auth/change-password` | Change your own password (`currentPassword`, `newPassword`) |
-| GET | `/matters?limit=&offset=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
-| POST | `/matters` | Create a matter |
+| GET | `/matters?limit=&offset=&department=&type=&showClosed=&feeEarnerId=&search=` | Paginated, filtered matter list |
+| POST | `/matters` | Create a matter (`department` defaults to conveyancing; `type` must be one of that department's types) |
 | POST | `/matters/import` | Bulk import (admin only) — `{ rows, dryRun }`, rows keyed by spreadsheet header; validates every row, all-or-nothing, max 1000 rows |
 | GET | `/matters/:id` | Full matter detail, all sub-resources included |
 | PATCH | `/matters/:id` | Update matter fields |
@@ -164,10 +172,10 @@ All routes except `/auth/register` and `/auth/login` require
 | PATCH | `/matters/:id/tasks/:tid/complete` \| `/reopen` | Complete / reopen |
 | PUT/DELETE | `/matters/:id/links/:linkedId` | Link / unlink a matter chain |
 | GET | `/users` | List staff (for fee-earner pickers) |
-| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active (admin only) |
+| POST/PATCH | `/users` | Add / update staff — name, email, role, supervisor, active, `departments`, `allDepartments` (admin only) |
 | POST | `/users/:id/reset-password` | Set a temporary password for a member of staff (admin only) |
 | GET | `/users/audit` | Recent staff account changes (admin only) |
-| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold, `requireStageSignoff`) |
+| GET/PATCH | `/settings` | Firm-level settings (domain, review threshold, `requireStageSignoff`, `departments`); GET also lists every department's types and stages (`areas`) |
 
 ## Connecting the React frontend to this API
 

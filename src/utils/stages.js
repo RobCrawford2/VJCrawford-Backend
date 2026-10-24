@@ -1,8 +1,7 @@
-// Must match STAGES in frontend/src/App.jsx (same order — the index is what's stored).
-const STAGE_NAMES = [
-  "Instructed", "ID & AML Checks", "Contract Pack", "Searches", "Enquiries",
-  "Mortgage Offer", "Report on Title", "Pre-Exchange Review", "Exchange", "Completion",
-  "Post-Completion", "Closed",
-];
+// Conveyancing stages (the original workflow). Other departments' stages
+// are in src/config/areas.js — use stagesFor(department, type) there.
+const { CONVEYANCING_STAGES } = require("../config/areas");
+
+const STAGE_NAMES = CONVEYANCING_STAGES;
 
 module.exports = { STAGE_NAMES, STAGE_COUNT: STAGE_NAMES.length, CLOSED_INDEX: STAGE_NAMES.length - 1 };
