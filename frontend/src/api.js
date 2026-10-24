@@ -116,6 +116,9 @@ export const api = {
   getTasks: (mine) => request(`/tasks${mine ? "?mine=true" : ""}`),
   getUpcoming: (days = 7) => request(`/matters/upcoming?days=${days}`),
   getUndertakings: (status) => request(`/undertakings${status ? `?status=${status}` : ""}`),
+  addDeadline: (id, payload) => request(`/matters/${id}/deadlines`, { method: "POST", body: payload }),
+  updateDeadline: (id, deadlineId, patch) => request(`/matters/${id}/deadlines/${deadlineId}`, { method: "PATCH", body: patch }),
+  getDiary: (days, mine) => request(`/deadlines?days=${days}${mine ? "&mine=true" : ""}`),
   conflictCheck: (names, { excludeClientIds = [], matterId } = {}) =>
     request("/clients/conflict-check", { method: "POST", body: { names, excludeClientIds, matterId } }),
   getClients: (search) => request(`/clients${search ? `?search=${encodeURIComponent(search)}` : ""}`),

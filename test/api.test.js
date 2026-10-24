@@ -1046,3 +1046,51 @@ test("client records: ID / AML checks are validated and noted on the client's ma
   assert.equal(edited.status, 400);
   assert.equal((await request(app).patch(`/clients/${whitfield.id}`).set(marcus).send({ phone: "07700 900111" })).body.phone, "07700 900111");
 });
+
+test("diary: deadlines are added, moved, completed and logged; the diary shows the team's, by visibility", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const family = (await request(app).get("/matters?limit=100").set(priya)).body.matters.find((m) => m.reference === "FAM-2026-0001");
+  const base = `/matters/${family.id}/deadlines`;
+  const soon = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const later = new Date(Date.now() + 40 * 86400000).toISOString().slice(0, 10);
+
+  assert.equal((await request(app).post(base).set(priya).send({ title: "", dueDate: soon })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ title: "FDR", dueDate: soon, dueTime: "25:00" })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ title: "FDR", dueDate: soon, kind: "party" })).status, 400);
+  const fdr = await request(app).post(base).set(priya).send({ title: "FDR appointment", kind: "hearing", dueDate: soon, dueTime: "10:00", location: "Bristol Civil & Family Justice Centre", critical: true });
+  assert.equal(fdr.status, 201);
+  assert.equal(fdr.body.due_date, soon);
+  assert.equal(fdr.body.due_time, "10:00");
+  await request(app).post(base).set(priya).send({ title: "Form E exchange", kind: "court_deadline", dueDate: later, critical: true });
+
+  // The diary: due within the window (and overdue); Sarah can't see family deadlines; the supervisor (admin) can.
+  const diary = (await request(app).get("/deadlines?days=14").set(priya)).body;
+  assert.ok(diary.deadlines.some((d) => d.id === fdr.body.id && d.reference === "FAM-2026-0001"));
+  assert.ok(!diary.deadlines.some((d) => d.title === "Form E exchange"));
+  assert.ok((await request(app).get("/deadlines?days=60").set(priya)).body.deadlines.some((d) => d.title === "Form E exchange"));
+  assert.ok(!(await request(app).get("/deadlines?days=60").set(sarah)).body.deadlines.some((d) => d.matter_id === family.id));
+  assert.ok((await request(app).get("/deadlines?days=60").set(david)).body.deadlines.some((d) => d.id === fdr.body.id));
+  assert.ok(!(await request(app).get("/deadlines?days=60&mine=true").set(david)).body.deadlines.some((d) => d.id === fdr.body.id));
+  assert.equal((await request(app).post(base).set(sarah).send({ title: "x", dueDate: soon })).status, 404);
+
+  // Move it, mark it done (drops off the diary), reopen; all logged.
+  const moved = await request(app).patch(`${base}/${fdr.body.id}`).set(priya).send({ dueDate: later });
+  assert.equal(moved.body.due_date, later);
+  const done = await request(app).patch(`${base}/${fdr.body.id}`).set(priya).send({ status: "done" });
+  assert.equal(done.body.status, "done");
+  assert.ok(!(await request(app).get("/deadlines?days=60").set(priya)).body.deadlines.some((d) => d.id === fdr.body.id));
+  const detail = (await request(app).get(`/matters/${family.id}`).set(priya)).body;
+  assert.equal(detail.deadlines.find((d) => d.id === fdr.body.id).done_by_name, "Priya Shah");
+  const log = detail.activity.map((a) => a.text);
+  assert.ok(log.includes(`Diary: FDR appointment — ${soon} (critical)`));
+  assert.ok(log.includes(`Diary: FDR appointment — moved from ${soon} to ${later}`));
+  assert.ok(log.includes("Diary: FDR appointment — done"));
+  assert.equal((await request(app).delete(`${base}/${fdr.body.id}`).set(priya)).status, 204);
+
+  // Common deadlines per department come with the settings.
+  const areas = (await request(app).get("/settings").set(priya)).body.areas;
+  const pi = areas.find((a) => a.key === "personal_injury").deadlines;
+  assert.deepEqual(pi[0].rule, { from: "Date of accident or date of knowledge", years: 3 });
+});

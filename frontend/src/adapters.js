@@ -143,6 +143,10 @@ export function adaptMatter(m, users) {
     // Client records linked to the matter (the firm-wide register), and the other parties.
     clients: (m.clients || []).map(adaptClient),
     otherParties: (m.parties || []).map((p) => ({ id: p.id, name: p.name, role: p.role, notes: p.notes || "" })),
+    deadlines: (m.deadlines || []).map((d) => ({
+      id: d.id, kind: d.kind, title: d.title, dueDate: d.due_date, dueTime: d.due_time || "", location: d.location || "",
+      notes: d.notes || "", critical: !!d.critical, status: d.status, doneByName: d.done_by_name || "", doneAt: d.done_at,
+    })),
     conflictCheck: m.conflict_checked_at
       ? { at: m.conflict_checked_at, byId: m.conflict_checked_by, note: m.conflict_check_note || "" }
       : null,

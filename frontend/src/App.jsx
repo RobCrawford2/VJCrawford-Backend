@@ -13,6 +13,7 @@ import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
 import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
+import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -351,6 +352,13 @@ function needsAttention(matter, staleDays = 14) {
   } else if (outstandingUndertakings.length) {
     reasons.push("Undertaking not yet discharged");
   }
+  for (const d of (matter.deadlines || []).filter((x) => x.status === "open")) {
+    const left = daysUntil(d.dueDate);
+    if (left < 0) reasons.push(d.critical
+      ? `Deadline missed: ${d.title} (${formatDate(d.dueDate)})`
+      : `Diary date passed: ${d.title} (${formatDate(d.dueDate)}) — mark it done or move it`);
+    else if (urgency(d) === "soon") reasons.push(`${d.critical ? "Critical deadline" : "Deadline"} ${left === 0 ? "today" : `in ${left} day${left === 1 ? "" : "s"}`}: ${d.title} (${formatDate(d.dueDate)})`);
+  }
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
@@ -522,6 +530,7 @@ export default function App() {
   const [showStaff, setShowStaff] = useState(false);
   const [showUndertakings, setShowUndertakings] = useState(false);
   const [clientsPanel, setClientsPanel] = useState(null); // null | { clientId }
+  const [showDiary, setShowDiary] = useState(false);
   const [homeRefresh, setHomeRefresh] = useState(0);
   const [editingItem, setEditingItem] = useState(null); // { kind, item }
   const [stageRequestDraft, setStageRequestDraft] = useState(null);
@@ -1290,12 +1299,31 @@ export default function App() {
         .ac-client-listrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 9px 12px; margin-bottom: 6px; font-size: 13px; color: var(--ink); }
         .ac-client-listrow:hover { border-color: var(--brass); }
         .ac-client-listrow .meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+        .ac-deadline { display: flex; gap: 14px; align-items: center; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 3px; padding: 10px 12px; margin-bottom: 8px; }
+        .ac-deadline.compact { background: none; border-width: 0 0 1px 4px; border-bottom-style: dashed; border-radius: 0; padding: 8px 10px; margin-bottom: 0; }
+        .ac-deadline .when { width: 150px; flex-shrink: 0; }
+        .ac-deadline .date { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+        .ac-deadline .left { font-size: 11.5px; color: var(--slate); }
+        .ac-deadline .title { font-size: 13px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 5px; }
+        .ac-deadline .meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+        .ac-deadline .actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+        .ac-deadline.critical { border-left-color: var(--brass); }
+        .ac-deadline.soon { border-left-color: #c97a2e; }
+        .ac-deadline.soon .left { color: #8a3b1f; font-weight: 600; }
+        .ac-deadline.overdue { border-left-color: var(--danger); background: #fdf1ea; }
+        .ac-deadline.overdue .left, .ac-deadline.overdue .title svg { color: var(--danger); font-weight: 700; }
+        .ac-deadline.critical .title svg { color: #8a3b1f; }
+        .ac-deadline.done { opacity: 0.65; }
+        @media (max-width: 700px) { .ac-deadline { flex-wrap: wrap; } .ac-deadline .when { width: auto; } }
         .ac-deptselect { width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--card); font-size: 13px; font-weight: 600; color: var(--ink); }
         .ac-depttag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); background: var(--brass-bg); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
         .ac-detail-body.ac-money { grid-template-columns: 1fr 1fr; }
         .ac-topbtn { display: inline-flex; align-items: center; gap: 6px; position: relative; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); padding: 5px 8px; }
         .ac-topbtn .ac-badge { position: static; margin-left: 1px; }
-        @media (max-width: 1200px) { .ac-topbtn .lbl { display: none; } }
+        @media (max-width: 1560px) { .ac-topstats, .ac-brand span.tag { display: none; } }
+        .ac-brand h1, .ac-account-name, .ac-account-btn { white-space: nowrap; }
+        @media (max-width: 1360px) { .ac-account-btn span { display: none; } }
+        @media (max-width: 1150px) { .ac-topbtn .lbl { display: none; } }
         .ac-card-edit {
           position: absolute; top: 12px; right: 14px; display: inline-flex; align-items: center; gap: 4px;
           background: none; border: 1px solid transparent; border-radius: 3px; padding: 2px 7px; font-size: 11.5px; color: var(--slate);
@@ -1686,6 +1714,9 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setShowDiary(true)} title="Hearings and deadlines diary">
+            <Calendar size={17} /><span className="lbl">Diary</span>
+          </button>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setClientsPanel({ clientId: null })} title="Client register and conflict checks">
             <Users size={17} /><span className="lbl">Clients</span>
           </button>
@@ -1832,6 +1863,7 @@ export default function App() {
                 </div>
               )}
 
+              <DiaryCard refreshKey={homeRefresh} showDepartment={myDepartments.length > 1} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("diary"); }} />
               {conveyancingUser && <ThisWeekCard refreshKey={homeRefresh} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />}
 
               {(() => {
@@ -2028,6 +2060,13 @@ export default function App() {
           users={users}
           onClose={() => setShowStandardTasks(false)}
           onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
+        />
+      )}
+      {showDiary && (
+        <DiaryPanel
+          onClose={() => setShowDiary(false)}
+          onOpenMatter={(id) => { setSelectedId(id); setActiveTab("diary"); }}
+          showDepartment={myDepartments.length > 1}
         />
       )}
       {clientsPanel && (
@@ -2608,6 +2647,7 @@ function CardEdit({ onClick }) {
 /** Where to go to deal with a "Needs attention" item. */
 function attentionAction(reason, matter) {
   const r = reason.toLowerCase();
+  if (r.startsWith("deadline") || r.startsWith("critical deadline") || r.startsWith("diary date")) return { label: "Diary", tab: "diary" };
   if (r.includes("client id not checked")) return { label: "ID check", scroll: "client-records" };
   if (r.includes("bank details")) return { label: "Bank details", tab: "money" };
   if (r.includes("undertaking")) return { label: "Undertakings", tab: "undertakings" };
@@ -2869,6 +2909,12 @@ function GeneralStageFocus({ matter, stage, setActiveTab, onEdit }) {
         {openTasks ? `${openTasks} open task${openTasks === 1 ? "" : "s"}${overdue ? `, ${overdue} overdue` : ""}` : "No open tasks"}
       </FocusItem>
       {openUndertakings > 0 && <FocusItem ok={false} action="Undertakings" onAction={() => setActiveTab("undertakings")}>{openUndertakings} undertaking{openUndertakings === 1 ? "" : "s"} outstanding</FocusItem>}
+      {(() => {
+        const next = matter.deadlines.filter((d) => d.status === "open").sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+        return next
+          ? <FocusItem ok={urgency(next) === "upcoming"} action="Diary" onAction={() => setActiveTab("diary")}>Next in diary: {next.title} — {formatDate(next.dueDate)}</FocusItem>
+          : <FocusItem ok={false} action="Diary" onAction={() => setActiveTab("diary")}>No hearings or deadlines in the diary</FocusItem>;
+      })()}
       {next && <div className="ac-focus-hint" style={{ marginTop: 10, marginBottom: 0 }}>Next stage: {next.name}</div>}
     </div>
   );
@@ -3016,6 +3062,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
         <div className="ac-tabs">
           {[
             ["overview", <><Clock size={13} /> Overview</>],
+            ["diary", <><Calendar size={13} /> Diary ({matter.deadlines.filter((d) => d.status === "open").length})</>],
             ...(conv ? [
               ["money", <><PoundSterling size={13} /> Money</>],
               ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
@@ -3206,6 +3253,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {conv && <DocumentsCard matter={matter} onGenerate={onGenerateDocument} onReportOnTitle={onReportOnTitle} />}
           </div>
         </div>
+      )}
+
+      {activeTab === "diary" && (
+        <DiaryTab matter={matter} onChanged={onMatterChanged} onDelete={(d) => onDeleteItem("deadlines", d, `diary entry “${d.title}”`)} />
       )}
 
       {activeTab === "money" && (

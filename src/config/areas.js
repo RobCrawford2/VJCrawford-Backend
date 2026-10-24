@@ -98,6 +98,69 @@ const AREAS = [
   },
 ];
 
+/**
+ * Common deadlines per department, offered when adding to the diary. A
+ * `rule` works the due date out from a starting date the user enters:
+ * add years / months / weeks / days, then (endOfMonth) move to the last day
+ * of that month. These are a guide — the fee earner checks the rules that
+ * apply to the case (and, for limitation, the date of knowledge,
+ * extensions and the like).
+ */
+const HEARING = { title: "Court / tribunal hearing", kind: "hearing", critical: true };
+const DEADLINES = {
+  conveyancing: [
+    { title: "Completion", kind: "other", critical: true },
+    { title: "Contract deadline from the other side", kind: "other" },
+  ],
+  private_client: [
+    { title: "IHT payment due (end of the 6th month after death)", kind: "filing", critical: true, rule: { from: "Date of death", months: 6, endOfMonth: true } },
+    { title: "IHT account (IHT400) due (12 months after the end of the month of death)", kind: "filing", critical: true, rule: { from: "Date of death", months: 12, endOfMonth: true } },
+    { title: "Inheritance Act claim period ends (6 months after the grant)", kind: "limitation", critical: true, rule: { from: "Date of grant", months: 6 } },
+    { title: "Section 27 notice period ends (2 months)", kind: "other", rule: { from: "Date notice published", months: 2 } },
+    { title: "LPA registration follow-up", kind: "other", rule: { from: "Date sent to OPG", weeks: 20 } },
+  ],
+  family: [
+    { title: "Earliest conditional order application (20 weeks after issue)", kind: "court_deadline", rule: { from: "Date divorce issued", weeks: 20 } },
+    { title: "Earliest final order application (6 weeks and 1 day after conditional order)", kind: "court_deadline", rule: { from: "Date of conditional order", weeks: 6, days: 1 } },
+    { title: "Form E exchange", kind: "court_deadline", critical: true },
+    { title: "First appointment", kind: "hearing", critical: true },
+    { title: "FDR appointment", kind: "hearing", critical: true },
+    HEARING,
+  ],
+  employment: [
+    { title: "Tribunal time limit (3 months less one day — extend for ACAS once certificate received)", kind: "limitation", critical: true, rule: { from: "Date of the act complained of / dismissal", months: 3, days: -1 } },
+    { title: "ET3 response due (28 days)", kind: "court_deadline", critical: true, rule: { from: "Date the claim was sent to the employer", days: 28 } },
+    { title: "Disclosure / witness statements (tribunal order)", kind: "court_deadline", critical: true },
+    HEARING,
+  ],
+  litigation: [
+    { title: "Limitation date — contract / tort (6 years)", kind: "limitation", critical: true, rule: { from: "Date of breach or damage", years: 6 } },
+    { title: "Serve the claim form (4 months after issue)", kind: "court_deadline", critical: true, rule: { from: "Date claim issued", months: 4 } },
+    { title: "Defence due (28 days after service of particulars, if acknowledged)", kind: "court_deadline", critical: true, rule: { from: "Date particulars deemed served", days: 28 } },
+    { title: "Directions deadline (court order)", kind: "court_deadline", critical: true },
+    HEARING,
+  ],
+  personal_injury: [
+    { title: "Limitation date (3 years)", kind: "limitation", critical: true, rule: { from: "Date of accident or date of knowledge", years: 3 } },
+    { title: "Limitation for a child (21st birthday)", kind: "limitation", critical: true, rule: { from: "Child's date of birth", years: 21 } },
+    { title: "Defendant to acknowledge letter of claim (21 days)", kind: "other", rule: { from: "Date letter of claim sent", days: 21 } },
+    { title: "Liability decision due (3 months after acknowledgment)", kind: "other", rule: { from: "Date of acknowledgment", months: 3 } },
+    HEARING,
+  ],
+  corporate: [
+    { title: "Completion", kind: "other", critical: true },
+    { title: "Companies House: share allotment (SH01) due — 1 month", kind: "filing", critical: true, rule: { from: "Date of allotment", months: 1 } },
+    { title: "Companies House: change of officers due — 14 days", kind: "filing", rule: { from: "Date of change", days: 14 } },
+  ],
+  crime: [
+    HEARING,
+    { title: "Custody time limit — magistrates' court (56 days)", kind: "limitation", critical: true, rule: { from: "Date of first appearance", days: 56 } },
+    { title: "Custody time limit — Crown Court (182 days)", kind: "limitation", critical: true, rule: { from: "Date sent to the Crown Court", days: 182 } },
+    { title: "Appeal to the Court of Appeal (28 days)", kind: "court_deadline", critical: true, rule: { from: "Date of conviction / sentence", days: 28 } },
+  ],
+};
+for (const area of AREAS) area.deadlines = DEADLINES[area.key] || [];
+
 const AREA_BY_KEY = Object.fromEntries(AREAS.map((a) => [a.key, a]));
 const AREA_KEYS = AREAS.map((a) => a.key);
 

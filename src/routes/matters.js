@@ -32,7 +32,7 @@ function logActivity(client, matterId, userId, type, text) {
  * column so it's cheap even on a large caseload.
  */
 async function loadMatterDetail(matterId) {
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties, deadlines] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -76,6 +76,11 @@ async function loadMatterDetail(matterId) {
       [matterId]
     ),
     query(`SELECT * FROM matter_parties WHERE matter_id = $1 ORDER BY created_at`, [matterId]),
+    query(
+      `SELECT d.*, to_char(d.due_date, 'YYYY-MM-DD') AS due_date, to_char(d.due_time, 'HH24:MI') AS due_time, u.name AS done_by_name
+       FROM deadlines d LEFT JOIN users u ON u.id = d.done_by WHERE d.matter_id = $1 ORDER BY d.due_date, d.due_time NULLS FIRST`,
+      [matterId]
+    ),
   ]);
 
   if (!matter.rows.length) return null;
@@ -97,6 +102,7 @@ async function loadMatterDetail(matterId) {
     bankDetails: bank.rows,
     clients: clients.rows,
     parties: parties.rows,
+    deadlines: deadlines.rows,
   };
 }
 
@@ -1896,6 +1902,74 @@ router.post(
   })
 );
 
+// -----------------------------------------------------------------------
+// Diary: hearings, limitation dates and other deadlines on the matter
+// -----------------------------------------------------------------------
+const DEADLINE_KINDS = ["hearing", "limitation", "court_deadline", "filing", "other"];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function checkDeadline(b, partial) {
+  if ((!partial || b.title !== undefined) && !String(b.title || "").trim()) return "Give the deadline a title.";
+  if ((!partial || b.dueDate !== undefined) && !DATE_RE.test(String(b.dueDate || ""))) return "Enter the due date.";
+  if (b.dueTime && !TIME_RE.test(b.dueTime)) return "The time should look like 10:30.";
+  if (b.kind !== undefined && !DEADLINE_KINDS.includes(b.kind)) return `kind must be one of: ${DEADLINE_KINDS.join(", ")}.`;
+  if (b.status !== undefined && !["open", "done"].includes(b.status)) return "status must be open or done.";
+  return null;
+}
+const SELECT_DEADLINE = `*, to_char(due_date, 'YYYY-MM-DD') AS due_date, to_char(due_time, 'HH24:MI') AS due_time`;
+
+router.post(
+  "/:id/deadlines",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const b = req.body;
+    const problem = checkDeadline(b, false);
+    if (problem) return res.status(400).json({ error: problem });
+    const result = await query(
+      `INSERT INTO deadlines (matter_id, kind, title, due_date, due_time, location, notes, critical, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${SELECT_DEADLINE}`,
+      [req.params.id, b.kind || "other", String(b.title).trim(), b.dueDate, b.dueTime || null, b.location || null, b.notes || null, !!b.critical, req.user.id]
+    );
+    await logActivity({ query }, req.params.id, req.user.id, "note", `Diary: ${String(b.title).trim()} — ${b.dueDate}${b.critical ? " (critical)" : ""}`);
+    res.status(201).json(result.rows[0]);
+  })
+);
+
+router.patch(
+  "/:id/deadlines/:deadlineId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const b = req.body;
+    const problem = checkDeadline(b, true);
+    if (problem) return res.status(400).json({ error: problem });
+    const current = (await query(`SELECT *, to_char(due_date, 'YYYY-MM-DD') AS due_str FROM deadlines WHERE id = $1 AND matter_id = $2`, [req.params.deadlineId, req.params.id])).rows[0];
+    if (!current) return res.status(404).json({ error: "Deadline not found." });
+    const map = { kind: "kind", title: "title", dueDate: "due_date", dueTime: "due_time", location: "location", notes: "notes", critical: "critical" };
+    const sets = [];
+    const params = [];
+    for (const [k, col] of Object.entries(map)) {
+      if (b[k] === undefined) continue;
+      params.push(k === "critical" ? !!b[k] : b[k] === "" ? null : typeof b[k] === "string" ? b[k].trim() : b[k]);
+      sets.push(`${col} = $${params.length}`);
+    }
+    if (b.status !== undefined) {
+      params.push(b.status); sets.push(`status = $${params.length}`);
+      sets.push(b.status === "done" ? `done_at = now(), done_by = $${params.push(req.user.id)}` : "done_at = NULL, done_by = NULL");
+    }
+    if (!sets.length) return res.status(400).json({ error: "No recognised fields to update." });
+    params.push(current.id);
+    const result = await query(`UPDATE deadlines SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${SELECT_DEADLINE}`, params);
+    const row = result.rows[0];
+    const what = b.status === "done" && current.status !== "done" ? "done"
+      : b.status === "open" && current.status === "done" ? "reopened"
+      : b.dueDate && b.dueDate !== current.due_str ? `moved from ${current.due_str} to ${b.dueDate}` : "edited";
+    await logActivity({ query }, req.params.id, req.user.id, "note", `Diary: ${row.title} — ${what}`);
+    res.json(row);
+  })
+);
+
+deleteRoute("/:id/deadlines/:deadlineId", "deadlines", "deadlineId", "Deadline", (d) => `diary entry "${d.title}"`);
 deleteRoute("/:id/parties/:partyId", "matter_parties", "partyId", "Party", (p) => `${p.role.toLowerCase()} "${p.name}"`);
 deleteRoute("/:id/documents/:documentId", "documents", "documentId", "Document", (d) => `document "${d.name}"${d.file_name ? " and its file" : ""}`);
 deleteRoute("/:id/emails/:emailId", "emails", "emailId", "Email", (e) => `email log "${e.subject}"`,
