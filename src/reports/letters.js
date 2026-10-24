@@ -315,4 +315,8 @@ async function buildDocument(template, ctx) {
 
 const TEMPLATE_LIST = Object.entries(DOCUMENTS).map(([key, d]) => ({ key, title: d.title }));
 
-module.exports = { buildDocument, TEMPLATE_LIST, costLines };
+module.exports = {
+  buildDocument, TEMPLATE_LIST, costLines,
+  // Shared with the other Word drafts (estate accounts, private client letters).
+  helpers: { FONT, formatDate, money, num, runs, para, bold, bullet, orPh, letterTop, signOff, clientAddress, statementTable },
+};

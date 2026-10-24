@@ -1,5 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { hashPassword, needsRehash } = require("../utils/passwords");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
@@ -57,7 +58,7 @@ router.post(
       );
       const firm = firmResult.rows[0];
 
-      const passwordHash = await bcrypt.hash(password, 12);
+      const passwordHash = await hashPassword(password);
       const userResult = await client.query(
         `INSERT INTO users (firm_id, name, email, password_hash, role)
          VALUES ($1, $2, $3, $4, 'admin')
@@ -89,7 +90,7 @@ router.post(
   loginAccountLimiter,
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) {
+    if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
       return res.status(400).json({ error: "Email and password are required." });
     }
 
@@ -112,6 +113,10 @@ router.post(
       return res.status(401).json({ error: "Invalid email or password." });
     }
 
+    if (needsRehash(user.password_hash)) {
+      // Bring older hashes to the current cost; not worth failing a login over.
+      hashPassword(password).then((h) => query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [h, user.id])).catch(() => {});
+    }
     const token = signToken(user);
     res.json({
       token,
@@ -169,7 +174,7 @@ router.post(
     const ok = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
     if (!ok) return res.status(400).json({ error: "Current password is incorrect." });
 
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const passwordHash = await hashPassword(newPassword);
     await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, req.user.id]);
     res.status(204).send();
   })

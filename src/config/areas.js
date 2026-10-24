@@ -35,6 +35,51 @@ const AREAS = [
       "Instructed", "ID & AML Checks", "Information gathering", "Drafting / valuations",
       "Signing / tax & applications", "Grant or registration", "Administration & distribution", "Closed",
     ],
+    // Each kind of private client work runs differently, so has its own stages
+    // ("Other private client" uses the department's list above).
+    typeStages: {
+      Will: [
+        ["Instructed", "Client care letter and terms sent"],
+        ["ID & AML Checks", "Identity verified"],
+        ["Instructions taken", "Family, assets, wishes, executors and guardians recorded; capacity considered"],
+        ["Draft will sent", "Draft and explanation sent to the client"],
+        ["Approved & signing arranged", "Client approved the draft; signing appointment booked"],
+        ["Signed & witnessed", "Executed with two independent witnesses; attestation checked"],
+        ["Stored", "Original in safe custody, copy and storage certificate to client"],
+        ["Closed", "File closed"],
+      ],
+      "Lasting power of attorney": [
+        ["Instructed", "Client care letter and terms sent"],
+        ["ID & AML Checks", "Identity verified"],
+        ["Instructions taken", "Type(s) of LPA, attorneys, replacements, how they act, people to notify"],
+        ["Draft LPAs sent", "Drafts sent to the donor for approval"],
+        ["Signed", "Donor, certificate provider and attorneys signed, in the right order"],
+        ["Sent to OPG", "Application and fee sent to the Office of the Public Guardian"],
+        ["Registered", "Registered LPA received; copies certified and sent"],
+        ["Closed", "File closed"],
+      ],
+      "Probate / estate administration": [
+        ["Instructed", "Client care letter and terms sent to the executors"],
+        ["ID & AML Checks", "Executors' identity verified"],
+        ["Assets & liabilities", "Asset holders notified of the death; date-of-death values requested"],
+        ["IHT & valuations", "Estate valued; IHT reported (excepted estate or IHT400) and any tax paid"],
+        ["Grant applied for", "Probate application submitted to HMCTS"],
+        ["Grant received", "Grant of representation issued"],
+        ["Collecting in & paying debts", "Assets realised or transferred; debts, funeral and tax paid; s.27 notices"],
+        ["Estate accounts & distribution", "Estate accounts approved; legacies and residue paid"],
+        ["Closed", "File closed"],
+      ],
+      Trust: [
+        ["Instructed", "Client care letter and terms sent"],
+        ["ID & AML Checks", "Settlor and trustees' identity verified"],
+        ["Instructions & advice", "Purpose, beneficiaries and tax consequences advised on"],
+        ["Drafting trust deed", "Draft deed sent for approval"],
+        ["Signed & set up", "Deed executed; assets transferred into the trust"],
+        ["Registered (TRS)", "Registered on HMRC's Trust Registration Service"],
+        ["Ongoing administration", "Trust accounts, returns and periodic charges"],
+        ["Closed", "File closed"],
+      ],
+    },
   },
   {
     key: "family",
@@ -118,6 +163,10 @@ const DEADLINES = {
     { title: "Inheritance Act claim period ends (6 months after the grant)", kind: "limitation", critical: true, rule: { from: "Date of grant", months: 6 } },
     { title: "Section 27 notice period ends (2 months)", kind: "other", rule: { from: "Date notice published", months: 2 } },
     { title: "LPA registration follow-up", kind: "other", rule: { from: "Date sent to OPG", weeks: 20 } },
+    { title: "Register the trust on HMRC's Trust Registration Service (90 days)", kind: "filing", critical: true, rule: { from: "Date trust created", days: 90 } },
+    { title: "Trust 10-year anniversary (IHT periodic charge)", kind: "filing", rule: { from: "Date trust created", years: 10 } },
+    { title: "Offer the client a will review", kind: "other", rule: { from: "Date will signed", years: 5 } },
+    { title: "Deed of variation deadline (2 years after death)", kind: "limitation", rule: { from: "Date of death", years: 2 } },
   ],
   family: [
     { title: "Earliest conditional order application (20 weeks after issue)", kind: "court_deadline", rule: { from: "Date divorce issued", weeks: 20 } },
@@ -161,21 +210,60 @@ const DEADLINES = {
 };
 for (const area of AREAS) area.deadlines = DEADLINES[area.key] || [];
 
+/**
+ * Standard document folders each new matter starts with (admins can set the
+ * firm's own list per department in Settings). For conveyancing, documents
+ * that pre-date folders are filed by their category (FOLDER_FOR_CATEGORY).
+ */
+const FOLDERS = {
+  conveyancing: ["Client care & ID", "Contract pack", "Title", "Searches", "Enquiries", "Mortgage", "Report on Title",
+    "Exchange & completion", "SDLT & Land Registry", "Correspondence", "Accounts"],
+  private_client: ["Client care & ID", "Will / LPA drafts", "Death certificate & will", "Assets & liabilities", "IHT & HMRC",
+    "Grant of probate", "Estate accounts", "Correspondence", "Accounts"],
+  family: ["Client care & ID", "Court papers", "Financial disclosure (Form E)", "Evidence", "Orders", "Correspondence", "Accounts"],
+  employment: ["Client care & ID", "Contract & policies", "ACAS", "Tribunal papers (ET1 / ET3)", "Disclosure", "Witness statements",
+    "Settlement", "Correspondence", "Accounts"],
+  litigation: ["Client care & ID", "Pre-action", "Statements of case", "Disclosure", "Witness statements", "Experts",
+    "Court orders & hearings", "Costs", "Correspondence", "Accounts"],
+  personal_injury: ["Client care & ID", "Letter of claim / Portal", "Liability", "Medical evidence", "Losses & special damages",
+    "Offers & settlement", "Court papers", "Correspondence", "Accounts"],
+  corporate: ["Client care & ID", "Heads of terms", "Due diligence", "Transaction documents", "Disclosure letter", "Completion",
+    "Companies House filings", "Correspondence", "Accounts"],
+  crime: ["Client care & legal aid", "Police station", "Charge & prosecution papers", "Evidence & disclosure", "Defence statement",
+    "Court hearings", "Sentencing", "Correspondence"],
+};
+for (const area of AREAS) area.folders = FOLDERS[area.key] || ["Correspondence", "Documents"];
+const FOLDER_FOR_CATEGORY = {
+  Contract: "Contract pack", Title: "Title", Search: "Searches", "ID / AML": "Client care & ID", Mortgage: "Mortgage",
+  Correspondence: "Correspondence", "SDLT / LR": "SDLT & Land Registry",
+};
+
 /** How new matters in each department are usually funded (can be changed per matter). */
 const DEFAULT_FUNDING = { conveyancing: "fixed_fee", personal_injury: "cfa", crime: "legal_aid" };
 for (const area of AREAS) area.defaultFunding = DEFAULT_FUNDING[area.key] || "hourly";
 const FUNDING_TYPES = ["hourly", "fixed_fee", "cfa", "legal_aid"];
 
-const AREA_BY_KEY = Object.fromEntries(AREAS.map((a) => [a.key, a]));
+// Null prototype, so names like "constructor" or "__proto__" aren't mistaken for departments.
+const AREA_BY_KEY = Object.assign(Object.create(null), Object.fromEntries(AREAS.map((a) => [a.key, a])));
 const AREA_KEYS = AREAS.map((a) => a.key);
 
-/** Stage names for a matter's department (and, later, type). */
+// A type's stages are written as [name, hint]; keep the names in typeStages and the hints in typeStageHints.
+for (const area of AREAS) {
+  if (!area.typeStages) continue;
+  area.typeStageHints = {};
+  for (const [type, list] of Object.entries(area.typeStages)) {
+    area.typeStages[type] = list.map(([name]) => name);
+    area.typeStageHints[type] = list.map(([, hint]) => hint);
+  }
+}
+
+/** Stage names for a matter's department and type. */
 function stagesFor(department, type) {
   const area = AREA_BY_KEY[department] || AREA_BY_KEY.conveyancing;
-  const typeDef = area.typeStages && area.typeStages[type];
+  const typeDef = area.typeStages && Object.hasOwn(area.typeStages, type) ? area.typeStages[type] : null;
   return typeDef || area.stages;
 }
 
 const closedIndexFor = (department, type) => stagesFor(department, type).length - 1;
 
-module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES, FUNDING_TYPES };
+module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES, FUNDING_TYPES, FOLDER_FOR_CATEGORY };

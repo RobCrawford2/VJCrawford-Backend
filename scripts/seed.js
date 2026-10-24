@@ -8,7 +8,7 @@
  * server.js — gated behind SEED_ON_BOOT=true) as well as run directly via
  * `npm run seed`.
  */
-const bcrypt = require("bcryptjs");
+const { hashPassword } = require("../src/utils/passwords");
 
 async function runSeed(pool, { password = "password123" } = {}) {
   const client = await pool.connect();
@@ -33,7 +33,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
       )
     ).rows[0];
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
 
     const david = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,'admin') RETURNING id`,
@@ -77,6 +77,12 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, priya.id]
     );
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'family')`, [priya.id]);
+    // Emma runs Wills, Trusts & Probate.
+    const emma = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Emma Lowe", "emma@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'private_client')`, [emma.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -154,6 +160,72 @@ async function runSeed(pool, { password = "password123" } = {}) {
     )).rows[0];
     await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [morris.id, priya.id]);
 
+    // Wills, Trusts & Probate: an estate in administration, a will and an LPA.
+    const pcMatter = async (reference, description, clientName, type, stage, instructed, details, funding, estimate) => {
+      const id = (await client.query(
+        `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+           date_instructed, funding, fee_estimate, pc_details, folders_ready)
+         VALUES ($1,$2,'private_client',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,false) RETURNING id`,
+        [firm.id, reference, description, clientName, type, stage, emma.id, david.id, instructed, funding, estimate, JSON.stringify(details)]
+      )).rows[0].id;
+      await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [id, emma.id]);
+      return id;
+    };
+    const estateId = await pcMatter("PC-2026-0001", "Estate of Margaret Ellen Hayward", "Executors of Margaret Hayward",
+      "Probate / estate administration", 3, "2026-06-08", {
+        deceasedName: "Margaret Ellen Hayward", dateOfDeath: "2026-05-21", deceasedAddress: "4 Linden Close, Harrogate, HG2 0PL",
+        dateOfBirth: "1937-11-02", maritalStatus: "Widowed / surviving civil partner", dateOfWill: "2019-03-14", grantType: "Probate",
+        personalRepresentatives: "Susan Clarke and Peter Hayward", ihtRoute: "IHT400 account", transferredNrbPct: 100,
+        transferredRnrbPct: 100, homeToDescendants: true,
+      }, "hourly", 6500);
+    await client.query(
+      `INSERT INTO estate_items (matter_id, kind, category, description, holder, reference, value_at_death, status, notified_on, created_by) VALUES
+       ($1,'asset','Property (main residence)','4 Linden Close, Harrogate','—',NULL,425000,'Valued',NULL,$2),
+       ($1,'asset','Bank / building society','Current account','Lloyds Bank','30-94-11 / 01234567',8412.55,'Notified','2026-06-12',$2),
+       ($1,'asset','Bank / building society','Instant access saver','Nationwide Building Society','0098 112233',64230.10,'Valued','2026-06-12',$2),
+       ($1,'asset','Investments / shares','Stocks & shares ISA','Hargreaves Lansdown','HL-778201',112650,'Notified','2026-06-15',$2),
+       ($1,'asset','Premium Bonds / NS&I','Premium Bonds','NS&I','HAY 4471 02',50000,'To notify',NULL,$2),
+       ($1,'asset','Personal possessions','Household contents and jewellery',NULL,NULL,6500,'Valued',NULL,$2),
+       ($1,'liability','Funeral','Funeral account','Wrights Funeral Directors','F-2231',4875,'Agreed','2026-06-10',$2),
+       ($1,'liability','Care fees','Care home fees to date of death','Oakfield Care Home','OAK/HAY',3260,'Notified','2026-06-12',$2),
+       ($1,'liability','Household bills','Council tax and utilities',NULL,NULL,640,'To notify',NULL,$2)`,
+      [estateId, emma.id]
+    );
+    await client.query(
+      `INSERT INTO estate_beneficiaries (matter_id, name, relationship, gift_type, description, amount, share_percent, exemption) VALUES
+       ($1,'Yorkshire Air Ambulance','Charity','Pecuniary legacy',NULL,5000,NULL,'charity'),
+       ($1,'Emily Clarke','Granddaughter','Specific gift','Diamond engagement ring',NULL,NULL,NULL),
+       ($1,'Susan Clarke','Daughter','Share of residue',NULL,NULL,50,NULL),
+       ($1,'Peter Hayward','Son','Share of residue',NULL,NULL,50,NULL)`,
+      [estateId]
+    );
+    await client.query(
+      `INSERT INTO matter_parties (matter_id, name, role) VALUES ($1,'Margaret Ellen Hayward','Deceased'),
+       ($1,'Susan Clarke','Executor'), ($1,'Peter Hayward','Executor')`,
+      [estateId]
+    );
+    const willId = await pcMatter("PC-2026-0002", "Wills for Mr and Mrs Okafor", "Daniel & Grace Okafor", "Will", 6, "2026-07-01", {
+      testator: "Daniel Okafor and Grace Okafor", willType: "Mirror wills", executors: "Each other, then Ruth Okafor",
+      guardians: "Ruth and Samuel Okafor", dateSigned: "2026-08-04", witnesses: "Emma Lowe and Jess Taylor",
+    }, "fixed_fee", 450);
+    await pcMatter("PC-2026-0003", "Lasting powers of attorney for Alan Pritchard", "Alan Pritchard", "Lasting power of attorney", 5, "2026-07-15", {
+      donor: "Alan Pritchard", lpaTypes: "Both", attorneys: "Claire Pritchard and Owen Pritchard", howAct: "Jointly and severally",
+      certificateProvider: "Dr R Mehta", dateSigned: "2026-08-10", sentToOpg: "2026-08-14",
+    }, "fixed_fee", 750);
+    await client.query(
+      `INSERT INTO safe_custody (firm_id, matter_id, doc_type, person, document_date, location, received_on, created_by) VALUES
+       ($1,$2,'Will','Daniel Okafor','2026-08-04','Strongroom A — packet 1042','2026-08-04',$3),
+       ($1,$2,'Will','Grace Okafor','2026-08-04','Strongroom A — packet 1043','2026-08-04',$3),
+       ($1,NULL,'Will','Joan Whitaker','2011-05-19','Strongroom A — packet 0388','2011-05-19',$3)`,
+      [firm.id, willId, emma.id]
+    );
+    await client.query(
+      `INSERT INTO deadlines (matter_id, title, kind, due_date, critical, created_by)
+       VALUES ($1,'IHT payment due (end of the 6th month after death)','filing','2026-11-30',true,$2),
+              ($1,'IHT account (IHT400) due (12 months after the end of the month of death)','filing','2027-05-31',true,$2)`,
+      [estateId, emma.id]
+    );
+
     // A deliberately overdue + issue-flagged search, matching the frontend demo.
     await client.query(
       `INSERT INTO searches (matter_id, type, date_ordered, expected_return, date_received, issue, issue_notes) VALUES
@@ -165,6 +237,18 @@ async function runSeed(pool, { password = "password123" } = {}) {
     await client.query(
       `INSERT INTO tasks (matter_id, description, due_date, status, created_by) VALUES ($1,$2,'2026-08-18','Open',$3)`,
       [whitfieldId, "Follow up with client for instructions on indemnity insurance re: environmental search", marcus.id]
+    );
+    // A few documents (filed into the standard folders by category when the matter is first opened).
+    await client.query(
+      `INSERT INTO documents (matter_id, name, category, doc_date, created_by) VALUES
+       ($1, 'Client care letter', 'Correspondence', '2026-07-28', $2),
+       ($1, 'Passport — Tom Whitfield', 'ID / AML', '2026-07-28', $2),
+       ($1, 'Draft contract', 'Contract', '2026-08-02', $2),
+       ($1, 'Official copies of the register', 'Title', '2026-08-02', $2),
+       ($1, 'Environmental search result', 'Search', '2026-08-07', $2),
+       ($1, 'Mortgage offer — Barclays', 'Mortgage', '2026-08-05', $2),
+       ($1, 'Seller''s property information form (TA6)', 'Other', '2026-08-02', $2)`,
+      [whitfieldId, marcus.id]
     );
 
     // Client records (one per client name — in the demo data the same name is
@@ -204,6 +288,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id]
     );
     await client.query(`UPDATE matters SET fee_estimate = 3000 WHERE id = $1`, [morris.id]);
+    await client.query(`UPDATE matters SET funding = 'fixed_fee' WHERE firm_id = $1 AND department = 'conveyancing'`, [firm.id]);
     await client.query(
       `INSERT INTO time_entries (matter_id, user_id, work_date, units, rate, amount, activity, description) VALUES
        ($1, $2, '2026-07-14', 10, 210, 210, 'Attendance (meeting)', 'Initial meeting — background, finances and options'),
@@ -223,6 +308,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             jess@vjcrawfordconveyancing.co.uk / ${shown} (assistant to Sarah)`);
     console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
     console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
+    console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

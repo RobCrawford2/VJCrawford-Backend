@@ -1,4 +1,9 @@
-const { Pool } = require("pg");
+const { Pool, types } = require("pg");
+
+// Return DATE columns as plain 'YYYY-MM-DD' text. By default pg turns them
+// into JavaScript dates at the server's local midnight, which can shift them
+// by a day when the server isn't on UTC and breaks <input type="date">.
+types.setTypeParser(1082, (value) => value);
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -20,7 +25,10 @@ const pool = new Pool({
   connectionString: normalizeConnectionString(process.env.DATABASE_URL),
   // Work in UK time, so CURRENT_DATE and timestamps follow the firm's day
   // rather than UTC (the host's timezone).
-  options: "-c TimeZone=Europe/London",
+  // JIT compilation is off: it only helps big analytical queries, and on
+  // ours it added half a second or more to each request for no gain.
+  options: "-c TimeZone=Europe/London -c jit=off",
+  max: Number(process.env.PG_POOL_MAX) || 15,
   // Most managed Postgres providers (Render, Railway, RDS, etc.) require SSL
   // in production but not for a local Docker instance. Adjust as needed once
   // you know your hosting provider's requirements.

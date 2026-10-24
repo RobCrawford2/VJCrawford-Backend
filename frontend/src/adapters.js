@@ -14,7 +14,7 @@ export function userName(users, id) {
 function adaptDocument(d) {
   return {
     id: d.id, name: d.name, category: d.category, date: d.doc_date || "", notes: d.notes || "",
-    fileName: d.file_name || "", fileSize: d.file_size || 0,
+    fileName: d.file_name || "", fileSize: d.file_size || 0, folderId: d.folder_id || null,
   };
 }
 function adaptEmail(e) {
@@ -93,6 +93,7 @@ export function adaptMatter(m, users) {
     type: m.type,
     price: m.price !== null && m.price !== undefined ? Number(m.price) : "",
     currentStageIndex: m.current_stage_index,
+    lastActivityAt: m.last_activity_at || "",
     feeEarner: userName(users, m.fee_earner_id),
     feeEarnerId: m.fee_earner_id || "",
     supervisor: userName(users, m.supervisor_id),
@@ -162,6 +163,14 @@ export function adaptMatter(m, users) {
     })),
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
+    folders: (m.folders || []).map((f) => ({ id: f.id, name: f.name })),
+    // Wills, Trusts & Probate (kept as the server sends them; see PrivateClient.jsx).
+    pcDetails: m.pc_details || {},
+    pcFields: m.pcFields || [],
+    estateItems: m.estateItems || null,
+    beneficiaries: m.beneficiaries || null,
+    estateSummary: m.estateSummary || null,
+    safeCustody: m.safeCustody || [],
     emails: (m.emails || []).map(adaptEmail),
     enquiries: (m.enquiries || []).map(adaptEnquiry),
     searches: (m.searches || []).map(adaptSearch),

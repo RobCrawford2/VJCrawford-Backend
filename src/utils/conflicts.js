@@ -52,7 +52,7 @@ async function conflictCheck(db, user, names, { excludeMatterId = null, excludeC
   if (!words.length) return wanted.map((name) => ({ name, matches: [] }));
   const patterns = words.map((w) => `%${w}%`);
 
-  const [clients, parties, visible] = await Promise.all([
+  const [clients, parties] = await Promise.all([
     db.query(
       `SELECT c.id, c.name, m.id AS matter_id, m.reference, m.address, m.department, m.type
        FROM clients c
@@ -67,12 +67,16 @@ async function conflictCheck(db, user, names, { excludeMatterId = null, excludeC
        WHERE m.firm_id = $1 AND p.name ILIKE ANY($2::text[])`,
       [user.firmId, patterns]
     ),
-    (async () => {
-      const v = matterVisibilityClause(user, 2);
-      const r = await db.query(`SELECT m.id FROM matters m WHERE m.firm_id = $1 ${v.clause}`, [user.firmId, ...v.params]);
-      return new Set(r.rows.map((x) => x.id));
-    })(),
   ]);
+
+  // Which of the matched matters can this user see? (Only those, not the whole firm's.)
+  const matchedIds = [...new Set([...clients.rows, ...parties.rows].map((r) => r.matter_id).filter(Boolean))];
+  const visible = new Set();
+  if (matchedIds.length) {
+    const v = matterVisibilityClause(user, 3);
+    const r = await db.query(`SELECT m.id FROM matters m WHERE m.firm_id = $1 AND m.id = ANY($2::uuid[]) ${v.clause}`, [user.firmId, matchedIds, ...v.params]);
+    for (const row of r.rows) visible.add(row.id);
+  }
 
   const describeMatter = (row) => {
     const departmentName = AREA_BY_KEY[row.department]?.name || row.department;
@@ -93,7 +97,9 @@ async function conflictCheck(db, user, names, { excludeMatterId = null, excludeC
     matches.push(...byClient.values());
     for (const row of parties.rows) {
       if (row.matter_id === excludeMatterId || nameScore(name, row.name) < MATCH_THRESHOLD) continue;
-      matches.push({ kind: "party", name: row.name, role: row.role, matters: [describeMatter(row)] });
+      const matter = describeMatter(row);
+      // The role ("Child", "Respondent"…) says too much about a file the checker can't see.
+      matches.push({ kind: "party", name: row.name, role: matter.hidden ? "Party" : row.role, matters: [matter] });
     }
     return { name, matches };
   });

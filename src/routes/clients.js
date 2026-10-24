@@ -113,10 +113,14 @@ router.get(
       params.push(`%${search}%`);
       conditions.push(`(c.name ILIKE $${params.length} OR c.email ILIKE $${params.length} OR c.company_number ILIKE $${params.length})`);
     }
+    // Count only the matters this user can see (others aren't even hinted at).
+    const mv = matterVisibilityClause(req.user, params.length + 1);
+    params.push(...mv.params);
     const result = await query(
-      `SELECT c.*, (SELECT count(*)::int FROM matter_clients mc WHERE mc.client_id = c.id) AS matter_count
+      `SELECT c.*, (SELECT count(*)::int FROM matter_clients mc JOIN matters m ON m.id = mc.matter_id
+                    WHERE mc.client_id = c.id ${mv.clause}) AS matter_count
        FROM clients c WHERE ${conditions.join(" AND ")}
-       ORDER BY c.name LIMIT ${limit}`,
+       ORDER BY lower(c.name) LIMIT ${limit}`,
       params
     );
     res.json(result.rows);

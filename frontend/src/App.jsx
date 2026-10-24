@@ -1,19 +1,22 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Search, Plus, FileText, Mail, Calendar, Users, ChevronRight, ChevronLeft,
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff, Folder, Archive
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
-import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
+import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, isPrivateClient, isProbate, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
+import { DocumentsTab, FolderTemplatesCard } from "./Documents";
+import { PropertyViewCard } from "./PropertyView";
+import { PcDetailsCard, EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -206,6 +209,51 @@ const STANDARD_TASKS = {
   },
 };
 
+// Wills, Trusts & Probate — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  Will: {
+    0: [["Send client care letter, terms of business and fee", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Take instructions: family, assets, executors, guardians, gifts and residue", "fee_earner"], ["Consider capacity and undue influence; see the client alone", "fee_earner"], ["Record any foreign assets, business or agricultural property, and existing wills", "fee_earner"], ["Advise on IHT, nil-rate bands and lifetime gifts", "fee_earner"]],
+    3: [["Draft the will", "fee_earner"], ["Send draft will with explanatory letter", "secretary"]],
+    4: [["Agree amendments and finalise the will", "fee_earner"], ["Book signing appointment with two independent witnesses", "secretary"]],
+    5: [["Supervise signing; check attestation clause, dates and witness details", "fee_earner"], ["Check no witness or witness's spouse is a beneficiary", "fee_earner"]],
+    6: [["Record the original in the will register and place in safe custody", "assistant"], ["Send client a copy and storage certificate", "secretary"], ["Register the will with Certainty (National Will Register) if instructed", "assistant"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+  "Lasting power of attorney": {
+    0: [["Send client care letter, terms of business and fee", "secretary"]],
+    1: [["Verify donor's identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Take instructions: LPA types, attorneys, replacements, joint / several, preferences and instructions", "fee_earner"], ["Confirm donor has capacity; consider a medical opinion if in doubt", "fee_earner"], ["Agree certificate provider and people to notify", "fee_earner"]],
+    3: [["Prepare LPA forms (LP1F / LP1H)", "assistant"], ["Send drafts to the donor to approve", "secretary"]],
+    4: [["Donor signs, then certificate provider, then attorneys (each witnessed)", "fee_earner"], ["Check every page and signing order before submission", "fee_earner"]],
+    5: [["Send application and fee (or exemption / remission form) to the OPG", "assistant"], ["Diary to chase the OPG if no registration within 20 weeks", "assistant"]],
+    6: [["Receive registered LPA; make certified copies", "assistant"], ["Send registered LPA and copies to donor / attorneys; keep original in safe custody if instructed", "secretary"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+  "Probate / estate administration": {
+    0: [["Send client care letter, terms of business and costs estimate to the executors", "secretary"], ["Obtain death certificate and original will (and any codicils)", "assistant"]],
+    1: [["Verify executors' identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Notify banks, building societies, pension and insurers of the death; request date-of-death values", "assistant"], ["Tell Us Once / DWP; cancel passport, licence and benefits", "secretary"], ["Secure and insure the property; arrange valuation", "fee_earner"], ["Search for other wills; Certainty search if appropriate", "assistant"], ["Record all assets and liabilities in the estate register", "assistant"]],
+    3: [["Value the estate and decide excepted estate or IHT400", "fee_earner"], ["Check lifetime gifts in the 7 years before death", "fee_earner"], ["Claim transferable nil-rate band / residence nil-rate band where available", "fee_earner"], ["Pay IHT (before the end of the 6th month after death to avoid interest)", "fee_earner"]],
+    4: [["Prepare probate application and statement of truth for the executors", "fee_earner"], ["Submit probate application to HMCTS with the original will", "assistant"]],
+    5: [["Receive grant; order sealed copies", "assistant"], ["Diary the 6-month Inheritance Act claim period", "assistant"]],
+    6: [["Send grant to asset holders and close accounts", "assistant"], ["Sell or transfer the property and investments", "fee_earner"], ["Place section 27 Trustee Act notices (Gazette and local paper)", "assistant"], ["Pay debts, funeral account and expenses", "fee_earner"], ["Deal with income tax / CGT for the administration period", "fee_earner"]],
+    7: [["Prepare estate accounts and send to executors for approval", "fee_earner"], ["Pay legacies and obtain receipts", "fee_earner"], ["Distribute residue to residuary beneficiaries", "fee_earner"], ["Obtain IHT clearance (IHT30) where IHT was payable", "fee_earner"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  Trust: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"]],
+    1: [["Verify settlor and trustees' identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Advise on type of trust and tax (IHT relevant property, CGT, income tax)", "fee_earner"]],
+    3: [["Draft trust deed and letter of wishes", "fee_earner"], ["Send drafts for approval", "secretary"]],
+    4: [["Execute the deed", "fee_earner"], ["Transfer assets to the trustees; open trust bank account", "fee_earner"]],
+    5: [["Register the trust on HMRC's Trust Registration Service (within 90 days)", "assistant"]],
+    6: [["Diary annual TRS update, tax return and 10-year anniversary charge", "assistant"], ["Prepare trust accounts", "fee_earner"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -289,8 +337,12 @@ function daysSince(dateStr) {
 }
 
 function lastActivityDate(matter) {
-  return matter.activity.length ? matter.activity[0].date : matter.keyDates.instructed;
+  // List rows carry the latest activity date; the full matter carries the log itself.
+  return matter.activity.length ? matter.activity[0].date : matter.lastActivityAt || matter.keyDates.instructed;
 }
+
+/** Due before today (UK) — a task due today isn't overdue yet. */
+const isOverdue = (date) => !!date && String(date).slice(0, 10) < todayISO();
 
 /**
  * Staff who can be given tasks on a matter — mirrors the server's visibility
@@ -369,7 +421,7 @@ function needsAttention(matter, staleDays = 14) {
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
-  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today);
+  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && isOverdue(t.dueDate));
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   if (open) {
     const idle = daysSince(lastActivityDate(matter));
@@ -507,7 +559,9 @@ export default function App() {
   }
 
   // ---- Matters list (server-filtered, server-paginated) ----
-  const [matters, setMatters] = useState([]);
+  // The list as the server sent it; fee earner names are filled in from the
+  // staff list here, so the list needn't be fetched again when that arrives.
+  const [matterRows, setMatterRows] = useState([]);
   const [matterTotal, setMatterTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
@@ -529,13 +583,14 @@ export default function App() {
   const [deptFilter, setDeptFilter] = useState("All");
   // The department the list is showing, when it's just one (for its type filters).
   const listDepartment = deptFilter !== "All" ? deptFilter : myDepartments.length === 1 ? myDepartments[0] : null;
-  const [showClosed, setShowClosed] = useState(true);
+  const [showClosed, setShowClosed] = useState(false); // working list: open files unless asked
   const [myMattersOnly, setMyMattersOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(20);
   const [showNewMatter, setShowNewMatter] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
   const [showUndertakings, setShowUndertakings] = useState(false);
+  const [showSafeCustody, setShowSafeCustody] = useState(false);
   const [clientsPanel, setClientsPanel] = useState(null); // null | { clientId }
   const [showDiary, setShowDiary] = useState(false);
   const [showTimesheet, setShowTimesheet] = useState(false);
@@ -576,6 +631,16 @@ export default function App() {
   const [showConfirmReview, setShowConfirmReview] = useState(false);
   const [saveState, setSaveState] = useState("idle");
 
+  // Logging out (or being logged out) clears everything the last person was
+  // looking at, so the next person on this computer starts afresh.
+  useEffect(() => {
+    if (authUser) return;
+    setSelectedId(null); setSelectedDetail(null); setMatterRows([]);
+    setSearch(""); setTypeFilter("All"); setDeptFilter("All"); setShowClosed(false); setMyMattersOnly(false);
+    setActiveTab("overview"); setClientsPanel(null); setShowDiary(false); setShowTimesheet(false); setStoppingTimer(null);
+    setMyTasks([]); setPendingSignoffs([]); setUsers([]); setDetailError("");
+  }, [authUser]);
+
   // ---- Load users + firm settings once logged in ----
   useEffect(() => {
     if (!authUser) return;
@@ -587,6 +652,7 @@ export default function App() {
         setSettings((prev) => ({
           ...prev,
           departments: s.departments || ["conveyancing"],
+          folderTemplates: s.folderTemplates || [],
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
           requireStageSignoff: s.require_stage_signoff ?? true,
@@ -610,73 +676,103 @@ export default function App() {
     if ("dictationEnabled" in patch) firmPatch.dictationEnabled = patch.dictationEnabled;
     if ("requireExchangeChecks" in patch) firmPatch.requireExchangeChecks = patch.requireExchangeChecks;
     if (Object.keys(firmPatch).length) {
-      api.updateFirmSettings(firmPatch).catch(() => {});
+      const before = settings;
+      api.updateFirmSettings(firmPatch).catch((err) => {
+        setSettings(before); // put the screen back as it really is
+        notify(err.message || "Couldn't save that setting.");
+      });
     }
   }
 
   async function saveDepartments(departments) {
     try {
       const saved = await api.updateFirmSettings({ departments });
-      setSettings((prev) => ({ ...prev, departments: saved.departments }));
+      setSettings((prev) => ({ ...prev, departments: saved.departments, folderTemplates: saved.folderTemplates || prev.folderTemplates }));
     } catch (err) {
       notify(err.message || "Couldn't change the departments.");
     }
   }
 
   // ---- Matters list ----
-  const refreshList = useCallback(async () => {
+  // Search waits until typing pauses, rather than asking the server on every key.
+  const [listSearch, setListSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setListSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const listRequest = useRef(0);
+  const refreshList = useCallback(async ({ background = false } = {}) => {
     if (!authUser) return;
-    setLoading(true);
+    const request = ++listRequest.current; // only the latest request's answer is shown
+    if (!background) setLoading(true);
     try {
-      const feeEarnerId = myMattersOnly ? authUser.id : undefined;
-      const result = await api.getMatters({
-        limit: visibleCount,
-        offset: 0,
+      const filters = {
         type: typeFilter === "All" ? undefined : typeFilter,
         department: deptFilter === "All" ? undefined : deptFilter,
         showClosed: showClosed ? undefined : "false",
-        search: search.trim() || undefined,
-        feeEarnerId,
-      });
-      setMatters(result.matters.map((m) => adaptMatter(m, users)));
-      setMatterTotal(result.pagination.total);
+        search: listSearch || undefined,
+        feeEarnerId: myMattersOnly ? authUser.id : undefined,
+      };
+      // The server sends at most 100 at a time, so fetch in pages up to what's wanted.
+      let rows = [];
+      let total = 0;
+      for (let offset = 0; offset < visibleCount; offset += 100) {
+        const page = await api.getMatters({ ...filters, limit: Math.min(100, visibleCount - offset), offset });
+        rows = rows.concat(page.matters);
+        total = page.pagination.total;
+        if (rows.length >= total || page.matters.length === 0) break;
+      }
+      if (request !== listRequest.current) return;
+      setMatterRows(rows);
+      setMatterTotal(total);
       setListError("");
     } catch (err) {
-      setListError(err.message || "Couldn't load matters.");
+      if (request === listRequest.current) setListError(err.message || "Couldn't load matters.");
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
-  }, [authUser, visibleCount, typeFilter, deptFilter, showClosed, search, myMattersOnly, users]);
+  }, [authUser, visibleCount, typeFilter, deptFilter, showClosed, listSearch, myMattersOnly]);
+  const matters = useMemo(() => matterRows.map((m) => adaptMatter(m, users)), [matterRows, users]);
 
   useEffect(() => {
-    refreshList();
+    refreshList({ background: visibleCount > 20 });
   }, [refreshList]);
 
   useEffect(() => {
     setVisibleCount(20);
-  }, [search, typeFilter, deptFilter, showClosed, myMattersOnly]);
+  }, [listSearch, typeFilter, deptFilter, showClosed, myMattersOnly]);
 
   // ---- Selected matter detail ----
+  // The matter currently wanted on screen: a slow response for a matter the
+  // user has already moved away from is ignored rather than shown.
+  const wantedMatter = useRef(null);
+  const [detailError, setDetailError] = useState("");
   const refreshSelected = useCallback(
     async (id) => {
+      wantedMatter.current = id;
       if (!id) {
         setSelectedDetail(null);
         return;
       }
-      setSaveState("saving");
       try {
         const detail = await api.getMatter(id);
+        if (wantedMatter.current !== id) return;
         setSelectedDetail(adaptMatter(detail, users));
-        setSaveState("saved");
+        setDetailError("");
       } catch (err) {
+        if (wantedMatter.current !== id) return;
         setSelectedDetail(null);
-        setSaveState("error");
+        setDetailError(err.message || "Couldn't open this matter.");
       }
     },
     [users]
   );
 
   useEffect(() => {
+    // Opening a different matter: don't show the previous one while it loads.
+    setSelectedDetail((current) => (current && current.id === selectedId ? current : null));
+    setDetailError("");
     refreshSelected(selectedId);
   }, [selectedId, refreshSelected]);
 
@@ -684,7 +780,9 @@ export default function App() {
    *  refreshes the list too since stage/dates/attention shown in the sidebar
    *  can change as a result of almost any edit. */
   async function afterMutation() {
-    await Promise.all([refreshSelected(selectedId), refreshList()]);
+    setSaveState("saving");
+    await Promise.all([refreshSelected(selectedId), refreshList({ background: true })]);
+    setSaveState("saved");
     refreshMyTasks();
     setHomeRefresh((n) => n + 1);
   }
@@ -693,7 +791,7 @@ export default function App() {
   async function addMatter(data) {
     try {
       const created = await api.createMatter(toApiNewMatter(data));
-      await refreshList();
+      await refreshList({ background: true });
       setSelectedId(created.id);
       setShowNewMatter(false);
       setActiveTab("overview");
@@ -1134,8 +1232,6 @@ export default function App() {
     setListOpen(!selectedId);
   }, [selectedId]);
 
-  const activeCount = matters.filter((m) => !isClosed(m)).length;
-  const closedThisYear = matters.filter((m) => isClosed(m)).length;
 
   const feeEarners = [...new Set(matters.map((m) => m.feeEarner).filter(Boolean))];
   const workload = feeEarners
@@ -1658,6 +1754,64 @@ export default function App() {
         .ac-doc-actions { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
         .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
+        .ac-doc-row[draggable="true"] { cursor: grab; }
+        .ac-muted { color: var(--slate); font-size: 13px; }
+        .ac-muted.small, .ac-linkbtn.small { font-size: 11.5px; }
+        .ac-linkbtn.small { color: var(--brass); }
+        .ac-check { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-soft); margin: 4px 0 12px; text-transform: none; font-weight: 500; }
+        .ac-check input { width: auto; }
+        .ac-row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .ac-inline-form { margin-bottom: 14px; }
+        .ac-table-wrap { overflow-x: auto; margin-bottom: 22px; }
+        .ac-estate-table td.num, .ac-estate-table th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .ac-estate-table td.actions { white-space: nowrap; text-align: right; }
+        .ac-estate-table td.actions > * { vertical-align: middle; margin-left: 4px; }
+        .ac-estate-table td.actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
+        .ac-estate-warn { background: #fdf1ea; border: 1px solid #f0cdb9; color: #8a3b1f; font-size: 12.5px; padding: 8px 12px; border-radius: 3px; }
+        .ac-custody-row { padding: 9px 0; border-bottom: 1px dashed var(--line); }
+        .ac-custody-row:last-of-type { border-bottom: none; }
+        .ac-pc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+        .ac-pc-grid .wide { grid-column: 1 / -1; }
+        @media (max-width: 700px) { .ac-row3, .ac-pc-grid { grid-template-columns: 1fr; } }
+        .ac-propview-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+        .ac-propview-tabs button {
+          background: none; border: 1px solid var(--line); border-radius: 2px; padding: 3px 10px; font-size: 11.5px;
+          font-weight: 600; color: var(--slate); cursor: pointer;
+        }
+        .ac-propview-tabs button.on { background: var(--brass-bg); border-color: var(--brass-light); color: var(--ink); }
+        .ac-propview-frame { aspect-ratio: 16 / 9; max-height: 320px; width: 100%; border-radius: 3px; overflow: hidden; background: var(--paper); border: 1px solid var(--line); }
+        .ac-propview-frame iframe, .ac-propview-frame img { width: 100%; height: 100%; border: 0; display: block; object-fit: cover; }
+        .ac-propview-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; text-align: center; }
+        .ac-propview-empty p { font-size: 12px; color: var(--slate); margin: 0; }
+        .ac-propview-empty .ac-addbtn { text-decoration: none; }
+        .ac-propview-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--slate-light); }
+        .ac-propview-foot a { color: var(--brass); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+        .ac-doc-move { font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 2px; background: var(--card); color: var(--ink-soft); max-width: 150px; }
+        .ac-docs { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; align-items: start; }
+        .ac-folders { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
+        .ac-folders-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--slate); font-weight: 600; margin: 12px 8px 4px; }
+        .ac-folder {
+          display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 1px solid transparent;
+          border-radius: 3px; padding: 6px 8px; font-size: 12.5px; color: var(--ink-soft); cursor: pointer;
+        }
+        .ac-folder .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ac-folder .n { font-size: 11px; color: var(--slate-light); font-variant-numeric: tabular-nums; }
+        .ac-folder:hover { background: var(--paper); }
+        .ac-folder.on { background: var(--brass-bg); color: var(--ink); font-weight: 600; }
+        .ac-folder.on .n { color: var(--brass); }
+        .ac-folder.drop { border-color: var(--brass); border-style: dashed; background: var(--brass-bg); }
+        .ac-folder.add { color: var(--slate); font-size: 12px; }
+        .ac-folder.add:hover { color: var(--brass); }
+        .ac-folder-form input { width: 100%; font-size: 12.5px; padding: 5px 8px; }
+        .ac-folders-hint { font-size: 11px; color: var(--slate-light); margin: 8px 8px 0; }
+        @media (max-width: 800px) {
+          .ac-docs { grid-template-columns: 1fr; }
+          .ac-folders { position: static; flex-direction: row; flex-wrap: wrap; }
+          .ac-folders .ac-folder { width: auto; }
+          .ac-folders-label, .ac-folders-hint { display: none; }
+          .ac-docs .ac-doc-row { flex-wrap: wrap; }
+          .ac-docs .ac-doc-actions { width: 100%; flex-wrap: wrap; padding-left: 46px; }
+        }
         .ac-email-dir {
           font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
           padding: 2px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
@@ -1741,21 +1895,17 @@ export default function App() {
           <h1>V J Crawford Conveyancing<span className="tag">Case Management</span></h1>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <div className="ac-topstats">
-            <div className="ac-topstat"><span className="n">{activeCount}</span><span className="l">Active files</span></div>
-            <div className="ac-topstat"><span className="n">{closedThisYear}</span><span className="l">Closed</span></div>
-          </div>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTasksPanel(true)} title="Tasks & reminders">
             <Bell size={17} /><span className="lbl">Tasks</span>
             {(() => {
               const today = new Date();
-              const overdueTaskCount = myTasks.filter((t) => t.dueDate && new Date(t.dueDate) < today).length;
+              const overdueTaskCount = myTasks.filter((t) => isOverdue(t.dueDate)).length;
               const staleCount = matters.filter((m) => !isClosed(m) && daysSince(lastActivityDate(m)) >= settings.staleDays).length;
               const total = overdueTaskCount + staleCount;
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
-          <TimerChip onStop={setStoppingTimer} />
+          <TimerChip userId={authUser.id} onStop={setStoppingTimer} />
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTimesheet(true)} title="My time recorded">
             <Clock size={17} /><span className="lbl">Time</span>
           </button>
@@ -1765,6 +1915,11 @@ export default function App() {
           <button className="ac-iconbtn ac-topbtn" onClick={() => setClientsPanel({ clientId: null })} title="Client register and conflict checks">
             <Users size={17} /><span className="lbl">Clients</span>
           </button>
+          {myDepartments.includes("private_client") && (
+            <button className="ac-iconbtn ac-topbtn" onClick={() => setShowSafeCustody(true)} title="Safe custody register (wills, LPAs, deeds)">
+              <Archive size={17} /><span className="lbl">Safe custody</span>
+            </button>
+          )}
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
             <Gavel size={17} /><span className="lbl">Undertakings</span>
           </button>
@@ -1820,7 +1975,7 @@ export default function App() {
               <button className={`ac-chip ${showClosed ? "active" : ""}`} onClick={() => setShowClosed((s) => !s)}>
                 Show closed files
               </button>
-              {settings.currentUser && (
+              {settings.currentUser && ["supervisor", "admin"].includes(authUser.role) && (
                 <button className={`ac-chip ${myMattersOnly ? "active" : ""}`} onClick={() => setMyMattersOnly((s) => !s)}>
                   My matters
                 </button>
@@ -1845,7 +2000,10 @@ export default function App() {
                 <div className="ac-item-top">
                   <span className="ac-item-ref">{m.reference}</span>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    {needsAttention(m, settings.staleDays).length > 0 && <span title={needsAttention(m, settings.staleDays).join(" · ")} style={{ color: "#9a5a1f" }}><AlertTriangle size={13} /></span>}
+                    {(() => {
+                      const reasons = needsAttention(m, settings.staleDays);
+                      return reasons.length > 0 && <span title={reasons.join(" · ")} style={{ color: "#9a5a1f" }}><AlertTriangle size={13} /></span>;
+                    })()}
                     {myDepartments.length > 1 && <DeptTag department={m.department} />}
                     <TypeTag type={m.type} department={m.department} />
                   </div>
@@ -1874,7 +2032,15 @@ export default function App() {
         {/* ---------------- Main ---------------- */}
         <div className="ac-main">
           {selectedId && !selected && (
-            <div style={{ padding: 60, textAlign: "center", color: "var(--slate)", fontSize: 13 }}>Loading matter…</div>
+            <div style={{ padding: 60, textAlign: "center", color: "var(--slate)", fontSize: 13 }}>
+              {detailError ? (
+                <>
+                  <p style={{ color: "var(--danger)" }}>{detailError === "Matter not found." ? "This matter isn't available to you — it may have been closed off to your department or deleted." : detailError}</p>
+                  <button type="button" className="ac-tablebtn" onClick={() => setSelectedId(null)}>Back to matters</button>
+                  {" "}<button type="button" className="ac-tablebtn" onClick={() => refreshSelected(selectedId)}>Try again</button>
+                </>
+              ) : "Loading matter…"}
+            </div>
           )}
 
           {!selectedId && !selected && (
@@ -1924,7 +2090,7 @@ export default function App() {
                       </div>
                       {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No open tasks assigned to you.</p>}
                       {openTasks.slice(0, 6).map((t) => {
-                        const overdue = t.dueDate && new Date(t.dueDate) < today;
+                        const overdue = isOverdue(t.dueDate);
                         return (
                           <div key={t.id} style={{ padding: "9px 0", borderBottom: "1px dashed var(--line)" }}>
                             <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-soft)" }}>{t.description}</div>
@@ -1983,6 +2149,7 @@ export default function App() {
 
           {selected && (
             <MatterDetail
+              key={selected.id}
               matter={selected}
               allMatters={matters}
               settings={settings}
@@ -1998,7 +2165,7 @@ export default function App() {
               onUpdateTask={(taskId, patch) => updateTask(selected.id, taskId, patch)}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
-              onAddDoc={() => setShowAddDoc(true)}
+              onAddDoc={(folderId) => setShowAddDoc({ folderId: folderId || null })}
               onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
               onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
               onReportOnTitle={() => downloadReportOnTitle(selected)}
@@ -2041,7 +2208,7 @@ export default function App() {
 
       {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} departments={myDepartments} />}
       {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} section={showEditMatter === true ? null : showEditMatter} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
-      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
+      {showAddDoc && selected && <AddDocForm folders={selected.folders} folderId={showAddDoc.folderId} onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
       {showAddEnquiry && selected && <AddEnquiryForm onClose={() => setShowAddEnquiry(false)} onAdd={(q) => addEnquiry(selected.id, q)} />}
@@ -2125,10 +2292,12 @@ export default function App() {
       {clientsPanel && (
         <ClientsPanel
           initialClientId={clientsPanel.clientId}
+          onChanged={() => selectedId && refreshSelected(selectedId)}
           onClose={() => setClientsPanel(null)}
           onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }}
         />
       )}
+      {showSafeCustody && <SafeCustodyPanel onClose={() => setShowSafeCustody(false)} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />}
       {showUndertakings && (
         <UndertakingsPanel
           onClose={() => setShowUndertakings(false)}
@@ -2947,7 +3116,7 @@ function GeneralStageFocus({ matter, stage, setActiveTab, onEdit }) {
   const idx = matter.currentStageIndex;
   const next = stages[idx + 1];
   const openTasks = matter.tasks.filter((t) => t.status === "Open").length;
-  const overdue = matter.tasks.filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < new Date()).length;
+  const overdue = matter.tasks.filter((t) => t.status === "Open" && isOverdue(t.dueDate)).length;
   const openUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding").length;
   return (
     <div className="ac-card ac-focus" id="stage-focus">
@@ -3123,6 +3292,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
               ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
             ] : []),
+            ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -3197,6 +3367,9 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               </div>
             )}
 
+            {isProbate(matter) && <EstateSummaryCard matter={matter} onOpenEstate={() => setActiveTab("estate")} />}
+            {isPrivateClient(matter) && <PcDetailsCard matter={matter} onChanged={onMatterChanged} />}
+
             <div className="ac-card">
               <h3><Users size={12} /> Client</h3>
               <CardEdit onClick={() => onEdit("client")} />
@@ -3208,6 +3381,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             </div>
 
             <MatterClientsCard matter={matter} users={users} onChanged={onMatterChanged} onOpenClient={onOpenClient} />
+
+            {isPrivateClient(matter) && <SafeCustodyCard matter={matter} onChanged={onMatterChanged} />}
+
+            {conv && <PropertyViewCard key={matter.id} address={matter.address} />}
 
             {conv && <div className="ac-card">
               <h3><Building2 size={12} /> Property &amp; title</h3>
@@ -3496,7 +3673,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <div className="ac-section-head">
               <h2>Tasks &amp; reminders</h2>
               <div style={{ display: "flex", gap: 8 }}>
-                {conv && <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>}
+                {(conv || STANDARD_TASKS[matter.type]) && <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>}
                 <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
               </div>
             </div>
@@ -3519,7 +3696,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   .filter((t) => t.status === "Open" && (!tasksMineOnly || t.assignedTo === currentUserId))
                   .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
                   .map((t) => {
-                  const overdue = t.dueDate && new Date(t.dueDate) < new Date();
+                  const overdue = isOverdue(t.dueDate);
                   return (
                     <div key={t.id} className={`ac-doc-row ${overdue ? "ac-row-issue" : ""}`} style={{ background: overdue ? "#fdf1ea" : "var(--card)", flexWrap: "wrap" }}>
                       <div className="ac-doc-icon" style={overdue ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><ListChecks size={16} /></div>
@@ -3563,42 +3740,20 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
         </div>
       )}
 
+      {activeTab === "estate" && isProbate(matter) && <EstateTab matter={matter} onChanged={onMatterChanged} />}
+
       {activeTab === "documents" && (
-        <div className="ac-detail-body" style={{ gridTemplateColumns: "1fr" }}>
-          <div className="ac-col-main">
-            <div className="ac-section-head">
-              <h2>Documents</h2>
-              <button className="ac-addbtn" onClick={onAddDoc}><Plus size={13} /> Add document</button>
-            </div>
-            {matter.documents.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No documents recorded yet.</p>}
-            {matter.documents.map((d) => (
-              <div key={d.id} className="ac-doc-row">
-                <div className="ac-doc-icon"><FileText size={16} /></div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="ac-doc-name">{d.name}</div>
-                  <div className="ac-doc-meta">{d.category} · {formatDate(d.date)}</div>
-                  {d.fileName && <div className="ac-doc-file"><Paperclip size={11} /> {d.fileName} · {formatFileSize(d.fileSize)}</div>}
-                  {d.notes && <div className="ac-doc-notes">{d.notes}</div>}
-                </div>
-                <div className="ac-doc-actions">
-                  <RowActions onEdit={() => onEditItem("documents", d)} onDelete={() => onDeleteItem("documents", d, `document “${d.name}”${d.fileName ? " and its file" : ""}`)} />
-                  {d.fileName ? (
-                    <>
-                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, false)}>View</button>
-                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, true)}><Download size={12} /> Download</button>
-                    </>
-                  ) : (
-                    <label className="ac-tablebtn" style={{ cursor: "pointer" }}>
-                      <Paperclip size={12} /> Attach file
-                      <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} style={{ display: "none" }}
-                        onChange={(e) => { const file = e.target.files[0]; e.target.value = ""; if (file) onAttachFile(d.id, file); }} />
-                    </label>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <DocumentsTab
+          matter={matter}
+          onChanged={onMatterChanged}
+          onAddDoc={onAddDoc}
+          onAttachFile={onAttachFile}
+          onOpenFile={onOpenFile}
+          onEdit={(d) => onEditItem("documents", d)}
+          onDelete={(d) => onDeleteItem("documents", d, `document “${d.name}”${d.fileName ? " and its file" : ""}`)}
+          RowActions={RowActions}
+          fileAccept={DOC_FILE_EXTENSIONS.join(",")}
+        />
       )}
 
       {activeTab === "emails" && (
@@ -3615,7 +3770,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                     <Download size={13} /> Import from Outlook
                   </button>
                   <p style={{ fontSize: 11, color: "var(--slate-light)", marginTop: 8, marginBottom: 0 }}>
-                    This adds a placeholder entry so you can see where imported mail would appear — a real integration reads and files actual messages via the Microsoft Graph API.
+                    Not connected yet — linking Microsoft 365 so matter emails are filed here automatically is a later step.
                   </p>
                 </>
               ) : (
@@ -3740,10 +3895,23 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
   const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const conv = f.department === "conveyancing";
   const staff = users.filter((u) => worksIn(u, f.department));
-  const chooseDepartment = (e) => setF({ ...f, department: e.target.value, type: areaOf(e.target.value).types[0], feeEarnerId: "", supervisorId: "" });
+  const [busy, setBusy] = useState(false);
+  // Switching department clears what doesn't apply there (conveyancing fields, the other parties' roles).
+  const chooseDepartment = (e) => {
+    const department = e.target.value;
+    setF({
+      ...f, department, type: areaOf(department).types[0], feeEarnerId: "", supervisorId: "",
+      ...(department !== "conveyancing" && {
+        price: "", estateAgent: "", lender: "", targetExchange: "", targetCompletion: "", mortgageOfferExpiry: "",
+        property: { tenure: "", titleNumber: "", registeredProprietor: "", leaseTerm: "", groundRent: "", serviceCharge: "" },
+      }),
+    });
+    setOtherParties((prev) => prev.map((p) => ({ ...p, role: partyRoles(department)[0] })));
+  };
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
+    if (busy) return; // a double-click mustn't open the matter twice
     if (!f.address.trim() || !f.client.trim()) {
       setError(`${describeLabel(f.department)} and client name are both required.`);
       return;
@@ -3751,7 +3919,8 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
     const conflictProblem = conflictStepProblem(conflict, checkNames, excludeIds);
     if (conflictProblem) return setError(conflictProblem);
     setError("");
-    onCreate({
+    setBusy(true);
+    await onCreate({
       department: f.department,
       clientIds: chosenClient ? [chosenClient.id] : [],
       newClients: chosenClient ? [] : [{ name: f.client.trim(), ...f.clientDetails }],
@@ -3780,6 +3949,7 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
       clientDetails: f.clientDetails,
       property: f.property,
     });
+    setBusy(false);
   }
 
   return (
@@ -3914,7 +4084,7 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
         <ConflictCheckStep names={checkNames} excludeClientIds={excludeIds} value={conflict} onChange={setConflict} />
 
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, margin: "10px 0" }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><FileSignature size={14} /> Open matter</button>
+        <button className="ac-submit" type="submit" onClick={submit} disabled={busy}><FileSignature size={14} /> {busy ? "Opening…" : "Open matter"}</button>
       </form>
     </div>
   );
@@ -3968,7 +4138,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
         <div className="ac-card">
           <h3><Users size={12} /> Your identity</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
-            Used to filter the matter list to "My matters" — this prototype has no real login, so this is just a display preference.
+            The name used when you confirm reviews and sign-offs. It starts as your login name.
           </p>
           <div className="ac-field" style={{ marginBottom: 0 }}>
             <label>Your name</label>
@@ -4020,7 +4190,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>Each matter gets a dedicated filing address built from its reference and this domain.</p>
           <div className="ac-field" style={{ marginBottom: 8 }}>
             <label>Firm domain</label>
-            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="yourfirm.co.uk" onBlur={() => onSave({ domain })} />
+            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="yourfirm.co.uk" onBlur={() => onSave({ domain })} disabled={!isAdmin} />
           </div>
           <div style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "var(--slate)" }}>e.g. matters+cv-2026-0041@{domain || "yourfirm.co.uk"}</div>
         </div>
@@ -4030,7 +4200,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>If a matter has no logged activity for this many days, it's flagged as needing a review — shown on the file, in the sidebar, and in Tasks &amp; reminders.</p>
           <div className="ac-field" style={{ marginBottom: 0 }}>
             <label>Flag files inactive for more than (days)</label>
-            <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} />
+            <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} disabled={!isAdmin} />
           </div>
         </div>
 
@@ -4048,6 +4218,15 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
         </div>
 
         <DepartmentsSetting isAdmin={isAdmin} departments={settings.departments || ["conveyancing"]} onSave={onSaveDepartments} />
+
+        {(settings.folderTemplates || []).length > 0 && (
+          <div className="ac-card">
+            <h3><Folder size={12} /> Standard document folders</h3>
+            <FolderTemplatesCard key={(settings.folderTemplates || []).map((t) => t.department).join()} templates={settings.folderTemplates}
+              areaName={areaName} isAdmin={isAdmin} onSaved={(folderTemplates) => onSave({ folderTemplates })} />
+            {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change these.</p>}
+          </div>
+        )}
 
         {(settings.departments || ["conveyancing"]).includes("conveyancing") && <div className="ac-card">
           <h3><Gavel size={12} /> Checks before exchange</h3>
@@ -4123,8 +4302,8 @@ function OutlookConsentModal({ onCancel, onApprove }) {
 /* Add document form                                                      */
 /* ---------------------------------------------------------------------- */
 
-function AddDocForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: todayISO(), notes: "" });
+function AddDocForm({ folders = [], folderId = null, onClose, onAdd }) {
+  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: todayISO(), notes: "", folderId: folderId || "" });
   const [file, setFile] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -4189,6 +4368,15 @@ function AddDocForm({ onClose, onAdd }) {
             <input type="date" value={f.date} onChange={set("date")} />
           </div>
         </div>
+        {folders.length > 0 && (
+          <div className="ac-field">
+            <label>Folder</label>
+            <select value={f.folderId} onChange={set("folderId")}>
+              <option value="">Unfiled</option>
+              {folders.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </div>
+        )}
         <div className="ac-field">
           <label>Notes</label>
           <DictTextarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />
@@ -4529,7 +4717,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
   function submit(e) {
     e.preventDefault();
     if (!f.address.trim() || !f.client.trim()) {
-      setError("Property address and client name are both required.");
+      setError(`${describeLabel(matter.department)} and client name are both required.`);
       return;
     }
     const costs = (f.money.costs || []).filter((c) => String(c.description).trim() || c.amount !== "");
@@ -4934,7 +5122,7 @@ function StandardEnquiriesModal({ onClose, onAdd }) {
 
 function StandardTasksForm({ matter, users, onClose, onAdd }) {
   const groups = Object.entries(STANDARD_TASKS[matter.type] || {})
-    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items: items.map(([text, role]) => ({ text, role })) }))
+    .map(([idx, items]) => ({ idx: Number(idx), stage: stagesOf(matter)[Number(idx)]?.name || "", items: items.map(([text, role]) => ({ text, role })) }))
     .sort((a, b) => a.idx - b.idx);
   const existing = new Set(matter.tasks.map((t) => t.description.trim().toLowerCase()));
   const isExisting = (t) => existing.has(t.toLowerCase());
@@ -4981,7 +5169,7 @@ function StandardTasksForm({ matter, users, onClose, onAdd }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: -6, marginBottom: 14 }}>
-          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected, and each is assigned to the usual person for that kind of work — the fee earner, or their secretary/assistant. Change any you like. Tasks already on this file are greyed out.
+          Tasks for the current stage ({stagesOf(matter)[matter.currentStageIndex]?.name}) onwards are pre-selected, and each is assigned to the usual person for that kind of work — the fee earner, or their secretary/assistant. Change any you like. Tasks already on this file are greyed out.
         </p>
         <div style={{ maxHeight: 440, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
           {groups.map((g) => {
@@ -5970,7 +6158,7 @@ function ThisWeekCard({ onOpenMatter, refreshKey }) {
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <button className="ac-linkbtn" onClick={() => onOpenMatter(m.id)}>{m.reference} — {m.address}</button>
-              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{m.type} · {m.client}{m.fee_earner_name ? ` · ${m.fee_earner_name}` : ""} · {STAGES[m.current_stage_index].name}</div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{m.type} · {m.client}{m.fee_earner_name ? ` · ${m.fee_earner_name}` : ""} · {stagesOf({ department: m.department, type: m.type })[m.current_stage_index]?.name}</div>
               <div className="ac-ready-row">
                 {e.kind === "Exchange" && chip(m.pre_exchange_confirmed, "Pre-exchange review")}
                 {m.type === "Purchase" && e.kind === "Exchange" && chip(m.deposit_received, "Deposit")}
@@ -6061,7 +6249,7 @@ function GlobalTasksPanel({ matters, settings, onClose, onOpenMatter, onComplete
         </div>
         {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13, marginBottom: 20 }}>Nothing outstanding — everything's up to date.</p>}
         {openTasks.map((t) => {
-          const overdue = t.dueDate && new Date(t.dueDate) < today;
+          const overdue = isOverdue(t.dueDate);
           return (
             <div key={t.id} className="ac-doc-row" style={{ background: overdue ? "#fdf1ea" : "var(--card)", marginBottom: 10 }}>
               <div className="ac-doc-icon" style={overdue ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><ListChecks size={16} /></div>

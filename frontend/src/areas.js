@@ -29,9 +29,15 @@ let order = ["conveyancing"];
 export function registerAreas(areas) {
   if (!Array.isArray(areas) || !areas.length) return;
   for (const a of areas) {
+    const typeStages = {};
+    for (const [type, names] of Object.entries(a.typeStages || {})) {
+      const hints = a.typeStageHints?.[type] || [];
+      typeStages[type] = names.map((name, i) => ({ name, hint: hints[i] || "" }));
+    }
     registry[a.key] = {
       ...a,
       stages: a.key === "conveyancing" ? CONVEYANCING_STAGES : a.stages.map((name) => ({ name, hint: "" })),
+      typeStages,
     };
   }
   order = areas.map((a) => a.key);
@@ -42,8 +48,15 @@ export const areaName = (key) => areaOf(key).name;
 /** Every department the system supports, in catalogue order. */
 export const allAreas = () => order.map((k) => registry[k]);
 export const isConveyancing = (m) => (m?.department || "conveyancing") === "conveyancing";
-/** A matter's stages: [{ name, hint }], the last being Closed. */
-export const stagesOf = (m) => areaOf(m?.department).stages;
+/** A matter's stages: [{ name, hint }], the last being Closed. Some types have their own (a will vs probate). */
+export const stagesOf = (m) => {
+  const area = areaOf(m?.department);
+  return (m?.type && area.typeStages && Object.hasOwn(area.typeStages, m.type) && area.typeStages[m.type]) || area.stages;
+};
+export const isPrivateClient = (m) => m?.department === "private_client";
+export const isProbate = (m) => isPrivateClient(m) && m.type === "Probate / estate administration";
+export const isWill = (m) => isPrivateClient(m) && m.type === "Will";
+export const isLpa = (m) => isPrivateClient(m) && m.type === "Lasting power of attorney";
 export const closedIndexOf = (m) => stagesOf(m).length - 1;
 export const isClosed = (m) => m.currentStageIndex >= closedIndexOf(m);
 

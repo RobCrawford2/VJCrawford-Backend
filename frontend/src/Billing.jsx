@@ -23,30 +23,37 @@ export const unitsText = (units) => {
 /* Timer — one at a time, kept across page reloads                         */
 /* ---------------------------------------------------------------------- */
 
-const TIMER_KEY = "vjc-timer";
+// One running timer per person, so people sharing a computer don't overwrite each other's.
+const TIMER_KEY = "vjc-timers";
 const listeners = new Set();
-function readTimer() {
-  try { return JSON.parse(localStorage.getItem(TIMER_KEY) || "null"); } catch { return null; }
+function readTimers() {
+  try { return JSON.parse(localStorage.getItem(TIMER_KEY) || "{}") || {}; } catch { return {}; }
 }
-let timerState = readTimer();
-function setTimer(value) {
-  timerState = value;
-  try { value ? localStorage.setItem(TIMER_KEY, JSON.stringify(value)) : localStorage.removeItem(TIMER_KEY); } catch { /* private mode */ }
+let timers = readTimers();
+function saveTimers(next) {
+  timers = next;
+  try { localStorage.setItem(TIMER_KEY, JSON.stringify(next)); } catch { /* private mode */ }
   listeners.forEach((l) => l());
 }
-export function useTimer() {
-  return useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => timerState);
+/** This person's running timer, if any. */
+export function useTimer(userId) {
+  const all = useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => timers);
+  return (userId && all[userId]) || null;
 }
-export const startTimer = (matter) => setTimer({ matterId: matter.id, reference: matter.reference, startedAt: Date.now() });
-export const stopTimer = () => setTimer(null);
+export const startTimer = (matter, userId) =>
+  saveTimers({ ...timers, [userId]: { matterId: matter.id, reference: matter.reference, startedAt: Date.now(), userId } });
+export const stopTimer = (userId) => {
+  const { [userId]: _gone, ...rest } = timers;
+  saveTimers(rest);
+};
 const elapsedText = (ms) => {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
 /** Top-bar chip while a timer runs: shows the time; Stop opens the record-time form for that matter. */
-export function TimerChip({ onStop }) {
-  const timer = useTimer();
+export function TimerChip({ userId, onStop }) {
+  const timer = useTimer(userId);
   const [, tick] = useState(0);
   useEffect(() => {
     if (!timer) return;
@@ -116,7 +123,7 @@ export function RecordTimerModal({ timer, onClose, onSaved }) {
   async function save(entry) {
     try {
       await api.addTime(timer.matterId, entry);
-      stopTimer();
+      stopTimer(timer.userId);
       notify("Time recorded.", "success");
       onSaved?.(timer.matterId);
       onClose();
@@ -130,7 +137,7 @@ export function RecordTimerModal({ timer, onClose, onSaved }) {
           ? <TimeEntryForm activities={activities} initial={{ minutes }} onSave={save} onCancel={onClose} />
           : <p style={{ fontSize: 13 }}>Loading…</p>}
         <button type="button" className="ac-linkbtn small" onClick={async () => {
-          if (await confirmAction("Discard the timer without recording any time?", { confirmLabel: "Discard", danger: true })) { stopTimer(); onClose(); }
+          if (await confirmAction("Discard the timer without recording any time?", { confirmLabel: "Discard", danger: true })) { stopTimer(timer.userId); onClose(); }
         }}>Discard the timer</button>
       </div>
     </div>
@@ -238,7 +245,7 @@ export function TimeTab({ matter, currentUserId, onChanged, onEditBilling }) {
   const [editing, setEditing] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const [cancelling, setCancelling] = useState(null); // { id, reason }
-  const timer = useTimer();
+  const timer = useTimer(currentUserId);
   const load = () => api.getBilling(matter.id).then(setData).catch((err) => notify(err.message));
   useEffect(() => { load(); }, [matter.id, matter.billing?.costsToDate, matter.billing?.unbilledUnits]);
 
@@ -294,7 +301,7 @@ export function TimeTab({ matter, currentUserId, onChanged, onEditBilling }) {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {timingThis
               ? <span className="ac-timer-note">Timer running — stop it from the top bar</span>
-              : <button className="ac-addbtn" onClick={() => startTimer(matter)} disabled={!!timer} title={timer ? `A timer is already running on ${timer.reference}` : "Start a timer"}><Play size={13} /> Start timer</button>}
+              : <button className="ac-addbtn" onClick={() => startTimer(matter, currentUserId)} disabled={!!timer} title={timer ? `A timer is already running on ${timer.reference}` : "Start a timer"}><Play size={13} /> Start timer</button>}
             <button className="ac-addbtn" onClick={() => { setRecording(true); setEditing(null); }}><Plus size={13} /> Record time</button>
             <button className="ac-addbtn" style={{ background: "var(--brass)" }} onClick={() => setDrafting(true)}><FileText size={13} /> Draft a bill</button>
           </div>
@@ -425,7 +432,9 @@ export function TimesheetPanel({ onClose, onOpenMatter, hourlyRate }) {
               <div key={e.id} className={`ac-time-row ${e.billable ? "" : "nb"}`}>
                 <span className="d">{fmtDate(e.work_date)}</span>
                 <span className="w">
-                  <button type="button" className="ac-linkbtn" style={{ fontSize: 12.5 }} onClick={() => { onOpenMatter(e.matter_id); onClose(); }}>{e.reference}</button>
+                  {e.matter_id
+                    ? <button type="button" className="ac-linkbtn" style={{ fontSize: 12.5 }} onClick={() => { onOpenMatter(e.matter_id); onClose(); }}>{e.reference}</button>
+                    : <span style={{ color: "var(--slate)" }}>{e.reference}</span>}
                   {" "}— {e.activity}{e.description ? `: ${e.description}` : ""}
                   <span className="meta">{e.address}</span>
                 </span>
