@@ -66,6 +66,8 @@ app.use("/clients", require("./routes/clients"));
 app.use("/deadlines", require("./routes/deadlines"));
 app.use("/matters", require("./routes/billing").matterRouter);
 app.use("/matters", require("./routes/folders").router);
+app.use("/matters", require("./routes/privateClient").matterRouter);
+app.use("/safe-custody", require("./routes/privateClient").custodyRouter);
 app.use("/time", require("./routes/billing").timeRouter);
 
 app.use((req, res) => {

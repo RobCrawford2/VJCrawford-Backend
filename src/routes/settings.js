@@ -50,7 +50,8 @@ router.get(
       departments,
       folderTemplates: await folderTemplates(req.user.firmId, departments),
       // Every department the system supports, with its matter types and stages.
-      areas: AREAS.map(({ key, name, prefix, types, stages, deadlines, defaultFunding }) => ({ key, name, prefix, types, stages, deadlines, defaultFunding })),
+      areas: AREAS.map(({ key, name, prefix, types, stages, typeStages, typeStageHints, deadlines, defaultFunding }) =>
+        ({ key, name, prefix, types, stages, typeStages, typeStageHints, deadlines, defaultFunding })),
     });
   })
 );

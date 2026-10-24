@@ -1373,3 +1373,97 @@ test("document folders: standard set on first open, filed by category, moved, re
   const reset = await request(app).patch("/settings").set(david).send({ folderTemplate: { department: "family", folders: null } });
   assert.equal(reset.body.folderTemplates.find((t) => t.department === "family").customised, false);
 });
+
+test("wills, trusts & probate: own stages per type, estate register, IHT estimate, documents, safe custody", async () => {
+  const emma = { Authorization: `Bearer ${await tokenFor("emma")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const list = (await request(app).get("/matters?limit=100").set(emma)).body.matters;
+  assert.ok(list.every((m) => m.department === "private_client"));
+  const estateRow = list.find((m) => m.reference === "PC-2026-0001");
+  const willRow = list.find((m) => m.reference === "PC-2026-0002");
+
+  // Probate has 9 stages, a will 8; both can be closed at their own last stage.
+  assert.equal((await request(app).post(`/matters/${estateRow.id}/stage`).set(emma).send({ stageIndex: 9 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${willRow.id}/stage`).set(emma).send({ stageIndex: 8 })).status, 400);
+
+  // The estate: details, register and summary come with the matter.
+  let estate = (await request(app).get(`/matters/${estateRow.id}`).set(emma)).body;
+  assert.equal(estate.pc_details.deceasedName, "Margaret Ellen Hayward");
+  assert.equal(estate.estateItems.length, 9);
+  assert.equal(estate.beneficiaries.length, 4);
+  assert.ok(estate.pcFields.some((f) => f.key === "dateOfDeath"));
+  // £666,792.65 gross; £8,775 debts; full transferred NRB and RNRB (£650k + £350k) → no IHT.
+  assert.equal(estate.estateSummary.grossEstate, 666792.65);
+  assert.equal(estate.estateSummary.netEstate, 658017.65);
+  assert.equal(estate.estateSummary.iht.due, 0);
+
+  // Without the transferred bands, tax is due: (658,017.65 − 5,000 charity − 325,000 − 175,000) × 40%.
+  const det = await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ transferredNrbPct: 0, transferredRnrbPct: "", dateOfDeath: "2026-05-21" });
+  assert.equal(det.status, 200);
+  assert.equal(det.body.transferredNrbPct, 0);
+  assert.equal(det.body.transferredRnrbPct, undefined);
+  estate = (await request(app).get(`/matters/${estateRow.id}`).set(emma)).body;
+  assert.equal(estate.estateSummary.iht.due, Math.round((658017.65 - 5000 - 325000 - 175000) * 0.4 * 100) / 100);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ dateOfDeath: "2026-02-30" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ grantType: "Sort of probate" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ nonsense: 1 })).status, 400);
+
+  // Add, update and remove assets; beneficiaries need a share or amount.
+  const car = await request(app).post(`/matters/${estateRow.id}/estate-items`).set(emma)
+    .send({ kind: "asset", category: "Vehicle", description: "Honda Jazz", valueAtDeath: "4200" });
+  assert.equal(car.status, 201);
+  assert.equal((await request(app).post(`/matters/${estateRow.id}/estate-items`).set(emma).send({ kind: "asset", category: "Spaceship", description: "x" })).status, 400);
+  const sold = await request(app).patch(`/matters/${estateRow.id}/estate-items/${car.body.id}`).set(emma).send({ status: "Notified" });
+  assert.match(String(sold.body.notified_on), /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/estate-items/${car.body.id}`).set(emma).send({ valueRealised: 3900, status: "Collected / transferred" })).status, 200);
+  assert.equal((await request(app).post(`/matters/${estateRow.id}/beneficiaries`).set(emma).send({ name: "X", giftType: "Share of residue" })).status, 400);
+  const ben = await request(app).post(`/matters/${estateRow.id}/beneficiaries`).set(emma).send({ name: "Local church", giftType: "Pecuniary legacy", amount: 1000, exemption: "charity" });
+  assert.equal(ben.status, 201);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/beneficiaries/${ben.body.id}`).set(emma).send({ paidAmount: 1000, paidOn: "2026-10-01" })).status, 200);
+  estate = (await request(app).get(`/matters/${estateRow.id}`).set(emma)).body;
+  assert.equal(estate.estateSummary.distribution.beneficiaries.find((b) => b.id === ben.body.id).balance, 0);
+  assert.ok(estate.activity.some((a) => /Paid £1,000.00 to Local church/.test(a.text)));
+  assert.equal((await request(app).delete(`/matters/${estateRow.id}/estate-items/${car.body.id}`).set(emma)).status, 204);
+
+  // Word drafts.
+  for (const url of [
+    `/matters/${estateRow.id}/estate-account`,
+    `/matters/${estateRow.id}/estate-items/${estate.estateItems[1].id}/letter`,
+    `/matters/${estateRow.id}/beneficiaries/${ben.body.id}/letter`,
+  ]) {
+    const doc = await request(app).get(url).set(emma).buffer(true).parse((res, cb) => { const c = []; res.on("data", (d) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
+    assert.equal(doc.status, 200, url);
+    assert.equal(doc.body.slice(0, 2).toString(), "PK");
+  }
+
+  // The estate register only exists on probate matters, and other departments can't see any of it.
+  assert.equal((await request(app).post(`/matters/${willRow.id}/estate-items`).set(emma).send({ kind: "asset", category: "Vehicle", description: "x" })).status, 400);
+  assert.equal((await request(app).get(`/matters/${estateRow.id}/estate-account`).set(sarah)).status, 404);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(sarah).send({ deceasedName: "x" })).status, 404);
+
+  // Changing a will into probate keeps it in range; a closed matter stays closed.
+  const lpa = list.find((m) => m.reference === "PC-2026-0003");
+  assert.equal((await request(app).post(`/matters/${lpa.id}/stage`).set(emma).send({ stageIndex: 7 })).status, 200);
+  const changed = await request(app).patch(`/matters/${lpa.id}`).set(emma).send({ type: "Probate / estate administration" });
+  assert.equal(changed.body.current_stage_index, 8);
+
+  // Safe custody register: Emma sees all three; Sarah (conveyancing) none; release is recorded once.
+  const reg = (await request(app).get("/safe-custody").set(emma)).body;
+  assert.equal(reg.entries.length, 3);
+  assert.equal((await request(app).get("/safe-custody").set(sarah)).body.entries.length, 0);
+  assert.equal((await request(app).get("/safe-custody?search=okafor").set(emma)).body.entries.length, 2);
+  assert.equal((await request(app).post("/safe-custody").set(sarah).send({ docType: "Will", person: "A", location: "B", receivedOn: "2026-01-01" })).status, 403);
+  const added = await request(app).post("/safe-custody").set(emma).send({ docType: "Lasting power of attorney", person: "Alan Pritchard", location: "Packet 1050", receivedOn: "2026-10-01", matterId: lpa.id });
+  assert.equal(added.status, 201);
+  assert.equal((await request(app).post(`/safe-custody/${added.body.id}/withdraw`).set(emma).send({ withdrawnOn: "2026-10-02" })).status, 400);
+  assert.equal((await request(app).post(`/safe-custody/${added.body.id}/withdraw`).set(emma).send({ withdrawnOn: "2026-10-02", withdrawnTo: "Claire Pritchard (attorney)" })).status, 200);
+  assert.equal((await request(app).post(`/safe-custody/${added.body.id}/withdraw`).set(emma).send({ withdrawnOn: "2026-10-02", withdrawnTo: "x" })).status, 409);
+  assert.equal((await request(app).get("/safe-custody").set(emma)).body.entries.length, 3);
+  assert.equal((await request(app).get("/safe-custody?withdrawn=true").set(emma)).body.entries.length, 4);
+
+  // The settings carry each type's stages for the screens.
+  const settings = (await request(app).get("/settings").set(emma)).body;
+  const pc = settings.areas.find((a) => a.key === "private_client");
+  assert.equal(pc.typeStages["Probate / estate administration"].length, 9);
+  assert.equal(pc.typeStageHints.Will.length, 8);
+});

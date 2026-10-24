@@ -20,6 +20,7 @@ const { createClient, checkClient, findVisibleClient } = require("./clients");
 const { billingSummary } = require("./billing");
 const { FUNDING_TYPES } = require("../config/areas");
 const { ensureFolders } = require("./folders");
+const { privateClientDetail } = require("./privateClient");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -111,6 +112,7 @@ async function loadMatterDetail(matterId, user) {
     parties: parties.rows,
     deadlines: deadlines.rows,
     billing: await billingSummary({ query }, matterId),
+    ...(matter.rows[0].department === "private_client" ? await privateClientDetail(matter.rows[0]) : {}),
   };
 }
 
@@ -132,7 +134,10 @@ async function nextReferenceNumber(db, firmId, year, prefix = "CV") {
 const formatReference = (year, n, prefix = "CV") => `${prefix}-${year}-${String(n).padStart(4, "0")}`;
 
 /** SQL for "this matter's Closed stage index", which differs by department. */
-const CLOSED_INDEX_SQL = `(CASE m.department ${AREAS.map((a) => `WHEN '${a.key}' THEN ${a.stages.length - 1}`).join(" ")} END)`;
+const CLOSED_INDEX_SQL = `(CASE ${AREAS.flatMap((a) => [
+  ...Object.entries(a.typeStages || {}).map(([type, st]) => `WHEN m.department = '${a.key}' AND m.type = '${type.replace(/'/g, "''")}' THEN ${st.length - 1}`),
+  `WHEN m.department = '${a.key}' THEN ${a.stages.length - 1}`,
+]).join(" ")} END)`;
 
 /** A matter's department, type and stage names (for validating / naming stage moves). */
 async function matterStages(db, matterId) {
@@ -854,9 +859,16 @@ router.patch(
       }
     }
     if (req.body.type !== undefined) {
-      const { department } = await matterStages({ query }, req.params.id);
+      const { department, type, current_stage_index: idx, stages: before } = await matterStages({ query }, req.params.id);
       const types = AREA_BY_KEY[department].types;
       if (!types.includes(req.body.type)) return res.status(400).json({ error: `type must be one of: ${types.join(", ")}.` });
+      // Types can have different stages (e.g. a will vs probate): keep a closed matter closed, and the rest in range.
+      const after = stagesFor(department, req.body.type);
+      if (req.body.type !== type && after !== before) {
+        const next = idx >= before.length - 1 ? after.length - 1 : Math.min(idx, after.length - 2);
+        params.push(next);
+        setClauses.push(`current_stage_index = $${params.length}`);
+      }
     }
     if (req.body.costs !== undefined) {
       const ok = Array.isArray(req.body.costs) && req.body.costs.length <= 50 && req.body.costs.every((c) =>

@@ -4,18 +4,19 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff, Folder
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff, Folder, Archive
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
-import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
+import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, isPrivateClient, isProbate, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
 import { DocumentsTab, FolderTemplatesCard } from "./Documents";
 import { PropertyViewCard } from "./PropertyView";
+import { PcDetailsCard, EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -207,6 +208,51 @@ const STANDARD_TASKS = {
     11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
 };
+
+// Wills, Trusts & Probate — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  Will: {
+    0: [["Send client care letter, terms of business and fee", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Take instructions: family, assets, executors, guardians, gifts and residue", "fee_earner"], ["Consider capacity and undue influence; see the client alone", "fee_earner"], ["Record any foreign assets, business or agricultural property, and existing wills", "fee_earner"], ["Advise on IHT, nil-rate bands and lifetime gifts", "fee_earner"]],
+    3: [["Draft the will", "fee_earner"], ["Send draft will with explanatory letter", "secretary"]],
+    4: [["Agree amendments and finalise the will", "fee_earner"], ["Book signing appointment with two independent witnesses", "secretary"]],
+    5: [["Supervise signing; check attestation clause, dates and witness details", "fee_earner"], ["Check no witness or witness's spouse is a beneficiary", "fee_earner"]],
+    6: [["Record the original in the will register and place in safe custody", "assistant"], ["Send client a copy and storage certificate", "secretary"], ["Register the will with Certainty (National Will Register) if instructed", "assistant"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+  "Lasting power of attorney": {
+    0: [["Send client care letter, terms of business and fee", "secretary"]],
+    1: [["Verify donor's identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Take instructions: LPA types, attorneys, replacements, joint / several, preferences and instructions", "fee_earner"], ["Confirm donor has capacity; consider a medical opinion if in doubt", "fee_earner"], ["Agree certificate provider and people to notify", "fee_earner"]],
+    3: [["Prepare LPA forms (LP1F / LP1H)", "assistant"], ["Send drafts to the donor to approve", "secretary"]],
+    4: [["Donor signs, then certificate provider, then attorneys (each witnessed)", "fee_earner"], ["Check every page and signing order before submission", "fee_earner"]],
+    5: [["Send application and fee (or exemption / remission form) to the OPG", "assistant"], ["Diary to chase the OPG if no registration within 20 weeks", "assistant"]],
+    6: [["Receive registered LPA; make certified copies", "assistant"], ["Send registered LPA and copies to donor / attorneys; keep original in safe custody if instructed", "secretary"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+  "Probate / estate administration": {
+    0: [["Send client care letter, terms of business and costs estimate to the executors", "secretary"], ["Obtain death certificate and original will (and any codicils)", "assistant"]],
+    1: [["Verify executors' identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Notify banks, building societies, pension and insurers of the death; request date-of-death values", "assistant"], ["Tell Us Once / DWP; cancel passport, licence and benefits", "secretary"], ["Secure and insure the property; arrange valuation", "fee_earner"], ["Search for other wills; Certainty search if appropriate", "assistant"], ["Record all assets and liabilities in the estate register", "assistant"]],
+    3: [["Value the estate and decide excepted estate or IHT400", "fee_earner"], ["Check lifetime gifts in the 7 years before death", "fee_earner"], ["Claim transferable nil-rate band / residence nil-rate band where available", "fee_earner"], ["Pay IHT (before the end of the 6th month after death to avoid interest)", "fee_earner"]],
+    4: [["Prepare probate application and statement of truth for the executors", "fee_earner"], ["Submit probate application to HMCTS with the original will", "assistant"]],
+    5: [["Receive grant; order sealed copies", "assistant"], ["Diary the 6-month Inheritance Act claim period", "assistant"]],
+    6: [["Send grant to asset holders and close accounts", "assistant"], ["Sell or transfer the property and investments", "fee_earner"], ["Place section 27 Trustee Act notices (Gazette and local paper)", "assistant"], ["Pay debts, funeral account and expenses", "fee_earner"], ["Deal with income tax / CGT for the administration period", "fee_earner"]],
+    7: [["Prepare estate accounts and send to executors for approval", "fee_earner"], ["Pay legacies and obtain receipts", "fee_earner"], ["Distribute residue to residuary beneficiaries", "fee_earner"], ["Obtain IHT clearance (IHT30) where IHT was payable", "fee_earner"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  Trust: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"]],
+    1: [["Verify settlor and trustees' identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Advise on type of trust and tax (IHT relevant property, CGT, income tax)", "fee_earner"]],
+    3: [["Draft trust deed and letter of wishes", "fee_earner"], ["Send drafts for approval", "secretary"]],
+    4: [["Execute the deed", "fee_earner"], ["Transfer assets to the trustees; open trust bank account", "fee_earner"]],
+    5: [["Register the trust on HMRC's Trust Registration Service (within 90 days)", "assistant"]],
+    6: [["Diary annual TRS update, tax return and 10-year anniversary charge", "assistant"], ["Prepare trust accounts", "fee_earner"]],
+    7: [["Send final bill and close the file", "secretary"]],
+  },
+});
 
 const STANDARD_SEARCHES = [
   {
@@ -544,6 +590,7 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
   const [showUndertakings, setShowUndertakings] = useState(false);
+  const [showSafeCustody, setShowSafeCustody] = useState(false);
   const [clientsPanel, setClientsPanel] = useState(null); // null | { clientId }
   const [showDiary, setShowDiary] = useState(false);
   const [showTimesheet, setShowTimesheet] = useState(false);
@@ -1708,6 +1755,24 @@ export default function App() {
         .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-doc-row[draggable="true"] { cursor: grab; }
+        .ac-muted { color: var(--slate); font-size: 13px; }
+        .ac-muted.small, .ac-linkbtn.small { font-size: 11.5px; }
+        .ac-linkbtn.small { color: var(--brass); }
+        .ac-check { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-soft); margin: 4px 0 12px; text-transform: none; font-weight: 500; }
+        .ac-check input { width: auto; }
+        .ac-row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .ac-inline-form { margin-bottom: 14px; }
+        .ac-table-wrap { overflow-x: auto; margin-bottom: 22px; }
+        .ac-estate-table td.num, .ac-estate-table th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .ac-estate-table td.actions { white-space: nowrap; text-align: right; }
+        .ac-estate-table td.actions > * { vertical-align: middle; margin-left: 4px; }
+        .ac-estate-table td.actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
+        .ac-estate-warn { background: #fdf1ea; border: 1px solid #f0cdb9; color: #8a3b1f; font-size: 12.5px; padding: 8px 12px; border-radius: 3px; }
+        .ac-custody-row { padding: 9px 0; border-bottom: 1px dashed var(--line); }
+        .ac-custody-row:last-of-type { border-bottom: none; }
+        .ac-pc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+        .ac-pc-grid .wide { grid-column: 1 / -1; }
+        @media (max-width: 700px) { .ac-row3, .ac-pc-grid { grid-template-columns: 1fr; } }
         .ac-propview-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
         .ac-propview-tabs button {
           background: none; border: 1px solid var(--line); border-radius: 2px; padding: 3px 10px; font-size: 11.5px;
@@ -1850,6 +1915,11 @@ export default function App() {
           <button className="ac-iconbtn ac-topbtn" onClick={() => setClientsPanel({ clientId: null })} title="Client register and conflict checks">
             <Users size={17} /><span className="lbl">Clients</span>
           </button>
+          {myDepartments.includes("private_client") && (
+            <button className="ac-iconbtn ac-topbtn" onClick={() => setShowSafeCustody(true)} title="Safe custody register (wills, LPAs, deeds)">
+              <Archive size={17} /><span className="lbl">Safe custody</span>
+            </button>
+          )}
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
             <Gavel size={17} /><span className="lbl">Undertakings</span>
           </button>
@@ -2227,6 +2297,7 @@ export default function App() {
           onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }}
         />
       )}
+      {showSafeCustody && <SafeCustodyPanel onClose={() => setShowSafeCustody(false)} onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }} />}
       {showUndertakings && (
         <UndertakingsPanel
           onClose={() => setShowUndertakings(false)}
@@ -3221,6 +3292,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
               ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
             ] : []),
+            ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -3295,6 +3367,9 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               </div>
             )}
 
+            {isProbate(matter) && <EstateSummaryCard matter={matter} onOpenEstate={() => setActiveTab("estate")} />}
+            {isPrivateClient(matter) && <PcDetailsCard matter={matter} onChanged={onMatterChanged} />}
+
             <div className="ac-card">
               <h3><Users size={12} /> Client</h3>
               <CardEdit onClick={() => onEdit("client")} />
@@ -3306,6 +3381,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             </div>
 
             <MatterClientsCard matter={matter} users={users} onChanged={onMatterChanged} onOpenClient={onOpenClient} />
+
+            {isPrivateClient(matter) && <SafeCustodyCard matter={matter} onChanged={onMatterChanged} />}
 
             {conv && <PropertyViewCard key={matter.id} address={matter.address} />}
 
@@ -3596,7 +3673,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <div className="ac-section-head">
               <h2>Tasks &amp; reminders</h2>
               <div style={{ display: "flex", gap: 8 }}>
-                {conv && <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>}
+                {(conv || STANDARD_TASKS[matter.type]) && <button className="ac-addbtn" onClick={onLoadStandardTasks}><ListChecks size={13} /> Use standard tasks</button>}
                 <button className="ac-addbtn" onClick={onAddTask}><Plus size={13} /> Add task</button>
               </div>
             </div>
@@ -3662,6 +3739,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           </div>
         </div>
       )}
+
+      {activeTab === "estate" && isProbate(matter) && <EstateTab matter={matter} onChanged={onMatterChanged} />}
 
       {activeTab === "documents" && (
         <DocumentsTab
@@ -5043,7 +5122,7 @@ function StandardEnquiriesModal({ onClose, onAdd }) {
 
 function StandardTasksForm({ matter, users, onClose, onAdd }) {
   const groups = Object.entries(STANDARD_TASKS[matter.type] || {})
-    .map(([idx, items]) => ({ idx: Number(idx), stage: STAGES[Number(idx)].name, items: items.map(([text, role]) => ({ text, role })) }))
+    .map(([idx, items]) => ({ idx: Number(idx), stage: stagesOf(matter)[Number(idx)]?.name || "", items: items.map(([text, role]) => ({ text, role })) }))
     .sort((a, b) => a.idx - b.idx);
   const existing = new Set(matter.tasks.map((t) => t.description.trim().toLowerCase()));
   const isExisting = (t) => existing.has(t.toLowerCase());
@@ -5090,7 +5169,7 @@ function StandardTasksForm({ matter, users, onClose, onAdd }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: -6, marginBottom: 14 }}>
-          Tasks for the current stage ({STAGES[matter.currentStageIndex].name}) onwards are pre-selected, and each is assigned to the usual person for that kind of work — the fee earner, or their secretary/assistant. Change any you like. Tasks already on this file are greyed out.
+          Tasks for the current stage ({stagesOf(matter)[matter.currentStageIndex]?.name}) onwards are pre-selected, and each is assigned to the usual person for that kind of work — the fee earner, or their secretary/assistant. Change any you like. Tasks already on this file are greyed out.
         </p>
         <div style={{ maxHeight: 440, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: "4px 14px" }}>
           {groups.map((g) => {
@@ -6079,7 +6158,7 @@ function ThisWeekCard({ onOpenMatter, refreshKey }) {
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <button className="ac-linkbtn" onClick={() => onOpenMatter(m.id)}>{m.reference} — {m.address}</button>
-              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{m.type} · {m.client}{m.fee_earner_name ? ` · ${m.fee_earner_name}` : ""} · {STAGES[m.current_stage_index].name}</div>
+              <div style={{ fontSize: 11.5, color: "var(--slate)" }}>{m.type} · {m.client}{m.fee_earner_name ? ` · ${m.fee_earner_name}` : ""} · {stagesOf({ department: m.department, type: m.type })[m.current_stage_index]?.name}</div>
               <div className="ac-ready-row">
                 {e.kind === "Exchange" && chip(m.pre_exchange_confirmed, "Pre-exchange review")}
                 {m.type === "Purchase" && e.kind === "Exchange" && chip(m.deposit_received, "Deposit")}

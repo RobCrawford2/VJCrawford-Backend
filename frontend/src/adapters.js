@@ -164,6 +164,13 @@ export function adaptMatter(m, users) {
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
     folders: (m.folders || []).map((f) => ({ id: f.id, name: f.name })),
+    // Wills, Trusts & Probate (kept as the server sends them; see PrivateClient.jsx).
+    pcDetails: m.pc_details || {},
+    pcFields: m.pcFields || [],
+    estateItems: m.estateItems || null,
+    beneficiaries: m.beneficiaries || null,
+    estateSummary: m.estateSummary || null,
+    safeCustody: m.safeCustody || [],
     emails: (m.emails || []).map(adaptEmail),
     enquiries: (m.enquiries || []).map(adaptEnquiry),
     searches: (m.searches || []).map(adaptSearch),
