@@ -49,3 +49,16 @@ export const isClosed = (m) => m.currentStageIndex >= closedIndexOf(m);
 
 /** Wording for the "address" field, which is the matter's description outside conveyancing. */
 export const describeLabel = (department) => ((department || "conveyancing") === "conveyancing" ? "Property address" : "Matter description");
+
+/** Roles for the other people on a matter, by department (for conflict checks). */
+const PARTY_ROLES = {
+  conveyancing: ["Seller", "Buyer", "Other side", "Lender", "Other"],
+  private_client: ["Deceased", "Executor", "Beneficiary", "Attorney", "Trustee", "Other"],
+  family: ["Other party (spouse / partner)", "Child", "Other"],
+  employment: ["Employer", "Employee", "Respondent", "Claimant", "Other"],
+  litigation: ["Opponent / defendant", "Claimant", "Co-defendant", "Witness", "Expert", "Other"],
+  personal_injury: ["Defendant / insurer", "Witness", "Other"],
+  corporate: ["Buyer", "Seller", "Target company", "Other side", "Other"],
+  crime: ["Co-defendant", "Complainant / victim", "Witness", "Other"],
+};
+export const partyRoles = (department) => PARTY_ROLES[department || "conveyancing"] || ["Other side", "Other"];

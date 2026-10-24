@@ -15,6 +15,8 @@ const { ukToday } = require("../utils/dates");
 const { validateRows } = require("../utils/matterImport");
 const { buildReportOnTitle } = require("../reports/reportOnTitle");
 const { buildDocument, TEMPLATE_LIST } = require("../reports/letters");
+const { conflictCheck, summariseCheck, countMatches } = require("../utils/conflicts");
+const { createClient, checkClient, findVisibleClient } = require("./clients");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -30,7 +32,7 @@ function logActivity(client, matterId, userId, type, text) {
  * column so it's cheap even on a large caseload.
  */
 async function loadMatterDetail(matterId) {
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -68,6 +70,12 @@ async function loadMatterDetail(matterId) {
        WHERE b.matter_id = $1 ORDER BY b.entered_at DESC`,
       [matterId]
     ),
+    query(
+      `SELECT c.*, vu.name AS id_verified_by_name FROM matter_clients mc JOIN clients c ON c.id = mc.client_id
+       LEFT JOIN users vu ON vu.id = c.id_verified_by WHERE mc.matter_id = $1 ORDER BY c.name`,
+      [matterId]
+    ),
+    query(`SELECT * FROM matter_parties WHERE matter_id = $1 ORDER BY created_at`, [matterId]),
   ]);
 
   if (!matter.rows.length) return null;
@@ -87,6 +95,8 @@ async function loadMatterDetail(matterId) {
     activity: activity.rows,
     linkedMatters: links.rows,
     bankDetails: bank.rows,
+    clients: clients.rows,
+    parties: parties.rows,
   };
 }
 
@@ -324,6 +334,34 @@ router.post(
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
     }
 
+    // Client records: existing ones chosen, new ones to add, or (older
+    // callers) one made from the matter's own client details.
+    const clientIds = Array.isArray(req.body.clientIds) ? [...new Set(req.body.clientIds)] : [];
+    const newClients = Array.isArray(req.body.newClients) ? req.body.newClients : [];
+    const parties = (Array.isArray(req.body.parties) ? req.body.parties : []).filter((p) => p && String(p.name || "").trim());
+    for (const nc of newClients) {
+      const problem = checkClient(nc || {});
+      if (problem) return res.status(400).json({ error: problem });
+    }
+    if (parties.some((p) => !String(p.role || "").trim())) return res.status(400).json({ error: "Each other party needs a role (e.g. Other side)." });
+    const existingClients = [];
+    for (const id of clientIds) {
+      const found = await findVisibleClient(req.user, id);
+      if (!found) return res.status(400).json({ error: "One of the chosen clients wasn't found." });
+      existingClients.push(found);
+    }
+    const autoClient = !existingClients.length && !newClients.length
+      ? { name: client, address: req.body.clientAddress, email: req.body.clientEmail, phone: req.body.clientPhone, salutation: req.body.clientSalutation }
+      : null;
+
+    // Conflict check, run here so what's recorded doesn't depend on the screen.
+    const checkNames = [...existingClients.map((c) => c.name), ...newClients.map((c) => c.name), ...(autoClient ? [client] : []), ...parties.map((p) => p.name)];
+    const conflicts = await conflictCheck({ query }, req.user, checkNames, { excludeClientIds: clientIds });
+    const conflictNote = String(req.body.conflictReview?.note || "").trim();
+    if (req.body.conflictReview && countMatches(conflicts) && !conflictNote) {
+      return res.status(400).json({ error: "The conflict check found possible matches. Review them and note why there's no conflict before opening the matter.", conflicts });
+    }
+
     // Reference generation: CV-<year>-<next number for the firm>. Two staff
     // opening a matter at the same instant could pick the same number; the
     // unique (firm_id, reference) constraint turns that into a 409 retry
@@ -356,6 +394,21 @@ router.post(
         matter = updated.rows[0];
       }
       await logActivity(client_, matter.id, req.user.id, "stage", "Matter opened at Instructed");
+
+      const linkIds = [...clientIds];
+      for (const nc of [...newClients, ...(autoClient ? [autoClient] : [])]) linkIds.push((await createClient(client_, req.user, nc)).id);
+      for (const id of linkIds) {
+        await client_.query(`INSERT INTO matter_clients (matter_id, client_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [matter.id, id]);
+      }
+      for (const p of parties) {
+        await client_.query(`INSERT INTO matter_parties (matter_id, name, role, notes) VALUES ($1,$2,$3,$4)`,
+          [matter.id, String(p.name).trim(), String(p.role).trim(), p.notes || null]);
+      }
+      await client_.query(
+        `UPDATE matters SET conflict_checked_by = $2, conflict_checked_at = now(), conflict_check_note = $3 WHERE id = $1`,
+        [matter.id, req.user.id, conflictNote || null]
+      );
+      await logActivity(client_, matter.id, req.user.id, "note", `${summariseCheck(conflicts)}${conflictNote ? ` — reviewed: ${conflictNote}` : ""}`);
       await client_.query("COMMIT");
       res.status(201).json(matter);
     } catch (err) {
@@ -1788,6 +1841,62 @@ function deleteRoute(path, table, idParam, label, describe, before) {
   );
 }
 
+// -----------------------------------------------------------------------
+// Clients and other parties on a matter (each addition is conflict-checked)
+// -----------------------------------------------------------------------
+router.post(
+  "/:id/clients",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    let target;
+    if (req.body.clientId) {
+      target = await findVisibleClient(req.user, req.body.clientId);
+      if (!target) return res.status(404).json({ error: "Client not found." });
+    } else {
+      const problem = checkClient(req.body.newClient || {});
+      if (problem) return res.status(400).json({ error: problem });
+    }
+    const name = target ? target.name : String(req.body.newClient.name).trim();
+    const conflicts = await conflictCheck({ query }, req.user, [name], { excludeMatterId: req.params.id, excludeClientIds: target ? [target.id] : [] });
+    if (!target) target = await createClient({ query }, req.user, req.body.newClient);
+    await query(`INSERT INTO matter_clients (matter_id, client_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.params.id, target.id]);
+    await logActivity({ query }, req.params.id, req.user.id, "note", `Client ${target.name} added to the matter. ${summariseCheck(conflicts)}`);
+    res.status(201).json({ client: target, conflicts });
+  })
+);
+
+router.delete(
+  "/:id/clients/:clientId",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const linked = await query(`SELECT c.id, c.name FROM matter_clients mc JOIN clients c ON c.id = mc.client_id WHERE mc.matter_id = $1`, [req.params.id]);
+    const row = linked.rows.find((r) => r.id === req.params.clientId);
+    if (!row) return res.status(404).json({ error: "That client isn't on this matter." });
+    if (linked.rows.length === 1) return res.status(400).json({ error: "A matter needs at least one client. Add the right client first, then remove this one." });
+    await query(`DELETE FROM matter_clients WHERE matter_id = $1 AND client_id = $2`, [req.params.id, row.id]);
+    await logActivity({ query }, req.params.id, req.user.id, "edit", `Client ${row.name} removed from the matter`);
+    res.status(204).send();
+  })
+);
+
+router.post(
+  "/:id/parties",
+  asyncHandler(async (req, res) => {
+    if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    const name = String(req.body.name || "").trim();
+    const role = String(req.body.role || "").trim();
+    if (!name || !role) return res.status(400).json({ error: "Enter the party's name and their role." });
+    const conflicts = await conflictCheck({ query }, req.user, [name], { excludeMatterId: req.params.id });
+    const result = await query(
+      `INSERT INTO matter_parties (matter_id, name, role, notes) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.id, name, role, req.body.notes || null]
+    );
+    await logActivity({ query }, req.params.id, req.user.id, "note", `${role} added: ${name}. ${summariseCheck(conflicts)}`);
+    res.status(201).json({ party: result.rows[0], conflicts });
+  })
+);
+
+deleteRoute("/:id/parties/:partyId", "matter_parties", "partyId", "Party", (p) => `${p.role.toLowerCase()} "${p.name}"`);
 deleteRoute("/:id/documents/:documentId", "documents", "documentId", "Document", (d) => `document "${d.name}"${d.file_name ? " and its file" : ""}`);
 deleteRoute("/:id/emails/:emailId", "emails", "emailId", "Email", (e) => `email log "${e.subject}"`,
   (db, e) => db.query(`UPDATE enquiries SET source_email_id = NULL WHERE source_email_id = $1`, [e.id]));

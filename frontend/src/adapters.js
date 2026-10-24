@@ -69,6 +69,18 @@ function adaptActivity(a) {
  * A future enhancement would have the backend return a precomputed
  * attention flag per row; out of scope for this pass.
  */
+/** A client record (GET /clients, /clients/:id, or a matter's clients). */
+export function adaptClient(c) {
+  return {
+    id: c.id, type: c.client_type, name: c.name, dateOfBirth: c.date_of_birth ? String(c.date_of_birth).slice(0, 10) : "",
+    companyNumber: c.company_number || "", address: c.address || "", email: c.email || "", phone: c.phone || "",
+    salutation: c.salutation || "", notes: c.notes || "",
+    idVerifiedOn: c.id_verified_on ? String(c.id_verified_on).slice(0, 10) : "", idMethod: c.id_method || "",
+    idVerifiedByName: c.id_verified_by_name || "", riskLevel: c.risk_level || "",
+    matterCount: c.matter_count, matters: c.matters,
+  };
+}
+
 const numOrBlank = (v) => (v !== null && v !== undefined ? Number(v) : "");
 
 export function adaptMatter(m, users) {
@@ -128,6 +140,12 @@ export function adaptMatter(m, users) {
       fundsReceived: numOrBlank(m.funds_received),
       costs: Array.isArray(m.costs) ? m.costs.map((c) => ({ description: c.description, amount: Number(c.amount), vat: !!c.vat })) : [],
     },
+    // Client records linked to the matter (the firm-wide register), and the other parties.
+    clients: (m.clients || []).map(adaptClient),
+    otherParties: (m.parties || []).map((p) => ({ id: p.id, name: p.name, role: p.role, notes: p.notes || "" })),
+    conflictCheck: m.conflict_checked_at
+      ? { at: m.conflict_checked_at, byId: m.conflict_checked_by, note: m.conflict_check_note || "" }
+      : null,
     // Client's bank details, newest first: [0] is the current set unless superseded.
     bankDetails: (m.bankDetails || []).map((b) => ({
       id: b.id, accountName: b.account_name, sortCode: b.sort_code, accountNumber: b.account_number, bankName: b.bank_name || "",
@@ -204,6 +222,7 @@ function detailFields(f) {
 export function toApiNewMatter(f) {
   return {
     department: f.department || "conveyancing",
+    clientIds: f.clientIds, newClients: f.newClients, parties: f.otherParties, conflictReview: f.conflictReview,
     address: f.address, client: f.client, type: f.type, price: f.price,
     feeEarnerId: f.feeEarnerId || null, supervisorId: f.supervisorId || null,
     otherSideSolicitor: f.parties?.otherSideSolicitor, otherSideSolicitorEmail: f.parties?.otherSideSolicitorEmail,

@@ -53,6 +53,7 @@ app.use("/users", userRoutes);
 app.use("/settings", settingsRoutes);
 app.use("/tasks", taskRoutes);
 app.use("/undertakings", undertakingRoutes);
+app.use("/clients", require("./routes/clients"));
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not found." });

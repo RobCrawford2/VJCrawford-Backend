@@ -11,7 +11,8 @@ import Login from "./Login";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
-import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel } from "./areas";
+import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
+import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -350,6 +351,8 @@ function needsAttention(matter, staleDays = 14) {
   } else if (outstandingUndertakings.length) {
     reasons.push("Undertaking not yet discharged");
   }
+  const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
+  if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
   const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today);
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
@@ -518,6 +521,7 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [showStaff, setShowStaff] = useState(false);
   const [showUndertakings, setShowUndertakings] = useState(false);
+  const [clientsPanel, setClientsPanel] = useState(null); // null | { clientId }
   const [homeRefresh, setHomeRefresh] = useState(0);
   const [editingItem, setEditingItem] = useState(null); // { kind, item }
   const [stageRequestDraft, setStageRequestDraft] = useState(null);
@@ -1261,6 +1265,31 @@ export default function App() {
         .ac-dept-tick input, .ac-field .ac-dept-tick input { width: auto; margin: 0; }
         .ac-dept-tick.all, .ac-field .ac-dept-tick.all { flex-basis: 100%; font-weight: 600; }
         .ac-dept-tick.all span { font-weight: 400; color: var(--slate); }
+        .ac-conflict-step { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px; background: var(--card); }
+        .ac-conflicts { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .ac-conflict { border-radius: 3px; padding: 8px 10px; font-size: 12.5px; }
+        .ac-conflict.clear { background: var(--success-bg); color: var(--success); }
+        .ac-conflict.hit { background: #fdf1ea; color: #8a3b1f; border: 1px solid #e2a06a; }
+        .ac-conflict .head { display: flex; align-items: center; gap: 6px; }
+        .ac-conflict-match { margin: 6px 0 0 19px; color: var(--ink); }
+        .ac-conflict-matter { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+        .ac-conflict-matter.hidden { color: #8a3b1f; font-style: italic; }
+        .ac-conflict-matter .dept { color: var(--slate); }
+        .ac-conflict-done { font-size: 11.5px; color: var(--slate); margin-top: 8px; }
+        .ac-client-search { position: relative; }
+        .ac-client-results { border: 1px solid var(--line); border-radius: 3px; background: var(--card); margin-top: 4px; max-height: 220px; overflow-y: auto; }
+        .ac-client-results button { display: block; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px dashed var(--line); padding: 7px 10px; font-size: 13px; color: var(--ink); }
+        .ac-client-results button:hover { background: var(--paper); }
+        .ac-client-results button span { display: block; font-size: 11.5px; color: var(--slate); }
+        .ac-client-none { font-size: 11.5px; color: var(--slate); margin-top: 4px; }
+        .ac-chosen-client { display: flex; gap: 10px; align-items: baseline; font-size: 13px; padding: 8px 10px; background: var(--success-bg); border-radius: 3px; margin-bottom: 12px; }
+        .ac-client-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+        .ac-idstatus { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; }
+        .ac-idstatus.ok { color: var(--success); }
+        .ac-idstatus.no { color: #8a3b1f; }
+        .ac-client-listrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 9px 12px; margin-bottom: 6px; font-size: 13px; color: var(--ink); }
+        .ac-client-listrow:hover { border-color: var(--brass); }
+        .ac-client-listrow .meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
         .ac-deptselect { width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--card); font-size: 13px; font-weight: 600; color: var(--ink); }
         .ac-depttag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); background: var(--brass-bg); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
         .ac-detail-body.ac-money { grid-template-columns: 1fr 1fr; }
@@ -1657,6 +1686,9 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setClientsPanel({ clientId: null })} title="Client register and conflict checks">
+            <Users size={17} /><span className="lbl">Clients</span>
+          </button>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowUndertakings(true)} title="Undertakings register">
             <Gavel size={17} /><span className="lbl">Undertakings</span>
           </button>
@@ -1922,6 +1954,8 @@ export default function App() {
               onSaveField={(patch) => saveMatterFields(selected.id, patch)}
               onEditItem={(kind, item) => setEditingItem({ kind, item })}
               onDeleteItem={(kind, item, label) => deleteItem(selected.id, kind, item, label)}
+              onMatterChanged={afterMutation}
+              onOpenClient={(clientId) => setClientsPanel({ clientId })}
               saveState={saveState}
             />
           )}
@@ -1994,6 +2028,13 @@ export default function App() {
           users={users}
           onClose={() => setShowStandardTasks(false)}
           onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
+        />
+      )}
+      {clientsPanel && (
+        <ClientsPanel
+          initialClientId={clientsPanel.clientId}
+          onClose={() => setClientsPanel(null)}
+          onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }}
         />
       )}
       {showUndertakings && (
@@ -2567,6 +2608,7 @@ function CardEdit({ onClick }) {
 /** Where to go to deal with a "Needs attention" item. */
 function attentionAction(reason, matter) {
   const r = reason.toLowerCase();
+  if (r.includes("client id not checked")) return { label: "ID check", scroll: "client-records" };
   if (r.includes("bank details")) return { label: "Bank details", tab: "money" };
   if (r.includes("undertaking")) return { label: "Undertakings", tab: "undertakings" };
   if (r.includes("search")) return { label: "Searches", tab: "searches" };
@@ -2928,7 +2970,7 @@ function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onR
   );
 }
 
-function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onGenerateDocument, onAddBankDetails, onVerifyBankDetails, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState }) {
+function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSettings, onBack, onSetStage, onDecideStageRequest, onWithdrawStageRequest, currentUserId, onLoadStandardTasks, users, onUpdateTask, onEditItem, onDeleteItem, activeTab, setActiveTab, onAddDoc, onAttachFile, onOpenFile, onReportOnTitle, onGenerateDocument, onAddBankDetails, onVerifyBankDetails, onAddEmail, onAddNote, onEdit, onAddEnquiry, onLoadStandardEnquiries, onSetEnquiryStatus, onLogEnquiryReply, onAddEnquiryComment, onMatchEmail, onEmailEnquiries, onAddSearch, onLoadStandardSearches, onUpdateSearch, onAddUndertaking, onDischargeUndertaking, onAddTask, onCompleteTask, onReopenTask, onToggleChecklistItem, onConfirmReview, onResetReview, staleDays, onOpenLinked, onSaveField, saveState, onMatterChanged, onOpenClient }) {
   const [notesDraft, setNotesDraft] = useState(matter.notes || "");
   const [tasksMineOnly, setTasksMineOnly] = useState(false);
   const conv = isConveyancing(matter);
@@ -3063,6 +3105,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               <div className="ac-kv"><span className="k">Letters start</span><span className="v">{matter.clientDetails.salutation ? `Dear ${matter.clientDetails.salutation}` : "—"}</span></div>
             </div>
 
+            <MatterClientsCard matter={matter} users={users} onChanged={onMatterChanged} onOpenClient={onOpenClient} />
+
             {conv && <div className="ac-card">
               <h3><Building2 size={12} /> Property &amp; title</h3>
               <CardEdit onClick={() => onEdit("property")} />
@@ -3088,6 +3132,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               {conv && <div className="ac-kv"><span className="k">Estate agent</span><span className="v">{matter.parties.estateAgent || "—"}</span></div>}
               {conv && <div className="ac-kv"><span className="k">Lender</span><span className="v">{matter.parties.lender || "—"}</span></div>}
             </div>
+
+            <PartiesCard matter={matter} onChanged={onMatterChanged} onDelete={(p) => onDeleteItem("parties", p, `${p.role.toLowerCase()} “${p.name}”`)} />
 
             <div className="ac-card">
               <h3><Calendar size={12} /> Key dates</h3>
@@ -3569,6 +3615,17 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
     property: { tenure: "", titleNumber: "", registeredProprietor: "", leaseTerm: "", groundRent: "", serviceCharge: "" },
   });
   const [error, setError] = useState("");
+  const [chosenClient, setChosenClient] = useState(null); // an existing client record, or null for a new client
+  const [otherParties, setOtherParties] = useState([]);
+  const [conflict, setConflict] = useState(null);
+  const checkNames = [f.client.trim(), ...otherParties.map((p) => p.name.trim()).filter(Boolean)];
+  const excludeIds = chosenClient ? [chosenClient.id] : [];
+
+  function pickClient(c) {
+    setChosenClient(c);
+    setF((prev) => ({ ...prev, client: c.name, clientDetails: { address: c.address, email: c.email, phone: c.phone, salutation: c.salutation } }));
+  }
+  const setParty = (i, patch) => setOtherParties((prev) => prev.map((p, j) => (j === i ? { ...p, ...patch } : p)));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const conv = f.department === "conveyancing";
@@ -3581,9 +3638,15 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
       setError(`${describeLabel(f.department)} and client name are both required.`);
       return;
     }
+    const conflictProblem = conflictStepProblem(conflict, checkNames, excludeIds);
+    if (conflictProblem) return setError(conflictProblem);
     setError("");
     onCreate({
       department: f.department,
+      clientIds: chosenClient ? [chosenClient.id] : [],
+      newClients: chosenClient ? [] : [{ name: f.client.trim(), ...f.clientDetails }],
+      otherParties: otherParties.filter((p) => p.name.trim()),
+      conflictReview: { note: conflict.note || "" },
       address: f.address.trim(),
       client: f.client.trim(),
       type: f.type,
@@ -3646,6 +3709,15 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
           <input type="number" value={f.price} onChange={set("price")} placeholder="465000" />
         </div>}
 
+        <div className="ac-fieldset-title">Client</div>
+        {chosenClient ? (
+          <div className="ac-chosen-client">
+            Existing client: <strong>{chosenClient.name}</strong>
+            <button type="button" className="ac-linkbtn small" onClick={() => setChosenClient(null)}>Use a new client instead</button>
+          </div>
+        ) : (
+          <div className="ac-field"><ClientSearch onPick={pickClient} /></div>
+        )}
         <div className="ac-fieldset-title">Client contact</div>
         <ClientDetailsFields value={f.clientDetails} onChange={setIn} />
 
@@ -3695,6 +3767,22 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
           </div>
         </div>
 
+        </>}
+
+        <div className="ac-fieldset-title">Other parties</div>
+        <p style={{ fontSize: 12, color: "var(--slate)", margin: "0 0 8px" }}>Everyone else involved (the other side, opponents, the deceased…) — they're included in the conflict check.</p>
+        {otherParties.map((p, i) => (
+          <div key={i} className="ac-cost-row" style={{ gridTemplateColumns: "1fr 190px auto" }}>
+            <input value={p.name} onChange={(e) => setParty(i, { name: e.target.value })} placeholder="Name" aria-label="Party name" />
+            <select value={p.role} onChange={(e) => setParty(i, { role: e.target.value })} aria-label="Party role">
+              {partyRoles(f.department).map((r) => <option key={r}>{r}</option>)}
+            </select>
+            <button type="button" className="ac-iconbtn" onClick={() => setOtherParties((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove party"><Trash2 size={14} /></button>
+          </div>
+        ))}
+        <button type="button" className="ac-tablebtn" onClick={() => setOtherParties((prev) => [...prev, { name: "", role: partyRoles(f.department)[0] }])}><Plus size={12} /> Add a party</button>
+
+        {conv && <>
         <div className="ac-fieldset-title">Target dates (optional)</div>
         <div className="ac-row2">
           <div className="ac-field">
@@ -3712,7 +3800,10 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
         </div>
         </>}
 
-        {error && <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+        <div className="ac-fieldset-title">Conflict check</div>
+        <ConflictCheckStep names={checkNames} excludeClientIds={excludeIds} value={conflict} onChange={setConflict} />
+
+        {error && <div style={{ color: "var(--danger)", fontSize: 12.5, margin: "10px 0" }}>{error}</div>}
         <button className="ac-submit" type="submit" onClick={submit}><FileSignature size={14} /> Open matter</button>
       </form>
     </div>

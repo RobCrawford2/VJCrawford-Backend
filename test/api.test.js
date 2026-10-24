@@ -953,3 +953,96 @@ test("departments: admins switch departments on for the firm and grant staff acc
   assert.ok(audit.some((d) => d.includes("departments changed from Conveyancing to Conveyancing, Family")));
   assert.ok(audit.some((d) => d.includes("all departments")));
 });
+
+test("conflict check: finds clients and other parties firm-wide, but only reveals the department of files you can't see", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const check = async (who, names, extra = {}) => (await request(app).post("/clients/conflict-check").set(who).send({ names, ...extra })).body.results;
+
+  // Mark Morris is the other party on a family matter Sarah can't see.
+  // Same surname as our family client Hannah Morris too — flagged, as relatives can be a conflict.
+  const [mark] = await check(sarah, ["Mr Mark Morris"]);
+  const asParty = mark.matches.find((m) => m.kind === "party");
+  assert.equal(asParty.name, "Mark Morris");
+  assert.deepEqual(asParty.matters[0], { hidden: true, department: "family", departmentName: "Family" });
+  assert.ok(mark.matches.some((m) => m.kind === "client" && m.name === "Hannah Morris"));
+  const [markForDavid] = await check(david, ["Mark Morris"]);
+  assert.match(markForDavid.matches.find((m) => m.kind === "party").matters[0].reference, /^FAM-/);
+
+  // Hannah Morris is a family client: flagged by department only, and not in Sarah's client list.
+  const [hannah] = await check(sarah, ["Hannah Morris"]);
+  assert.equal(hannah.matches[0].kind, "client");
+  assert.equal(hannah.matches[0].matters[0].hidden, true);
+  const sarahClients = (await request(app).get("/clients?search=Morris").set(sarah)).body;
+  assert.ok(!sarahClients.some((c) => c.name === "Hannah Morris"));
+  assert.equal((await request(app).get(`/clients/${hannah.matches[0].clientId}`).set(sarah)).status, 404);
+  assert.equal((await request(app).get(`/clients/${hannah.matches[0].clientId}`).set(david)).status, 200);
+
+  // Unrelated names don't match; titles and initials are ignored.
+  assert.equal((await check(sarah, ["Jane Doe"]))[0].matches.length, 0);
+  assert.ok((await check(sarah, ["Mr R Faulkner"]))[0].matches.some((m) => m.kind === "client" && m.name === "R & J Faulkner"));
+  assert.equal((await request(app).post("/clients/conflict-check").set(sarah).send({ names: [] })).status, 400);
+});
+
+test("opening a matter: clients linked or created, parties recorded, conflicts must be reviewed and are logged", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const faulkner = (await request(app).get("/clients?search=Faulkner").set(sarah)).body.find((c) => c.matter_count === 2);
+  assert.ok(faulkner, "the Faulkners' shared client record");
+
+  const base = { department: "conveyancing", address: "1 Conflict Close", client: "R & J Faulkner", type: "Purchase", feeEarnerId: sarahId };
+  // The other side is our family client → must be reviewed before opening.
+  const blocked = await request(app).post("/matters").set(sarah)
+    .send({ ...base, clientIds: [faulkner.id], parties: [{ name: "Hannah Morris", role: "Seller" }], conflictReview: {} });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.conflicts[0].matches.length, 0); // choosing Faulkner doesn't flag Faulkner
+  assert.equal(blocked.body.conflicts[1].matches[0].matters[0].departmentName, "Family");
+  const opened = await request(app).post("/matters").set(sarah)
+    .send({ ...base, clientIds: [faulkner.id], parties: [{ name: "Hannah Morris", role: "Seller" }], conflictReview: { note: "Checked with Family — different Hannah Morris (different address)" } });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const detail = (await request(app).get(`/matters/${opened.body.id}`).set(sarah)).body;
+  assert.deepEqual(detail.clients.map((c) => c.name), ["R & J Faulkner"]);
+  assert.deepEqual(detail.parties.map((p) => [p.name, p.role]), [["Hannah Morris", "Seller"]]);
+  assert.ok(detail.conflict_checked_at && detail.conflict_check_note.startsWith("Checked with Family"));
+  assert.ok(detail.activity.some((a) => /Conflict check on R & J Faulkner, Hannah Morris: 2 possible matches — reviewed: Checked with Family/.test(a.text)));
+
+  // A new client is created; older callers get a client record made for them.
+  const fresh = await request(app).post("/matters").set(sarah)
+    .send({ ...base, address: "2 Fresh Way", client: "Olu Adeyemi", newClients: [{ name: "Olu Adeyemi", email: "olu@example.com" }], conflictReview: {} });
+  assert.equal(fresh.status, 201);
+  const legacy = await request(app).post("/matters").set(sarah).send({ ...base, address: "3 Old Road", client: "Legacy Client", clientEmail: "legacy@example.com" });
+  const legacyDetail = (await request(app).get(`/matters/${legacy.body.id}`).set(sarah)).body;
+  assert.equal(legacyDetail.clients[0].email, "legacy@example.com");
+  assert.equal((await request(app).post("/matters").set(sarah).send({ ...base, parties: [{ name: "No Role" }] })).status, 400);
+
+  // Parties and clients can be added later — each is conflict-checked — and removed.
+  const added = await request(app).post(`/matters/${fresh.body.id}/parties`).set(sarah).send({ name: "Mark Morris", role: "Seller" });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.conflicts[0].matches[0].matters[0].hidden, true);
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/parties/${added.body.party.id}`).set(sarah)).status, 204);
+  const freshClient = (await request(app).get(`/matters/${fresh.body.id}`).set(sarah)).body.clients[0];
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/clients/${freshClient.id}`).set(sarah)).status, 400); // last client
+  const joint = await request(app).post(`/matters/${fresh.body.id}/clients`).set(sarah).send({ newClient: { name: "Tolu Adeyemi" } });
+  assert.equal(joint.status, 201);
+  assert.equal((await request(app).delete(`/matters/${fresh.body.id}/clients/${freshClient.id}`).set(sarah)).status, 204);
+});
+
+test("client records: ID / AML checks are validated and noted on the client's matters", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const whitfield = (await request(app).get("/clients?search=Whitfield").set({ Authorization: `Bearer ${await tokenFor("david")}` })).body[0];
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  assert.equal((await request(app).get(`/clients/${whitfield.id}`).set(sarah)).status, 404); // Marcus's client
+  const bad = await request(app).post(`/clients/${whitfield.id}/id-check`).set(marcus).send({ verifiedOn: "2026-10-01", method: "Library card", riskLevel: "low" });
+  assert.equal(bad.status, 400);
+  const ok = await request(app).post(`/clients/${whitfield.id}/id-check`).set(marcus).send({ verifiedOn: "2026-10-01", method: "Passport", riskLevel: "medium" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.risk_level, "medium");
+  const record = (await request(app).get(`/clients/${whitfield.id}`).set(marcus)).body;
+  assert.equal(record.id_verified_by_name, "Marcus Webb");
+  const matterId = record.matters[0].id;
+  const log = (await request(app).get(`/matters/${matterId}`).set(marcus)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("ID checked for Tom Whitfield (Passport) — medium risk"));
+  const edited = await request(app).patch(`/clients/${whitfield.id}`).set(marcus).send({ phone: "07700 900111", name: " " });
+  assert.equal(edited.status, 400);
+  assert.equal((await request(app).patch(`/clients/${whitfield.id}`).set(marcus).send({ phone: "07700 900111" })).body.phone, "07700 900111");
+});

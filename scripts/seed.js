@@ -167,6 +167,33 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [whitfieldId, "Follow up with client for instructions on indemnity insurance re: environmental search", marcus.id]
     );
 
+    // Client records (one per client name — in the demo data the same name is
+    // the same client, so the Faulkners' purchase and sale share theirs) and
+    // the other parties, for the client register and conflict checks.
+    await client.query(
+      `WITH keyed AS (
+         SELECT id, firm_id, client, client_address, client_email, client_phone, client_salutation, created_at,
+                lower(client) AS key
+         FROM matters WHERE firm_id = $1
+       ), made AS (
+         INSERT INTO clients (firm_id, name, address, email, phone, salutation, id_verified_on, id_method, risk_level)
+         SELECT DISTINCT ON (key) firm_id, client, client_address, client_email, client_phone, client_salutation,
+                CASE WHEN client = 'R & J Faulkner' THEN DATE '2026-06-03' END,
+                CASE WHEN client = 'R & J Faulkner' THEN 'Passport' END,
+                CASE WHEN client = 'R & J Faulkner' THEN 'low' END
+         FROM keyed ORDER BY key, client_email NULLS LAST, created_at
+         RETURNING id, lower(name) AS name_key
+       )
+       INSERT INTO matter_clients (matter_id, client_id)
+       SELECT k.id, made.id FROM keyed k JOIN made ON made.name_key = k.key`,
+      [firm.id]
+    );
+    await client.query(
+      `INSERT INTO matter_parties (matter_id, name, role) VALUES
+       ($1, 'Helen Margaret Carver', 'Seller'), ($2, 'Daniel & Sophie Grant', 'Buyer'), ($3, 'Mark Morris', 'Other party (spouse)')`,
+      [faulknerPurchaseId, faulknerSaleId, morris.id]
+    );
+
     await client.query("COMMIT");
     console.log("[seed] Seed complete.");
     // Only echo the password when it's the well-known local default; a
