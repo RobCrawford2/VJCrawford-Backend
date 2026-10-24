@@ -204,6 +204,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id]
     );
     await client.query(`UPDATE matters SET fee_estimate = 3000 WHERE id = $1`, [morris.id]);
+    await client.query(`UPDATE matters SET funding = 'fixed_fee' WHERE firm_id = $1 AND department = 'conveyancing'`, [firm.id]);
     await client.query(
       `INSERT INTO time_entries (matter_id, user_id, work_date, units, rate, amount, activity, description) VALUES
        ($1, $2, '2026-07-14', 10, 210, 210, 'Attendance (meeting)', 'Initial meeting — background, finances and options'),

@@ -93,6 +93,7 @@ export function adaptMatter(m, users) {
     type: m.type,
     price: m.price !== null && m.price !== undefined ? Number(m.price) : "",
     currentStageIndex: m.current_stage_index,
+    lastActivityAt: m.last_activity_at || "",
     feeEarner: userName(users, m.fee_earner_id),
     feeEarnerId: m.fee_earner_id || "",
     supervisor: userName(users, m.supervisor_id),

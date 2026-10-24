@@ -511,9 +511,9 @@ router.post(
              estate_agent, lender, date_instructed, target_exchange, target_completion,
              actual_exchange, actual_completion, mortgage_offer_expiry, notes,
              client_address, client_email, client_phone, client_salutation, tenure, title_number,
-             registered_proprietor, lease_term, ground_rent, service_charge, deposit, sdlt, mortgage_conditions
+             registered_proprietor, lease_term, ground_rent, service_charge, deposit, sdlt, mortgage_conditions, funding
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14::date, CURRENT_DATE),$15,$16,$17,$18,$19,$20,
-                     $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+                     $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33, 'fixed_fee')
            RETURNING id`,
           [req.user.firmId, reference, m.address, m.client, m.type, m.price ?? null, m.stage,
            m.feeEarnerId || null, m.supervisorId || null, m.otherSideSolicitor || null, m.otherSideSolicitorEmail || null,

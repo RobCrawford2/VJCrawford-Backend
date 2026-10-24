@@ -320,18 +320,19 @@ const CLIENT_FIELDS = [
   ["dateOfBirth", "Date of birth", "date"], ["companyNumber", "Company number"],
 ];
 
-function ClientDetail({ clientId, onBack, onOpenMatter }) {
+function ClientDetail({ clientId, onBack, onOpenMatter, onChanged }) {
   const [client, setClient] = useState(null);
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState(null);
   const [idCheck, setIdCheck] = useState(false);
   const load = () => api.getClient(clientId).then((c) => setClient(adaptClient(c))).catch((err) => notify(err.message));
+  const reloadAll = async () => { await load(); onChanged?.(); }; // the open matter's ID warning may change
   useEffect(() => { load(); }, [clientId]);
   if (!client) return <p style={{ fontSize: 13, color: "var(--slate)" }}>Loading…</p>;
 
   async function save(e) {
     e.preventDefault();
-    try { await api.updateClient(client.id, f); setEditing(false); await load(); notify("Client record saved.", "success"); }
+    try { await api.updateClient(client.id, f); setEditing(false); await reloadAll(); notify("Client record saved.", "success"); }
     catch (err) { notify(err.message || "Couldn't save."); }
   }
 
@@ -372,13 +373,13 @@ function ClientDetail({ clientId, onBack, onOpenMatter }) {
           <MatterLine key={i} m={m.hidden ? m : { ...m, departmentName: m.departmentName }} onOpenMatter={onOpenMatter} />
         ))}
       </div>
-      {idCheck && <IdCheckForm client={client} onClose={() => setIdCheck(false)} onSaved={load} />}
+      {idCheck && <IdCheckForm client={client} onClose={() => setIdCheck(false)} onSaved={reloadAll} />}
     </div>
   );
 }
 
 /** Top-bar panel: search the client register, open a client, run a stand-alone conflict check. */
-export function ClientsPanel({ onClose, onOpenMatter, initialClientId = null }) {
+export function ClientsPanel({ onClose, onOpenMatter, onChanged, initialClientId = null }) {
   const [openId, setOpenId] = useState(initialClientId);
   const [term, setTerm] = useState("");
   const [rows, setRows] = useState([]);
@@ -408,7 +409,7 @@ export function ClientsPanel({ onClose, onOpenMatter, initialClientId = null }) 
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         {openId ? (
-          <ClientDetail clientId={openId} onBack={() => setOpenId(null)} onOpenMatter={openMatter} />
+          <ClientDetail clientId={openId} onBack={() => setOpenId(null)} onOpenMatter={openMatter} onChanged={onChanged} />
         ) : (
           <>
             <div className="ac-card">

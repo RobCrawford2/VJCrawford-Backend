@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Search, Plus, FileText, Mail, Calendar, Users, ChevronRight, ChevronLeft,
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
@@ -289,8 +289,12 @@ function daysSince(dateStr) {
 }
 
 function lastActivityDate(matter) {
-  return matter.activity.length ? matter.activity[0].date : matter.keyDates.instructed;
+  // List rows carry the latest activity date; the full matter carries the log itself.
+  return matter.activity.length ? matter.activity[0].date : matter.lastActivityAt || matter.keyDates.instructed;
 }
+
+/** Due before today (UK) — a task due today isn't overdue yet. */
+const isOverdue = (date) => !!date && String(date).slice(0, 10) < todayISO();
 
 /**
  * Staff who can be given tasks on a matter — mirrors the server's visibility
@@ -369,7 +373,7 @@ function needsAttention(matter, staleDays = 14) {
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
-  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < today);
+  const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && isOverdue(t.dueDate));
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   if (open) {
     const idle = daysSince(lastActivityDate(matter));
@@ -507,7 +511,9 @@ export default function App() {
   }
 
   // ---- Matters list (server-filtered, server-paginated) ----
-  const [matters, setMatters] = useState([]);
+  // The list as the server sent it; fee earner names are filled in from the
+  // staff list here, so the list needn't be fetched again when that arrives.
+  const [matterRows, setMatterRows] = useState([]);
   const [matterTotal, setMatterTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
@@ -580,9 +586,10 @@ export default function App() {
   // looking at, so the next person on this computer starts afresh.
   useEffect(() => {
     if (authUser) return;
-    setSelectedId(null); setSelectedDetail(null); setMatters([]);
+    setSelectedId(null); setSelectedDetail(null); setMatterRows([]);
     setSearch(""); setTypeFilter("All"); setDeptFilter("All"); setShowClosed(false); setMyMattersOnly(false);
     setActiveTab("overview"); setClientsPanel(null); setShowDiary(false); setShowTimesheet(false); setStoppingTimer(null);
+    setMyTasks([]); setPendingSignoffs([]); setUsers([]); setDetailError("");
   }, [authUser]);
 
   // ---- Load users + firm settings once logged in ----
@@ -619,7 +626,11 @@ export default function App() {
     if ("dictationEnabled" in patch) firmPatch.dictationEnabled = patch.dictationEnabled;
     if ("requireExchangeChecks" in patch) firmPatch.requireExchangeChecks = patch.requireExchangeChecks;
     if (Object.keys(firmPatch).length) {
-      api.updateFirmSettings(firmPatch).catch(() => {});
+      const before = settings;
+      api.updateFirmSettings(firmPatch).catch((err) => {
+        setSettings(before); // put the screen back as it really is
+        notify(err.message || "Couldn't save that setting.");
+      });
     }
   }
 
@@ -633,59 +644,85 @@ export default function App() {
   }
 
   // ---- Matters list ----
-  const refreshList = useCallback(async () => {
+  // Search waits until typing pauses, rather than asking the server on every key.
+  const [listSearch, setListSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setListSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const listRequest = useRef(0);
+  const refreshList = useCallback(async ({ background = false } = {}) => {
     if (!authUser) return;
-    setLoading(true);
+    const request = ++listRequest.current; // only the latest request's answer is shown
+    if (!background) setLoading(true);
     try {
-      const feeEarnerId = myMattersOnly ? authUser.id : undefined;
-      const result = await api.getMatters({
-        limit: visibleCount,
-        offset: 0,
+      const filters = {
         type: typeFilter === "All" ? undefined : typeFilter,
         department: deptFilter === "All" ? undefined : deptFilter,
         showClosed: showClosed ? undefined : "false",
-        search: search.trim() || undefined,
-        feeEarnerId,
-      });
-      setMatters(result.matters.map((m) => adaptMatter(m, users)));
-      setMatterTotal(result.pagination.total);
+        search: listSearch || undefined,
+        feeEarnerId: myMattersOnly ? authUser.id : undefined,
+      };
+      // The server sends at most 100 at a time, so fetch in pages up to what's wanted.
+      let rows = [];
+      let total = 0;
+      for (let offset = 0; offset < visibleCount; offset += 100) {
+        const page = await api.getMatters({ ...filters, limit: Math.min(100, visibleCount - offset), offset });
+        rows = rows.concat(page.matters);
+        total = page.pagination.total;
+        if (rows.length >= total || page.matters.length === 0) break;
+      }
+      if (request !== listRequest.current) return;
+      setMatterRows(rows);
+      setMatterTotal(total);
       setListError("");
     } catch (err) {
-      setListError(err.message || "Couldn't load matters.");
+      if (request === listRequest.current) setListError(err.message || "Couldn't load matters.");
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
-  }, [authUser, visibleCount, typeFilter, deptFilter, showClosed, search, myMattersOnly, users]);
+  }, [authUser, visibleCount, typeFilter, deptFilter, showClosed, listSearch, myMattersOnly]);
+  const matters = useMemo(() => matterRows.map((m) => adaptMatter(m, users)), [matterRows, users]);
 
   useEffect(() => {
-    refreshList();
+    refreshList({ background: visibleCount > 20 });
   }, [refreshList]);
 
   useEffect(() => {
     setVisibleCount(20);
-  }, [search, typeFilter, deptFilter, showClosed, myMattersOnly]);
+  }, [listSearch, typeFilter, deptFilter, showClosed, myMattersOnly]);
 
   // ---- Selected matter detail ----
+  // The matter currently wanted on screen: a slow response for a matter the
+  // user has already moved away from is ignored rather than shown.
+  const wantedMatter = useRef(null);
+  const [detailError, setDetailError] = useState("");
   const refreshSelected = useCallback(
     async (id) => {
+      wantedMatter.current = id;
       if (!id) {
         setSelectedDetail(null);
         return;
       }
-      setSaveState("saving");
       try {
         const detail = await api.getMatter(id);
+        if (wantedMatter.current !== id) return;
         setSelectedDetail(adaptMatter(detail, users));
-        setSaveState("saved");
+        setDetailError("");
       } catch (err) {
+        if (wantedMatter.current !== id) return;
         setSelectedDetail(null);
-        setSaveState("error");
+        setDetailError(err.message || "Couldn't open this matter.");
       }
     },
     [users]
   );
 
   useEffect(() => {
+    // Opening a different matter: don't show the previous one while it loads.
+    setSelectedDetail((current) => (current && current.id === selectedId ? current : null));
+    setDetailError("");
     refreshSelected(selectedId);
   }, [selectedId, refreshSelected]);
 
@@ -693,7 +730,9 @@ export default function App() {
    *  refreshes the list too since stage/dates/attention shown in the sidebar
    *  can change as a result of almost any edit. */
   async function afterMutation() {
-    await Promise.all([refreshSelected(selectedId), refreshList()]);
+    setSaveState("saving");
+    await Promise.all([refreshSelected(selectedId), refreshList({ background: true })]);
+    setSaveState("saved");
     refreshMyTasks();
     setHomeRefresh((n) => n + 1);
   }
@@ -702,7 +741,7 @@ export default function App() {
   async function addMatter(data) {
     try {
       const created = await api.createMatter(toApiNewMatter(data));
-      await refreshList();
+      await refreshList({ background: true });
       setSelectedId(created.id);
       setShowNewMatter(false);
       setActiveTab("overview");
@@ -1143,8 +1182,6 @@ export default function App() {
     setListOpen(!selectedId);
   }, [selectedId]);
 
-  const activeCount = matters.filter((m) => !isClosed(m)).length;
-  const closedThisYear = matters.filter((m) => isClosed(m)).length;
 
   const feeEarners = [...new Set(matters.map((m) => m.feeEarner).filter(Boolean))];
   const workload = feeEarners
@@ -1750,15 +1787,11 @@ export default function App() {
           <h1>V J Crawford Conveyancing<span className="tag">Case Management</span></h1>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <div className="ac-topstats">
-            <div className="ac-topstat"><span className="n">{activeCount}</span><span className="l">Active files</span></div>
-            <div className="ac-topstat"><span className="n">{closedThisYear}</span><span className="l">Closed</span></div>
-          </div>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTasksPanel(true)} title="Tasks & reminders">
             <Bell size={17} /><span className="lbl">Tasks</span>
             {(() => {
               const today = new Date();
-              const overdueTaskCount = myTasks.filter((t) => t.dueDate && new Date(t.dueDate) < today).length;
+              const overdueTaskCount = myTasks.filter((t) => isOverdue(t.dueDate)).length;
               const staleCount = matters.filter((m) => !isClosed(m) && daysSince(lastActivityDate(m)) >= settings.staleDays).length;
               const total = overdueTaskCount + staleCount;
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
@@ -1854,7 +1887,10 @@ export default function App() {
                 <div className="ac-item-top">
                   <span className="ac-item-ref">{m.reference}</span>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    {needsAttention(m, settings.staleDays).length > 0 && <span title={needsAttention(m, settings.staleDays).join(" · ")} style={{ color: "#9a5a1f" }}><AlertTriangle size={13} /></span>}
+                    {(() => {
+                      const reasons = needsAttention(m, settings.staleDays);
+                      return reasons.length > 0 && <span title={reasons.join(" · ")} style={{ color: "#9a5a1f" }}><AlertTriangle size={13} /></span>;
+                    })()}
                     {myDepartments.length > 1 && <DeptTag department={m.department} />}
                     <TypeTag type={m.type} department={m.department} />
                   </div>
@@ -1883,7 +1919,15 @@ export default function App() {
         {/* ---------------- Main ---------------- */}
         <div className="ac-main">
           {selectedId && !selected && (
-            <div style={{ padding: 60, textAlign: "center", color: "var(--slate)", fontSize: 13 }}>Loading matter…</div>
+            <div style={{ padding: 60, textAlign: "center", color: "var(--slate)", fontSize: 13 }}>
+              {detailError ? (
+                <>
+                  <p style={{ color: "var(--danger)" }}>{detailError === "Matter not found." ? "This matter isn't available to you — it may have been closed off to your department or deleted." : detailError}</p>
+                  <button type="button" className="ac-tablebtn" onClick={() => setSelectedId(null)}>Back to matters</button>
+                  {" "}<button type="button" className="ac-tablebtn" onClick={() => refreshSelected(selectedId)}>Try again</button>
+                </>
+              ) : "Loading matter…"}
+            </div>
           )}
 
           {!selectedId && !selected && (
@@ -1933,7 +1977,7 @@ export default function App() {
                       </div>
                       {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No open tasks assigned to you.</p>}
                       {openTasks.slice(0, 6).map((t) => {
-                        const overdue = t.dueDate && new Date(t.dueDate) < today;
+                        const overdue = isOverdue(t.dueDate);
                         return (
                           <div key={t.id} style={{ padding: "9px 0", borderBottom: "1px dashed var(--line)" }}>
                             <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-soft)" }}>{t.description}</div>
@@ -1992,6 +2036,7 @@ export default function App() {
 
           {selected && (
             <MatterDetail
+              key={selected.id}
               matter={selected}
               allMatters={matters}
               settings={settings}
@@ -2134,6 +2179,7 @@ export default function App() {
       {clientsPanel && (
         <ClientsPanel
           initialClientId={clientsPanel.clientId}
+          onChanged={() => selectedId && refreshSelected(selectedId)}
           onClose={() => setClientsPanel(null)}
           onOpenMatter={(id) => { setSelectedId(id); setActiveTab("overview"); }}
         />
@@ -2956,7 +3002,7 @@ function GeneralStageFocus({ matter, stage, setActiveTab, onEdit }) {
   const idx = matter.currentStageIndex;
   const next = stages[idx + 1];
   const openTasks = matter.tasks.filter((t) => t.status === "Open").length;
-  const overdue = matter.tasks.filter((t) => t.status === "Open" && t.dueDate && new Date(t.dueDate) < new Date()).length;
+  const overdue = matter.tasks.filter((t) => t.status === "Open" && isOverdue(t.dueDate)).length;
   const openUndertakings = matter.undertakings.filter((u) => u.status === "Outstanding").length;
   return (
     <div className="ac-card ac-focus" id="stage-focus">
@@ -3528,7 +3574,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                   .filter((t) => t.status === "Open" && (!tasksMineOnly || t.assignedTo === currentUserId))
                   .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
                   .map((t) => {
-                  const overdue = t.dueDate && new Date(t.dueDate) < new Date();
+                  const overdue = isOverdue(t.dueDate);
                   return (
                     <div key={t.id} className={`ac-doc-row ${overdue ? "ac-row-issue" : ""}`} style={{ background: overdue ? "#fdf1ea" : "var(--card)", flexWrap: "wrap" }}>
                       <div className="ac-doc-icon" style={overdue ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><ListChecks size={16} /></div>
@@ -3624,7 +3670,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
                     <Download size={13} /> Import from Outlook
                   </button>
                   <p style={{ fontSize: 11, color: "var(--slate-light)", marginTop: 8, marginBottom: 0 }}>
-                    This adds a placeholder entry so you can see where imported mail would appear — a real integration reads and files actual messages via the Microsoft Graph API.
+                    Not connected yet — linking Microsoft 365 so matter emails are filed here automatically is a later step.
                   </p>
                 </>
               ) : (
@@ -3749,10 +3795,23 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
   const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const conv = f.department === "conveyancing";
   const staff = users.filter((u) => worksIn(u, f.department));
-  const chooseDepartment = (e) => setF({ ...f, department: e.target.value, type: areaOf(e.target.value).types[0], feeEarnerId: "", supervisorId: "" });
+  const [busy, setBusy] = useState(false);
+  // Switching department clears what doesn't apply there (conveyancing fields, the other parties' roles).
+  const chooseDepartment = (e) => {
+    const department = e.target.value;
+    setF({
+      ...f, department, type: areaOf(department).types[0], feeEarnerId: "", supervisorId: "",
+      ...(department !== "conveyancing" && {
+        price: "", estateAgent: "", lender: "", targetExchange: "", targetCompletion: "", mortgageOfferExpiry: "",
+        property: { tenure: "", titleNumber: "", registeredProprietor: "", leaseTerm: "", groundRent: "", serviceCharge: "" },
+      }),
+    });
+    setOtherParties((prev) => prev.map((p) => ({ ...p, role: partyRoles(department)[0] })));
+  };
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
+    if (busy) return; // a double-click mustn't open the matter twice
     if (!f.address.trim() || !f.client.trim()) {
       setError(`${describeLabel(f.department)} and client name are both required.`);
       return;
@@ -3760,7 +3819,8 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
     const conflictProblem = conflictStepProblem(conflict, checkNames, excludeIds);
     if (conflictProblem) return setError(conflictProblem);
     setError("");
-    onCreate({
+    setBusy(true);
+    await onCreate({
       department: f.department,
       clientIds: chosenClient ? [chosenClient.id] : [],
       newClients: chosenClient ? [] : [{ name: f.client.trim(), ...f.clientDetails }],
@@ -3789,6 +3849,7 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
       clientDetails: f.clientDetails,
       property: f.property,
     });
+    setBusy(false);
   }
 
   return (
@@ -3923,7 +3984,7 @@ function NewMatterForm({ onClose, onCreate, users, departments }) {
         <ConflictCheckStep names={checkNames} excludeClientIds={excludeIds} value={conflict} onChange={setConflict} />
 
         {error && <div style={{ color: "var(--danger)", fontSize: 12.5, margin: "10px 0" }}>{error}</div>}
-        <button className="ac-submit" type="submit" onClick={submit}><FileSignature size={14} /> Open matter</button>
+        <button className="ac-submit" type="submit" onClick={submit} disabled={busy}><FileSignature size={14} /> {busy ? "Opening…" : "Open matter"}</button>
       </form>
     </div>
   );
@@ -3977,7 +4038,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
         <div className="ac-card">
           <h3><Users size={12} /> Your identity</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
-            Used to filter the matter list to "My matters" — this prototype has no real login, so this is just a display preference.
+            The name used when you confirm reviews and sign-offs. It starts as your login name.
           </p>
           <div className="ac-field" style={{ marginBottom: 0 }}>
             <label>Your name</label>
@@ -4029,7 +4090,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>Each matter gets a dedicated filing address built from its reference and this domain.</p>
           <div className="ac-field" style={{ marginBottom: 8 }}>
             <label>Firm domain</label>
-            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="yourfirm.co.uk" onBlur={() => onSave({ domain })} />
+            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="yourfirm.co.uk" onBlur={() => onSave({ domain })} disabled={!isAdmin} />
           </div>
           <div style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "var(--slate)" }}>e.g. matters+cv-2026-0041@{domain || "yourfirm.co.uk"}</div>
         </div>
@@ -4039,7 +4100,7 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>If a matter has no logged activity for this many days, it's flagged as needing a review — shown on the file, in the sidebar, and in Tasks &amp; reminders.</p>
           <div className="ac-field" style={{ marginBottom: 0 }}>
             <label>Flag files inactive for more than (days)</label>
-            <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} />
+            <input type="number" min="1" value={staleDays} onChange={(e) => setStaleDays(e.target.value)} onBlur={() => onSave({ staleDays: Number(staleDays) || 14 })} style={{ width: 100 }} disabled={!isAdmin} />
           </div>
         </div>
 
@@ -4538,7 +4599,7 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
   function submit(e) {
     e.preventDefault();
     if (!f.address.trim() || !f.client.trim()) {
-      setError("Property address and client name are both required.");
+      setError(`${describeLabel(matter.department)} and client name are both required.`);
       return;
     }
     const costs = (f.money.costs || []).filter((c) => String(c.description).trim() || c.amount !== "");
@@ -6070,7 +6131,7 @@ function GlobalTasksPanel({ matters, settings, onClose, onOpenMatter, onComplete
         </div>
         {openTasks.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13, marginBottom: 20 }}>Nothing outstanding — everything's up to date.</p>}
         {openTasks.map((t) => {
-          const overdue = t.dueDate && new Date(t.dueDate) < today;
+          const overdue = isOverdue(t.dueDate);
           return (
             <div key={t.id} className="ac-doc-row" style={{ background: overdue ? "#fdf1ea" : "var(--card)", marginBottom: 10 }}>
               <div className="ac-doc-icon" style={overdue ? { background: "#f6ddd0", color: "#8a3b1f" } : {}}><ListChecks size={16} /></div>
