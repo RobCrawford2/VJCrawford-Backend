@@ -895,8 +895,9 @@ test("departments: staff only see and open matters in their own departments", as
   assert.equal(created.status, 201);
   assert.match(created.body.reference, /^FAM-\d{4}-\d{4}$/);
 
-  // Family has its own stages (9, ending in Closed) and no exchange checks.
-  const stages = (await request(app).get("/settings").set(priya)).body.areas.find((a) => a.key === "family").stages;
+  // Each kind of family matter has its own stages (children: 9, ending in Closed) and no exchange checks.
+  const stages = (await request(app).get("/settings").set(priya)).body.areas.find((a) => a.key === "family").typeStages.Children;
+  assert.equal(stages.length, 9);
   assert.equal(stages.at(-1), "Closed");
   assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: stages.length })).status, 400);
   assert.equal((await request(app).post(`/matters/${created.body.id}/stage`).set(priya).send({ stageIndex: 7 })).status, 200);
@@ -1388,25 +1389,25 @@ test("wills, trusts & probate: own stages per type, estate register, IHT estimat
 
   // The estate: details, register and summary come with the matter.
   let estate = (await request(app).get(`/matters/${estateRow.id}`).set(emma)).body;
-  assert.equal(estate.pc_details.deceasedName, "Margaret Ellen Hayward");
+  assert.equal(estate.details.deceasedName, "Margaret Ellen Hayward");
   assert.equal(estate.estateItems.length, 9);
   assert.equal(estate.beneficiaries.length, 4);
-  assert.ok(estate.pcFields.some((f) => f.key === "dateOfDeath"));
+  assert.ok(estate.detailFields.some((f) => f.key === "dateOfDeath"));
   // £666,792.65 gross; £8,775 debts; full transferred NRB and RNRB (£650k + £350k) → no IHT.
   assert.equal(estate.estateSummary.grossEstate, 666792.65);
   assert.equal(estate.estateSummary.netEstate, 658017.65);
   assert.equal(estate.estateSummary.iht.due, 0);
 
   // Without the transferred bands, tax is due: (658,017.65 − 5,000 charity − 325,000 − 175,000) × 40%.
-  const det = await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ transferredNrbPct: 0, transferredRnrbPct: "", dateOfDeath: "2026-05-21" });
+  const det = await request(app).patch(`/matters/${estateRow.id}/details`).set(emma).send({ transferredNrbPct: 0, transferredRnrbPct: "", dateOfDeath: "2026-05-21" });
   assert.equal(det.status, 200);
   assert.equal(det.body.transferredNrbPct, 0);
   assert.equal(det.body.transferredRnrbPct, undefined);
   estate = (await request(app).get(`/matters/${estateRow.id}`).set(emma)).body;
   assert.equal(estate.estateSummary.iht.due, Math.round((658017.65 - 5000 - 325000 - 175000) * 0.4 * 100) / 100);
-  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ dateOfDeath: "2026-02-30" })).status, 400);
-  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ grantType: "Sort of probate" })).status, 400);
-  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(emma).send({ nonsense: 1 })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/details`).set(emma).send({ dateOfDeath: "2026-02-30" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/details`).set(emma).send({ grantType: "Sort of probate" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/details`).set(emma).send({ nonsense: 1 })).status, 400);
 
   // Add, update and remove assets; beneficiaries need a share or amount.
   const car = await request(app).post(`/matters/${estateRow.id}/estate-items`).set(emma)
@@ -1439,7 +1440,7 @@ test("wills, trusts & probate: own stages per type, estate register, IHT estimat
   // The estate register only exists on probate matters, and other departments can't see any of it.
   assert.equal((await request(app).post(`/matters/${willRow.id}/estate-items`).set(emma).send({ kind: "asset", category: "Vehicle", description: "x" })).status, 400);
   assert.equal((await request(app).get(`/matters/${estateRow.id}/estate-account`).set(sarah)).status, 404);
-  assert.equal((await request(app).patch(`/matters/${estateRow.id}/pc-details`).set(sarah).send({ deceasedName: "x" })).status, 404);
+  assert.equal((await request(app).patch(`/matters/${estateRow.id}/details`).set(sarah).send({ deceasedName: "x" })).status, 404);
 
   // Changing a will into probate keeps it in range; a closed matter stays closed.
   const lpa = list.find((m) => m.reference === "PC-2026-0003");
@@ -1466,4 +1467,68 @@ test("wills, trusts & probate: own stages per type, estate register, IHT estimat
   const pc = settings.areas.find((a) => a.key === "private_client");
   assert.equal(pc.typeStages["Probate / estate administration"].length, 9);
   assert.equal(pc.typeStageHints.Will.length, 8);
+});
+
+test("family: own stages per type, details, asset schedule with proposed split, children, Word schedule", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const list = (await request(app).get("/matters?limit=100").set(priya)).body.matters;
+  const fin = list.find((m) => m.reference === "FAM-2026-0001");
+  const divorce = list.find((m) => m.reference === "FAM-2026-0002");
+  const injunction = list.find((m) => m.reference === "FAM-2026-0004");
+
+  // Financial settlement: 10 stages; injunction 8.
+  assert.equal((await request(app).post(`/matters/${fin.id}/stage`).set(priya).send({ stageIndex: 10 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${injunction.id}/stage`).set(priya).send({ stageIndex: 8 })).status, 400);
+
+  // The schedule: capital and pensions kept apart, now and as proposed.
+  let m = (await request(app).get(`/matters/${fin.id}`).set(priya)).body;
+  assert.ok(m.detailFields.some((f) => f.key === "formEExchanged"));
+  assert.equal(m.details.otherParty, "Mark Morris");
+  assert.equal(m.children.length, 2);
+  const s = m.assetSchedule;
+  // Capital: 485,000 − 162,000 + 18,400 + 41,200 + 14,500 − 6,300 = 390,800.
+  assert.equal(s.capital.total, 390800);
+  // Client now: half the equity (161,500) + 18,400 = 179,900; proposed: 60% of equity (193,800) + 18,400 = 212,200.
+  assert.equal(s.capital.clientNow, 179900);
+  assert.equal(s.capital.clientProposed, 212200);
+  assert.equal(s.capitalTransferToClient, 32300);
+  // Pensions: 96,000 + 212,000; client proposed 96,000 + 40% of 212,000 = 180,800.
+  assert.equal(s.pensions.total, 308000);
+  assert.equal(s.pensions.clientProposed, 180800);
+
+  const car = await request(app).post(`/matters/${fin.id}/family-assets`).set(priya)
+    .send({ kind: "asset", owner: "client", category: "Vehicle", description: "Ford Fiesta", value: "3500" });
+  assert.equal(car.status, 201);
+  assert.equal((await request(app).post(`/matters/${fin.id}/family-assets`).set(priya).send({ kind: "asset", owner: "neighbour", category: "Vehicle", description: "x", value: 1 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${fin.id}/family-assets`).set(priya).send({ kind: "pension", owner: "client", category: "Vehicle", description: "x", value: 1 })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${fin.id}/family-assets/${car.body.id}`).set(priya).send({ proposedClientPercent: 101 })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${fin.id}/family-assets/${car.body.id}`).set(priya).send({ proposedClientPercent: 0 })).status, 200);
+  m = (await request(app).get(`/matters/${fin.id}`).set(priya)).body;
+  assert.equal(m.assetSchedule.capital.clientNow, 179900 + 3500);
+  assert.equal(m.assetSchedule.capital.clientProposed, 212200);
+  assert.equal((await request(app).delete(`/matters/${fin.id}/family-assets/${car.body.id}`).set(priya)).status, 204);
+
+  const doc = await request(app).get(`/matters/${fin.id}/asset-schedule`).set(priya).buffer(true)
+    .parse((res, cb) => { const c = []; res.on("data", (d) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
+  assert.equal(doc.status, 200);
+  assert.equal(doc.body.slice(0, 2).toString(), "PK");
+
+  // The schedule is only for financial settlements; children for any family matter; nothing for other departments.
+  assert.equal((await request(app).post(`/matters/${divorce.id}/family-assets`).set(priya).send({ kind: "asset", owner: "client", category: "Vehicle", description: "x", value: 1 })).status, 400);
+  const child = await request(app).post(`/matters/${divorce.id}/children`).set(priya).send({ name: "Ella Morris", dateOfBirth: "2014-03-09", livesWith: "Client" });
+  assert.equal(child.status, 201);
+  assert.equal((await request(app).patch(`/matters/${divorce.id}/children/${child.body.id}`).set(priya).send({ livesWith: "Grandma" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${divorce.id}/children/${child.body.id}`).set(priya).send({ dateOfBirth: "2014-02-30" })).status, 400);
+  assert.equal((await request(app).delete(`/matters/${divorce.id}/children/${child.body.id}`).set(priya)).status, 204);
+  assert.equal((await request(app).get(`/matters/${fin.id}/asset-schedule`).set(sarah)).status, 404);
+  assert.equal((await request(app).post(`/matters/${fin.id}/children`).set(sarah).send({ name: "x" })).status, 404);
+
+  // Details: validated by the type's fields.
+  assert.equal((await request(app).patch(`/matters/${divorce.id}/details`).set(priya).send({ weAct: "Both of them" })).status, 400);
+  assert.equal((await request(app).patch(`/matters/${divorce.id}/details`).set(priya).send({ financialOrderInPlace: true, placeOfMarriage: "" })).status, 200);
+  m = (await request(app).get(`/matters/${divorce.id}`).set(priya)).body;
+  assert.equal(m.details.financialOrderInPlace, true);
+  assert.equal(m.details.placeOfMarriage, undefined);
+  assert.ok((await request(app).get(`/matters/${injunction.id}`).set(priya)).body.details.confidentialAddress);
 });

@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, X, Download, FileText, Lock, Search, Landmark, Calculator, Archive } from "lucide-react";
+import { Plus, Pencil, Trash2, X, Download, Lock, Search, Landmark, Calculator, Archive } from "lucide-react";
 import { api } from "./api";
 import { notify, confirmAction } from "./notify";
 
 /**
  * Wills, Trusts & Probate screens:
- *   PcDetailsCard     the type's details (deceased & grant, will, LPA, trust) — fields come from the server
  *   EstateSummaryCard probate overview: estate value and IHT at a glance
  *   EstateTab         probate: assets, liabilities, beneficiaries, IHT estimate, estate account and letters
  *   SafeCustodyCard   originals of this matter's wills / LPAs / deeds held by the firm
@@ -18,12 +17,6 @@ const todayISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europ
 const blankIfNull = (v) => (v === null || v === undefined ? "" : String(v));
 
 export const PROBATE = "Probate / estate administration";
-const DETAILS_TITLE = {
-  [PROBATE]: "The deceased & the grant",
-  Will: "Will",
-  "Lasting power of attorney": "Lasting powers of attorney",
-  Trust: "Trust",
-};
 
 async function saveBlob(load, fileName) {
   try {
@@ -49,87 +42,6 @@ async function attempt(action, onChanged, failure) {
     notify(err.message || failure);
     return false;
   }
-}
-
-function showValue(field, v) {
-  if (v === undefined || v === null || v === "") return "—";
-  if (field.kind === "date") return fmtDate(v);
-  if (field.kind === "money") return money(v);
-  if (field.kind === "percent") return `${v}%`;
-  if (field.kind === "bool") return v ? "Yes" : "No";
-  return String(v);
-}
-
-/* ---------------------------------------------------------------------- */
-/* Details card                                                           */
-/* ---------------------------------------------------------------------- */
-
-export function PcDetailsCard({ matter, onChanged }) {
-  const fields = matter.pcFields || [];
-  const [editing, setEditing] = useState(false);
-  if (!fields.length) return null;
-  return (
-    <div className="ac-card">
-      <h3><FileText size={12} /> {DETAILS_TITLE[matter.type] || "Details"}</h3>
-      {!editing && <button type="button" className="ac-card-edit" aria-label="Edit details" onClick={() => setEditing(true)}><Pencil size={11} /> Edit</button>}
-      {editing
-        ? <PcDetailsForm matter={matter} fields={fields} onCancel={() => setEditing(false)} onSaved={async () => { setEditing(false); await onChanged(); }} />
-        : fields.map((f) => (
-          <div key={f.key} className="ac-kv"><span className="k">{f.label}</span><span className="v" style={{ textAlign: "right" }}>{showValue(f, matter.pcDetails[f.key])}</span></div>
-        ))}
-    </div>
-  );
-}
-
-function PcDetailsForm({ matter, fields, onCancel, onSaved }) {
-  const [f, setF] = useState(() => Object.fromEntries(fields.map((x) => [x.key, x.kind === "bool" ? !!matter.pcDetails[x.key] : blankIfNull(matter.pcDetails[x.key])])));
-  const [busy, setBusy] = useState(false);
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await api.updatePcDetails(matter.id, f);
-      await onSaved();
-    } catch (err) {
-      notify(err.message || "Couldn't save the details.");
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <div className="ac-pc-grid">
-        {fields.map((x) => (
-          <div key={x.key} className={`ac-field ${x.kind === "text" ? "wide" : ""}`}>
-            {x.kind === "bool" ? (
-              <label style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontWeight: 500, color: "var(--ink)", fontSize: 13 }}>
-                <input type="checkbox" style={{ width: "auto" }} checked={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.checked })} /> {x.label}
-              </label>
-            ) : (
-              <>
-                <label>{x.label}</label>
-                {x.kind === "select" ? (
-                  <select value={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.value })}>
-                    <option value="">—</option>
-                    {x.options.map((o) => <option key={o}>{o}</option>)}
-                  </select>
-                ) : (
-                  <input type={x.kind === "date" ? "date" : ["money", "percent"].includes(x.kind) ? "number" : "text"}
-                    min={["money", "percent"].includes(x.kind) ? 0 : undefined} max={x.kind === "percent" ? 100 : undefined}
-                    step={x.kind === "money" ? "0.01" : undefined}
-                    value={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.value })} />
-                )}
-              </>
-            )}
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button className="ac-addbtn" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
-        <button className="ac-tablebtn" type="button" onClick={onCancel}>Cancel</button>
-      </div>
-    </form>
-  );
 }
 
 /* ---------------------------------------------------------------------- */
@@ -168,7 +80,7 @@ export function EstateTab({ matter, onChanged }) {
   const liabilities = items.filter((i) => i.kind === "liability");
   const people = matter.beneficiaries || [];
   const s = matter.estateSummary;
-  const d = matter.pcDetails || {};
+  const d = matter.details || {};
   const entitlement = Object.fromEntries((s?.distribution.beneficiaries || []).map((b) => [b.id, b]));
   const name = d.deceasedName || "the deceased";
 
@@ -515,7 +427,7 @@ function CustodyRow({ entry, onChanged, showMatter, onOpenMatter }) {
 export function SafeCustodyCard({ matter, onChanged }) {
   const [adding, setAdding] = useState(false);
   const entries = matter.safeCustody || [];
-  const d = matter.pcDetails || {};
+  const d = matter.details || {};
   const person = d.testator || d.donor || d.settlor || d.deceasedName || matter.client;
   return (
     <div className="ac-card">

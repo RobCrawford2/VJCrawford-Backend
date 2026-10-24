@@ -159,12 +159,64 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, priya.id, david.id]
     )).rows[0];
     await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [morris.id, priya.id]);
+    await client.query(
+      `UPDATE matters SET details = $2::jsonb WHERE id = $1`,
+      [morris.id, JSON.stringify({ otherParty: "Mark Morris", court: "Bristol Family Court", caseNumber: "BS26F00412", miam: "MIAM attended", formAIssued: "2026-07-30", firstAppointment: "2026-11-19" })]
+    );
+    await client.query(
+      `INSERT INTO family_assets (matter_id, kind, owner, category, description, value, proposed_client_percent, source, created_by) VALUES
+       ($1,'asset','joint','Family home','14 Cotham Vale, Bristol (net of 3% sale costs)',485000,60,'Agreed valuation',$2),
+       ($1,'liability','joint','Mortgage','Nationwide mortgage',162000,60,'Redemption statement',$2),
+       ($1,'asset','client','Bank / savings','Santander current and ISA',18400,NULL,'Form E 2.3',$2),
+       ($1,'asset','other','Bank / savings','Barclays savings',41200,NULL,'Form E 2.3',$2),
+       ($1,'asset','other','Vehicle','Audi A4',14500,NULL,'Form E 2.7',$2),
+       ($1,'liability','other','Loan / credit card','Barclaycard',6300,NULL,'Form E 2.14',$2),
+       ($1,'pension','client','Defined benefit (final salary)','NHS Pension Scheme',96000,NULL,'CETV Aug 2026',$2),
+       ($1,'pension','other','Defined contribution','Aviva workplace pension',212000,40,'CETV Jul 2026',$2)`,
+      [morris.id, priya.id]
+    );
+    await client.query(
+      `INSERT INTO family_children (matter_id, name, date_of_birth, lives_with, school) VALUES
+       ($1,'Ella Morris','2014-03-09','Client','Cotham School'), ($1,'Jacob Morris','2018-11-22','Client','Westbury Park Primary')`,
+      [morris.id]
+    );
+
+    // More family: the divorce, a children case and an urgent injunction (dates relative to today, so the warnings show).
+    const isoIn = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
+    const famMatter = async (reference, description, clientName, type, stage, details, funding, estimate) => {
+      const id = (await client.query(
+        `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+           date_instructed, funding, fee_estimate, details)
+         VALUES ($1,$2,'family',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING id`,
+        [firm.id, reference, description, clientName, type, stage, priya.id, david.id, isoIn(-200), funding, estimate, JSON.stringify(details)]
+      )).rows[0].id;
+      await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [id, priya.id]);
+      return id;
+    };
+    await famMatter("FAM-2026-0002", "Divorce — Morris", "Hannah Morris", "Divorce", 6, {
+      weAct: "Applicant", applicationType: "Divorce", dateOfMarriage: "2011-06-18", placeOfMarriage: "Bristol Register Office",
+      dateOfSeparation: "2025-11-01", applicationIssued: isoIn(-190), acknowledgmentFiled: isoIn(-175),
+      conditionalOrderApplied: isoIn(-48), conditionalOrderPronounced: isoIn(-50), otherParty: "Mark Morris", caseNumber: "1726-4410-9921-0042",
+    }, "fixed_fee", 650);
+    const childrenId = await famMatter("FAM-2026-0003", "Child arrangements — Patel", "Ravi Patel", "Children", 4, {
+      otherParty: "Anjali Patel", court: "Birmingham Family Court", caseNumber: "BM26P00877", miam: "MIAM attended",
+      c100Issued: isoIn(-70), cafcassLetter: isoIn(-40), fhdraDate: isoIn(-10), section7Due: isoIn(35),
+    }, "hourly", 3500);
+    await client.query(
+      `INSERT INTO family_children (matter_id, name, date_of_birth, lives_with) VALUES ($1,'Arjun Patel','2019-04-15','Other party')`,
+      [childrenId]
+    );
+    await famMatter("FAM-2026-0004", "Non-molestation order — K. Doyle", "Kerry Doyle", "Injunction / domestic abuse", 6, {
+      orderType: "Non-molestation order", withoutNotice: true, applicationIssued: isoIn(-170), orderMade: isoIn(-168),
+      orderExpires: isoIn(12), servedOnRespondent: isoIn(-166), policeNotified: true, otherParty: "Sean Doyle",
+      court: "Manchester Family Court", caseNumber: "MA26F00133", confidentialAddress: true,
+    }, "legal_aid", null);
 
     // Wills, Trusts & Probate: an estate in administration, a will and an LPA.
     const pcMatter = async (reference, description, clientName, type, stage, instructed, details, funding, estimate) => {
       const id = (await client.query(
         `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
-           date_instructed, funding, fee_estimate, pc_details, folders_ready)
+           date_instructed, funding, fee_estimate, details, folders_ready)
          VALUES ($1,$2,'private_client',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,false) RETURNING id`,
         [firm.id, reference, description, clientName, type, stage, emma.id, david.id, instructed, funding, estimate, JSON.stringify(details)]
       )).rows[0].id;

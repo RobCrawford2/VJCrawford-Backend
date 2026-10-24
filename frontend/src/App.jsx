@@ -16,7 +16,10 @@ import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictChe
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
 import { DocumentsTab, FolderTemplatesCard } from "./Documents";
 import { PropertyViewCard } from "./PropertyView";
-import { PcDetailsCard, EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
+import { EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
+import { DetailsCard, ConfidentialBanner } from "./Details";
+import { AssetScheduleTab, ChildrenCard, DivorceDatesCard } from "./Family";
+import { familyAttention } from "./familyCalc";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -254,6 +257,54 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Family — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  Divorce: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Check for domestic abuse / safety concerns; confidential address (C8) if needed", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Obtain the original or certified marriage certificate (translated if needed)", "assistant"], ["Confirm jurisdiction and that the marriage has lasted over a year", "fee_earner"], ["Agree sole or joint application; prepare the application", "fee_earner"]],
+    3: [["Issue the application online and pay the court fee (or help with fees)", "assistant"], ["Diary 20 weeks from issue for the conditional order", "assistant"]],
+    4: [["Check service on the respondent; diary 14 days for acknowledgment", "assistant"], ["If no acknowledgment: consider deemed service, bailiff or alternative service", "fee_earner"]],
+    5: [["Advise on finances and pensions; start financial disclosure", "fee_earner"], ["Advise on arrangements for the children", "fee_earner"]],
+    6: [["Apply for the conditional order with the statement in support", "fee_earner"], ["Note the date of pronouncement; diary 6 weeks and 1 day", "assistant"]],
+    7: [["Check finances / pensions are settled (or advised on) before the final order", "fee_earner"], ["Apply for the final order", "fee_earner"], ["Send final order to client; advise on updating will and nominations", "secretary"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  "Financial settlement": {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Explain costs and the court's approach (s.25 factors); consider legal aid / LSPO", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Gather documents: bank statements, payslips, P60s, pensions (CETVs), mortgage", "assistant"], ["Request CETVs from every pension provider", "assistant"], ["Arrange valuation of the family home", "assistant"], ["Consider mediation / arbitration / collaborative route", "fee_earner"]],
+    3: [["Attend MIAM or record the exemption", "fee_earner"], ["Issue Form A (if proceedings are needed)", "fee_earner"]],
+    4: [["Prepare client's Form E with documents", "fee_earner"], ["Exchange Forms E by the court's date", "fee_earner"], ["Prepare questionnaire, chronology and statement of issues", "fee_earner"], ["Build the asset schedule from both Forms E", "assistant"]],
+    5: [["Attend the first appointment; note directions", "fee_earner"], ["Instruct valuers / pension on divorce expert (PODE) if directed", "fee_earner"]],
+    6: [["Prepare FDR bundle and position statement; make open / without prejudice proposals", "fee_earner"], ["Attend FDR", "fee_earner"]],
+    7: [["Draft the consent order and D81 statement of information", "fee_earner"], ["Lodge the consent order (or prepare for the final hearing)", "fee_earner"]],
+    8: [["Serve the pension sharing annex on the provider", "assistant"], ["Transfer property (TR1) / pay lump sums as ordered", "fee_earner"], ["Advise client on updating will and nominations", "fee_earner"]],
+    9: [["Send final bill and close the file", "secretary"]],
+  },
+  Children: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Check for safeguarding / domestic abuse concerns; confidential address (C8)", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Advise on the welfare checklist and the court's approach", "fee_earner"], ["Attend MIAM or record the exemption", "fee_earner"], ["Try to agree arrangements (letter / mediation / parenting plan)", "fee_earner"]],
+    3: [["Prepare and issue the C100 (and C1A if there are harm allegations)", "fee_earner"], ["Diary the FHDRA and Cafcass safeguarding letter", "assistant"]],
+    4: [["Receive and review the Cafcass safeguarding letter", "fee_earner"], ["Attend the FHDRA; note directions", "fee_earner"]],
+    5: [["Prepare statements as directed", "fee_earner"], ["Diary the section 7 report; review it when received", "assistant"], ["Consider a fact-finding hearing if harm is disputed", "fee_earner"]],
+    6: [["Prepare position statement and attend the DRA", "fee_earner"]],
+    7: [["Prepare the bundle for the final hearing", "assistant"], ["Send the sealed order to the client and explain it", "fee_earner"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  "Injunction / domestic abuse": {
+    0: [["Take urgent instructions and complete a risk assessment (DASH)", "fee_earner"], ["Signpost to an IDVA / refuge and the police", "fee_earner"], ["Keep the client's address confidential (C8)", "fee_earner"]],
+    1: [["Verify client identity", "assistant"], ["Apply for legal aid (emergency certificate if urgent)", "fee_earner"]],
+    2: [["Draft the witness statement and FL401", "fee_earner"], ["Draft the proposed order", "fee_earner"]],
+    3: [["Issue and attend the without-notice / on-notice hearing", "fee_earner"]],
+    4: [["Arrange personal service of the order and papers on the respondent", "assistant"], ["Send a copy of the order to the police", "assistant"], ["Diary the order's expiry date", "assistant"]],
+    5: [["Prepare for and attend the return hearing", "fee_earner"]],
+    6: [["Send the final order to the client and police; explain breach reporting", "fee_earner"], ["Diary a review before the order expires", "assistant"]],
+    7: [["Send final bill (or legal aid claim) and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -421,6 +472,7 @@ function needsAttention(matter, staleDays = 14) {
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
+  if (matter.department === "family" && open) reasons.push(...familyAttention(matter, todayISO()));
   const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && isOverdue(t.dueDate));
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   if (open) {
@@ -1756,6 +1808,14 @@ export default function App() {
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-doc-row[draggable="true"] { cursor: grab; }
         .ac-muted { color: var(--slate); font-size: 13px; }
+        .ac-confidential {
+          display: flex; gap: 10px; align-items: flex-start; background: #7c3232; color: #fff; border-radius: 3px;
+          padding: 10px 14px; margin: 4px 0 12px; font-size: 13px; line-height: 1.45;
+        }
+        .ac-confidential svg { flex-shrink: 0; margin-top: 2px; }
+        .ac-calc { border-top: 1px dashed var(--line); padding-top: 12px; }
+        .ac-calc-steps { margin: 8px 0; padding-left: 18px; font-size: 12px; color: var(--ink-soft); }
+        .ac-calc-steps li { margin-bottom: 3px; }
         .ac-muted.small, .ac-linkbtn.small { font-size: 11.5px; }
         .ac-linkbtn.small { color: var(--brass); }
         .ac-check { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-soft); margin: 4px 0 12px; text-transform: none; font-weight: 500; }
@@ -2881,6 +2941,7 @@ function attentionAction(reason, matter) {
   if (r.includes("lease")) return { label: "Property", edit: "property" };
   if (r.includes("mortgage offer") || r.includes("os1") || r.includes("target exchange") || r.includes("target completion")) return { label: "Dates", edit: "dates" };
   if (r.includes("no activity")) return { label: "Log update", note: true };
+  if (r.includes("injunction order") || r.includes("conditional order") || r.includes("final order")) return { label: "Details", scroll: "matter-details" };
   return {};
 }
 
@@ -3282,6 +3343,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <button className="ac-addbtn" onClick={() => onEdit()}><FileSignature size={13} /> Edit all details</button>
           </div>
         </div>
+        <ConfidentialBanner matter={matter} />
         <div className="ac-tabs">
           {[
             ["overview", <><Clock size={13} /> Overview</>],
@@ -3293,6 +3355,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
             ] : []),
             ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
+            ...(matter.department === "family" && matter.type === "Financial settlement" ? [["assets", <><Scale size={13} /> Assets ({(matter.familyAssets || []).length})</>]] : []),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -3368,7 +3431,9 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             )}
 
             {isProbate(matter) && <EstateSummaryCard matter={matter} onOpenEstate={() => setActiveTab("estate")} />}
-            {isPrivateClient(matter) && <PcDetailsCard matter={matter} onChanged={onMatterChanged} />}
+            {matter.type === "Divorce" && matter.department === "family" && <DivorceDatesCard matter={matter} />}
+            <DetailsCard matter={matter} onChanged={onMatterChanged} />
+            {matter.department === "family" && <ChildrenCard matter={matter} onChanged={onMatterChanged} />}
 
             <div className="ac-card">
               <h3><Users size={12} /> Client</h3>
@@ -3741,6 +3806,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
       )}
 
       {activeTab === "estate" && isProbate(matter) && <EstateTab matter={matter} onChanged={onMatterChanged} />}
+      {activeTab === "assets" && matter.familyAssets && <AssetScheduleTab matter={matter} onChanged={onMatterChanged} />}
 
       {activeTab === "documents" && (
         <DocumentsTab

@@ -21,6 +21,8 @@ const { billingSummary } = require("./billing");
 const { FUNDING_TYPES } = require("../config/areas");
 const { ensureFolders } = require("./folders");
 const { privateClientDetail } = require("./privateClient");
+const { familyDetail } = require("./family");
+const { detailFieldsFor } = require("../config/matterDetails");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -112,7 +114,9 @@ async function loadMatterDetail(matterId, user) {
     parties: parties.rows,
     deadlines: deadlines.rows,
     billing: await billingSummary({ query }, matterId),
+    detailFields: detailFieldsFor(matter.rows[0].department, matter.rows[0].type),
     ...(matter.rows[0].department === "private_client" ? await privateClientDetail(matter.rows[0]) : {}),
+    ...(matter.rows[0].department === "family" ? await familyDetail(matter.rows[0]) : {}),
   };
 }
 
