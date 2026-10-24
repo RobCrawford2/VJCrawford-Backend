@@ -117,7 +117,10 @@ matterRouter.get(
       ),
       billingSummary({ query }, m.id),
     ]);
-    res.json({ entries: entries.rows, bills: bills.rows, summary, activities: ACTIVITIES, canManage: canManage(req.user, m) });
+    // Hourly rates are only for whoever manages the matter's billing (and admins).
+    const manage = canManage(req.user, m);
+    const rows = manage ? entries.rows : entries.rows.map(({ rate, ...e }) => e);
+    res.json({ entries: rows, bills: bills.rows, summary, activities: ACTIVITIES, canManage: manage });
   })
 );
 
@@ -161,10 +164,11 @@ matterRouter.patch(
     const units = req.body.units !== undefined || req.body.minutes !== undefined ? unitsOf(req.body) : e.units;
     const result = await query(
       `UPDATE time_entries SET work_date = $2, units = $3, amount = $4, activity = $5, description = $6, billable = $7
-       WHERE id = $1 RETURNING *, to_char(work_date, 'YYYY-MM-DD') AS work_date`,
+       WHERE id = $1 AND bill_id IS NULL RETURNING *, to_char(work_date, 'YYYY-MM-DD') AS work_date`,
       [e.id, req.body.workDate ?? e.work_date, units, round2((units * Number(e.rate)) / 10), req.body.activity ?? e.activity,
        req.body.description !== undefined ? String(req.body.description).trim() : e.description, req.body.billable ?? e.billable]
     );
+    if (!result.rows.length) return res.status(400).json({ error: "This time has just been put on a bill." });
     res.json(result.rows[0]);
   })
 );
@@ -174,7 +178,8 @@ matterRouter.delete(
   asyncHandler(async (req, res) => {
     const found = await editableEntry(req, res);
     if (!found) return;
-    await query(`DELETE FROM time_entries WHERE id = $1`, [found.entry.id]);
+    const result = await query(`DELETE FROM time_entries WHERE id = $1 AND bill_id IS NULL`, [found.entry.id]);
+    if (!result.rowCount) return res.status(400).json({ error: "This time has just been put on a bill." });
     res.status(204).send();
   })
 );
@@ -267,9 +272,15 @@ matterRouter.post(
     try {
       await client_.query("BEGIN");
       await client_.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`bill-numbers:${req.user.firmId}`]);
+      // Re-check under the lock: a double-click mustn't issue (and number) it twice.
+      const still = await client_.query(`SELECT 1 FROM bills WHERE id = $1 AND status = 'draft' FOR UPDATE`, [bill.id]);
+      if (!still.rows.length) {
+        await client_.query("ROLLBACK");
+        return res.status(409).json({ error: "That bill has already been issued or deleted." });
+      }
       const next = (await client_.query(`SELECT coalesce(max(bill_number), 0) + 1 AS n FROM bills WHERE firm_id = $1`, [req.user.firmId])).rows[0].n;
       const issued = (await client_.query(
-        `UPDATE bills SET status = 'issued', bill_number = $2, bill_date = $3, issued_by = $4, issued_at = now() WHERE id = $1 RETURNING *, to_char(bill_date, 'YYYY-MM-DD') AS bill_date`,
+        `UPDATE bills SET status = 'issued', bill_number = $2, bill_date = $3, issued_by = $4, issued_at = now() WHERE id = $1 AND status = 'draft' RETURNING *, to_char(bill_date, 'YYYY-MM-DD') AS bill_date`,
         [bill.id, next, ukToday(), req.user.id]
       )).rows[0];
       await log(client_, m.id, req.user.id, `Bill ${next} issued: ${money(issued.total)} including VAT`);
@@ -295,10 +306,24 @@ matterRouter.post(
     if (bill.status !== "issued") return res.status(400).json({ error: "Only an issued bill can be cancelled (delete a draft instead)." });
     const reason = String(req.body.reason || "").trim();
     if (!reason) return res.status(400).json({ error: "Give a reason for cancelling the bill." });
-    await query(`UPDATE bills SET status = 'cancelled', cancelled_reason = $2 WHERE id = $1`, [bill.id, reason]);
-    await query(`UPDATE time_entries SET bill_id = NULL WHERE bill_id = $1`, [bill.id]);
-    await log({ query }, m.id, req.user.id, `Bill ${bill.bill_number} cancelled — ${reason}`);
-    res.status(204).send();
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const done = await client_.query(`UPDATE bills SET status = 'cancelled', cancelled_reason = $2 WHERE id = $1 AND status = 'issued'`, [bill.id, reason]);
+      if (!done.rowCount) {
+        await client_.query("ROLLBACK");
+        return res.status(409).json({ error: "That bill has already been cancelled." });
+      }
+      await client_.query(`UPDATE time_entries SET bill_id = NULL WHERE bill_id = $1`, [bill.id]);
+      await log(client_, m.id, req.user.id, `Bill ${bill.bill_number} cancelled — ${reason}`);
+      await client_.query("COMMIT");
+      res.status(204).send();
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
   })
 );
 
@@ -310,10 +335,26 @@ matterRouter.delete(
     const bill = await findBill(req, res, m);
     if (!bill) return;
     if (bill.status !== "draft") return res.status(400).json({ error: "Issued bills can't be deleted — cancel them instead." });
-    await query(`UPDATE time_entries SET bill_id = NULL WHERE bill_id = $1`, [bill.id]);
-    await query(`DELETE FROM bills WHERE id = $1`, [bill.id]);
-    await log({ query }, m.id, req.user.id, `Draft bill (${money(bill.total)}) deleted`);
-    res.status(204).send();
+    if (bill.created_by !== req.user.id && !canManage(req.user, m)) {
+      return res.status(403).json({ error: "Only whoever prepared the draft, the fee earner, their supervisor or an admin can delete it." });
+    }
+    const client_ = await pool.connect();
+    try {
+      await client_.query("BEGIN");
+      const gone = await client_.query(`DELETE FROM bills WHERE id = $1 AND status = 'draft'`, [bill.id]); // time is unlinked by ON DELETE SET NULL
+      if (!gone.rowCount) {
+        await client_.query("ROLLBACK");
+        return res.status(409).json({ error: "That bill has just been issued — cancel it instead." });
+      }
+      await log(client_, m.id, req.user.id, `Draft bill (${money(bill.total)}) deleted`);
+      await client_.query("COMMIT");
+      res.status(204).send();
+    } catch (err) {
+      await client_.query("ROLLBACK");
+      throw err;
+    } finally {
+      client_.release();
+    }
   })
 );
 
@@ -355,14 +396,18 @@ timeRouter.get(
   asyncHandler(async (req, res) => {
     const to = DATE_RE.test(req.query.to || "") ? req.query.to : ukToday();
     const from = DATE_RE.test(req.query.from || "") ? req.query.from : to;
+    // Your own time, but matter details only where you can still see the matter.
+    const v = matterVisibilityClause(req.user, 4);
     const result = await query(
       `SELECT t.id, t.matter_id, to_char(t.work_date, 'YYYY-MM-DD') AS work_date, t.units, t.amount, t.activity, t.description, t.billable,
-              t.bill_id, m.reference, m.address, m.client
-       FROM time_entries t JOIN matters m ON m.id = t.matter_id
+              t.bill_id, vis.reference, vis.address, vis.client
+       FROM time_entries t
+       LEFT JOIN LATERAL (SELECT m.reference, m.address, m.client FROM matters m WHERE m.id = t.matter_id ${v.clause}) vis ON true
        WHERE t.user_id = $1 AND t.work_date BETWEEN $2 AND $3
        ORDER BY t.work_date DESC, t.created_at DESC`,
-      [req.user.id, from, to]
+      [req.user.id, from, to, ...v.params]
     );
+    for (const r of result.rows) if (!r.reference) { r.reference = "(no longer available)"; r.address = ""; r.client = ""; r.matter_id = null; }
     const units = result.rows.reduce((n, r) => n + r.units, 0);
     const billable = result.rows.filter((r) => r.billable).reduce((n, r) => n + r.units, 0);
     res.json({ from, to, entries: result.rows, totals: { units, billableUnits: billable, value: round2(result.rows.reduce((n, r) => n + Number(r.amount), 0)) } });

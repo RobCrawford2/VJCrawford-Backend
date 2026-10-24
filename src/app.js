@@ -16,6 +16,15 @@ const app = express();
 app.set("trust proxy", 1);
 
 app.use(express.json({ limit: "2mb" }));
+// ?a=1&a=2 arrives as an array, and ?a[b]=1 as an object; routes expect
+// plain text, so keep the first value and drop anything nested.
+app.use((req, _res, next) => {
+  for (const [key, value] of Object.entries(req.query)) {
+    if (Array.isArray(value)) req.query[key] = typeof value[0] === "string" ? value[0] : undefined;
+    else if (value && typeof value === "object") delete req.query[key];
+  }
+  next();
+});
 app.use(
   cors({
     origin: (process.env.CORS_ORIGIN || "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -75,6 +84,17 @@ app.use((err, req, res, next) => {
   if (err.code === "22P02") {
     // Postgres invalid_text_representation — e.g. a malformed id in the URL
     return res.status(400).json({ error: "That doesn't look like a valid id or value." });
+  }
+  if (err.code === "22007" || err.code === "22008") {
+    // Postgres invalid / out-of-range date (e.g. 30 February)
+    return res.status(400).json({ error: "One of the dates isn't a real date." });
+  }
+  if (err.code === "23502" || err.code === "23514" || err.code === "22001" || err.code === "22003") {
+    // missing required value, failed check, text too long, number out of range
+    return res.status(400).json({ error: "Some of the information isn't valid — check the form and try again." });
+  }
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "The request wasn't valid." });
   }
   if (err.code === "23503") {
     // Postgres foreign_key_violation

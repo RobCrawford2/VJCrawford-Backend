@@ -166,7 +166,8 @@ const DEFAULT_FUNDING = { conveyancing: "fixed_fee", personal_injury: "cfa", cri
 for (const area of AREAS) area.defaultFunding = DEFAULT_FUNDING[area.key] || "hourly";
 const FUNDING_TYPES = ["hourly", "fixed_fee", "cfa", "legal_aid"];
 
-const AREA_BY_KEY = Object.fromEntries(AREAS.map((a) => [a.key, a]));
+// Null prototype, so names like "constructor" or "__proto__" aren't mistaken for departments.
+const AREA_BY_KEY = Object.assign(Object.create(null), Object.fromEntries(AREAS.map((a) => [a.key, a])));
 const AREA_KEYS = AREAS.map((a) => a.key);
 
 /** Stage names for a matter's department (and, later, type). */

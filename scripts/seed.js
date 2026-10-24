@@ -8,7 +8,7 @@
  * server.js — gated behind SEED_ON_BOOT=true) as well as run directly via
  * `npm run seed`.
  */
-const bcrypt = require("bcryptjs");
+const { hashPassword } = require("../src/utils/passwords");
 
 async function runSeed(pool, { password = "password123" } = {}) {
   const client = await pool.connect();
@@ -33,7 +33,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
       )
     ).rows[0];
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
 
     const david = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,'admin') RETURNING id`,

@@ -33,7 +33,9 @@ function logActivity(client, matterId, userId, type, text) {
  * to read and reason about, and each of these hits an indexed matter_id
  * column so it's cheap even on a large caseload.
  */
-async function loadMatterDetail(matterId) {
+async function loadMatterDetail(matterId, user) {
+  // Linked matters are only shown if the user could open them.
+  const linkVisibility = matterVisibilityClause(user, 2);
   const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties, deadlines] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
@@ -50,8 +52,8 @@ async function loadMatterDetail(matterId) {
     query(
       `SELECT linked_matter_id AS id, m.reference, m.address, m.client, m.type, m.current_stage_index, m.target_completion
        FROM matter_links l JOIN matters m ON m.id = l.linked_matter_id
-       WHERE l.matter_id = $1`,
-      [matterId]
+       WHERE l.matter_id = $1 ${linkVisibility.clause}`,
+      [matterId, ...linkVisibility.params]
     ),
     query(
       `SELECT r.*, u.name AS created_by_name, em.subject AS source_email_subject
@@ -225,6 +227,20 @@ async function checkAssignee(db, firmId, matterId, assigneeId) {
   return { user };
 }
 
+/**
+ * A matter's fee earner or supervisor must be active staff in the firm who
+ * work in the matter's department (otherwise they couldn't see the matter).
+ * Returns an error message or null; blank means "nobody".
+ */
+async function checkTeamMember(db, firmId, userId, department, label) {
+  if (!userId) return null;
+  const user = await loadUserAccess(db, userId, firmId);
+  if (!user) return `That ${label} isn't a member of staff.`;
+  if (!user.active) return `${user.name}'s account is deactivated, so they can't be the ${label}.`;
+  if (!canUseDepartment(user, department)) return `${user.name} doesn't work in ${AREA_BY_KEY[department]?.name || department}, so can't be the ${label}.`;
+  return null;
+}
+
 /** Confirms the requesting user is allowed to see this matter before any nested-resource write proceeds. */
 async function assertMatterVisible(req, res, matterId) {
   const params = [matterId, req.user.firmId];
@@ -296,7 +312,8 @@ router.get(
 
     const [rows, count] = await Promise.all([
       query(
-        `SELECT m.*, fe.name AS fee_earner_name
+        `SELECT m.*, fe.name AS fee_earner_name,
+                (SELECT max(a.occurred_at) FROM activity_log a WHERE a.matter_id = m.id) AS last_activity_at
          FROM matters m LEFT JOIN users fe ON fe.id = m.fee_earner_id
          WHERE ${whereClause}
          ORDER BY m.updated_at DESC
@@ -377,12 +394,18 @@ router.post(
     // opening a matter at the same instant could pick the same number; the
     // unique (firm_id, reference) constraint turns that into a 409 retry
     // rather than a duplicate.
-    const year = new Date().getFullYear();
-    const reference = formatReference(year, await nextReferenceNumber({ query }, req.user.firmId, year, area.prefix), area.prefix);
+    for (const [id, label] of [[feeEarnerId, "fee earner"], [supervisorId, "supervisor"]]) {
+      const problem = await checkTeamMember({ query }, req.user.firmId, id, department, label);
+      if (problem) return res.status(400).json({ error: problem });
+    }
 
+    const year = new Date().getFullYear();
     const client_ = await pool.connect();
     try {
       await client_.query("BEGIN");
+      // Same lock as the import, so two matters opened at once can't take the same number.
+      await client_.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`matter-refs:${req.user.firmId}`]);
+      const reference = formatReference(year, await nextReferenceNumber(client_, req.user.firmId, year, area.prefix), area.prefix);
       const result = await client_.query(
         `INSERT INTO matters (
            firm_id, reference, address, client, type, price, fee_earner_id, supervisor_id,
@@ -562,6 +585,7 @@ router.get(
 router.get(
   "/sign-offs/pending",
   asyncHandler(async (req, res) => {
+    const signoffVisibility = matterVisibilityClause(req.user, 4);
     const result = await query(
       `SELECT r.id, r.matter_id, r.from_stage, r.to_stage, r.note, r.requested_at,
               rq.name AS requested_by_name, m.reference, m.address, m.client, m.department, m.type
@@ -570,9 +594,9 @@ router.get(
        LEFT JOIN users fe ON fe.id = m.fee_earner_id
        LEFT JOIN users rq ON rq.id = r.requested_by
        WHERE r.status = 'pending' AND m.firm_id = $1 AND r.requested_by IS DISTINCT FROM $3
-         AND ${SIGNOFF_CLAUSE(2)}
+         AND ${SIGNOFF_CLAUSE(2)} ${signoffVisibility.clause}
        ORDER BY r.requested_at ASC`,
-      [req.user.firmId, req.user.role, req.user.id]
+      [req.user.firmId, req.user.role, req.user.id, ...signoffVisibility.params]
     );
     res.json(result.rows.map((r) => {
       const names = stagesFor(r.department, r.type);
@@ -591,7 +615,7 @@ router.get(
   "/:id",
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
-    const detail = await loadMatterDetail(req.params.id);
+    const detail = await loadMatterDetail(req.params.id, req.user);
     if (!detail) return res.status(404).json({ error: "Matter not found." });
     const [pending, canSign, requireSignoff] = await Promise.all([
       query(
@@ -817,6 +841,14 @@ router.patch(
     if (req.body.feeEstimate !== undefined && req.body.feeEstimate !== "" && req.body.feeEstimate !== null && !(Number(req.body.feeEstimate) >= 0)) {
       return res.status(400).json({ error: "The estimate must be £0 or more." });
     }
+    if (req.body.feeEarnerId !== undefined || req.body.supervisorId !== undefined) {
+      const { department } = await matterStages({ query }, req.params.id);
+      for (const [key, label] of [["feeEarnerId", "fee earner"], ["supervisorId", "supervisor"]]) {
+        if (req.body[key] === undefined) continue;
+        const problem = await checkTeamMember({ query }, req.user.firmId, req.body[key], department, label);
+        if (problem) return res.status(400).json({ error: problem });
+      }
+    }
     if (req.body.type !== undefined) {
       const { department } = await matterStages({ query }, req.params.id);
       const types = AREA_BY_KEY[department].types;
@@ -1031,7 +1063,7 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { text } = req.body;
-    if (!text || !text.trim()) return res.status(400).json({ error: "text is required." });
+    if (typeof text !== "string" || !text.trim()) return res.status(400).json({ error: "text is required." });
 
     const result = await query(
       `INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'note',$3) RETURNING *`,
@@ -1314,7 +1346,7 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { question } = req.body;
-    if (!question || !question.trim()) return res.status(400).json({ error: "question is required." });
+    if (typeof question !== "string" || !question.trim()) return res.status(400).json({ error: "question is required." });
 
     const client_ = await pool.connect();
     try {
@@ -1379,7 +1411,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { answer, dateAnswered } = req.body;
-    if (!answer || !answer.trim()) return res.status(400).json({ error: "answer is required." });
+    if (typeof answer !== "string" || !answer.trim()) return res.status(400).json({ error: "answer is required." });
 
     const result = await query(
       `UPDATE enquiries SET status = 'Answered', answer = $1, date_answered = $2
@@ -1406,7 +1438,7 @@ router.patch(
     const { outcome, finalAnswer, followUpNote } = req.body; // outcome: 'confirm' | 'follow_up'
 
     if (outcome === "confirm") {
-      if (!finalAnswer || !finalAnswer.trim()) return res.status(400).json({ error: "finalAnswer is required to confirm." });
+      if (typeof finalAnswer !== "string" || !finalAnswer.trim()) return res.status(400).json({ error: "finalAnswer is required to confirm." });
       const result = await query(
         `UPDATE enquiries SET status = 'Answered', answer = $1 WHERE id = $2 AND matter_id = $3 RETURNING *`,
         [finalAnswer.trim(), req.params.enquiryId, req.params.id]
@@ -1418,7 +1450,7 @@ router.patch(
     }
 
     if (outcome === "follow_up") {
-      if (!followUpNote || !followUpNote.trim()) return res.status(400).json({ error: "followUpNote is required to flag a follow-up." });
+      if (typeof followUpNote !== "string" || !followUpNote.trim()) return res.status(400).json({ error: "followUpNote is required to flag a follow-up." });
       const result = await query(
         `UPDATE enquiries SET status = 'Outstanding', follow_up_notes = $1, auto_filled = false
          WHERE id = $2 AND matter_id = $3 RETURNING *`,
@@ -1437,7 +1469,8 @@ router.patch(
 );
 
 // Status labels as staff see them (the stored values predate the wording).
-const ENQUIRY_STATUS_LABELS = { Outstanding: "Raised", "Pending Review": "Response received", Answered: "Satisfactory" };
+// Null prototype, so names like "constructor" aren't mistaken for statuses.
+const ENQUIRY_STATUS_LABELS = Object.assign(Object.create(null), { Outstanding: "Raised", "Pending Review": "Response received", Answered: "Satisfactory" });
 
 /** Loads an enquiry, checking it belongs to the matter. */
 async function findEnquiry(db, matterId, enquiryId) {
@@ -1493,7 +1526,7 @@ router.post(
           return res.status(404).json({ error: "That email isn't on this matter." });
         }
       }
-      const text = (reply && reply.trim()) || (email && (email.body || "").trim());
+      const text = (typeof reply === "string" && reply.trim()) || (email && (email.body || "").trim());
       if (!text) {
         await client_.query("ROLLBACK");
         return res.status(400).json({ error: "The reply is empty." });
@@ -1529,7 +1562,7 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { comment } = req.body;
-    if (!comment || !comment.trim()) return res.status(400).json({ error: "The comment is empty." });
+    if (typeof comment !== "string" || !comment.trim()) return res.status(400).json({ error: "The comment is empty." });
     const enquiry = await findEnquiry({ query }, req.params.id, req.params.enquiryId);
     if (!enquiry) return res.status(404).json({ error: "Enquiry not found." });
     const result = await query(
@@ -1600,7 +1633,7 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { direction, description, party, dateGiven } = req.body;
-    if (!direction || !description || !description.trim()) return res.status(400).json({ error: "direction and description are required." });
+    if (!direction || typeof description !== "string" || !description.trim()) return res.status(400).json({ error: "direction and description are required." });
 
     const client_ = await pool.connect();
     try {
@@ -1648,7 +1681,7 @@ router.post(
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
     const { description, dueDate, assignedTo } = req.body;
-    if (!description || !description.trim()) return res.status(400).json({ error: "description is required." });
+    if (typeof description !== "string" || !description.trim()) return res.status(400).json({ error: "description is required." });
     let assignee = null;
     if (assignedTo) {
       const check = await checkAssignee({ query }, req.user.firmId, req.params.id, assignedTo);

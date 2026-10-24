@@ -1200,3 +1200,102 @@ test("billing: draft from unbilled time and disbursements, issue with the next n
   assert.equal((await request(app).patch(`/users/${priyaId}`).set(david).send({ hourlyRate: -5 })).status, 400);
   assert.ok((await request(app).get("/users/audit").set(david)).body.some((a) => a.details.includes("hourly rate changed from £210 to £225")));
 });
+
+test("review fixes: nothing from another department leaks through sign-offs, links, the timesheet or conflict roles", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const family = (await request(app).get("/matters?department=family&limit=100").set(david)).body.matters.find((m) => m.reference === "FAM-2026-0001");
+  const conv = (await request(app).get("/matters?limit=100").set(sarah)).body.matters[0];
+
+  // Sarah supervises Priya but works only in conveyancing: Priya's family sign-off request isn't listed for her.
+  await request(app).patch(`/users/${sarahId}`).set(david).send({ role: "supervisor" });
+  await request(app).patch(`/users/${priyaId}`).set(david).send({ supervisorId: sarahId });
+  await request(app).patch("/settings").set(david).send({ requireStageSignoff: true });
+  // Priya is the fee earner so she moves directly; have the admin request instead to create a pending request.
+  await request(app).post(`/matters/${family.id}/stage-requests`).set(david).send({ stageIndex: 5, note: "x" });
+  const pending = (await request(app).get("/matters/sign-offs/pending").set(sarah)).body;
+  assert.ok(!pending.some((r) => r.matter_id === family.id), "family request leaked into Sarah's sign-offs");
+
+  // A link to a family matter isn't shown on Sarah's conveyancing matter.
+  assert.ok([200, 201, 204].includes((await request(app).put(`/matters/${conv.id}/links/${family.id}`).set(david)).status));
+  const convDetail = (await request(app).get(`/matters/${conv.id}`).set(sarah)).body;
+  assert.ok(!convDetail.linkedMatters.some((l) => l.id === family.id));
+  assert.ok((await request(app).get(`/matters/${conv.id}`).set(david)).body.linkedMatters.some((l) => l.id === family.id));
+
+  // A hidden party's role isn't revealed by the conflict check.
+  const [mark] = (await request(app).post("/clients/conflict-check").set(sarah).send({ names: ["Mark Morris"] })).body.results;
+  const hiddenParties = mark.matches.filter((m) => m.kind === "party" && m.matters[0].hidden);
+  assert.ok(hiddenParties.length >= 1);
+  assert.ok(hiddenParties.every((m) => m.role === "Party"));
+
+  // Priya loses family access: her timesheet keeps her time but not the matter's details.
+  await request(app).post(`/matters/${family.id}/time`).set(priya).send({ workDate: "2026-10-20", units: 1, activity: "Other" });
+  await request(app).patch(`/users/${priyaId}`).set(david).send({ departments: ["conveyancing"] });
+  const sheet = (await request(app).get("/time?from=2026-10-20&to=2026-10-20").set(priya)).body;
+  assert.ok(sheet.entries.length >= 1);
+  assert.ok(sheet.entries.every((e) => e.reference !== "FAM-2026-0001" && !e.address.includes("Divorce")));
+  await request(app).patch(`/users/${priyaId}`).set(david).send({ departments: ["family"] });
+});
+
+test("review fixes: billing can't double-issue, hides rates from non-managers, and locks billed time", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const m = (await request(app).post("/matters").set(priya).send({ department: "family", address: "Double issue", client: "D I", type: "Divorce", feeEarnerId: priyaId })).body;
+  const e = (await request(app).post(`/matters/${m.id}/time`).set(priya).send({ workDate: "2026-10-05", units: 3, activity: "Drafting" })).body;
+  const draft = (await request(app).post(`/matters/${m.id}/bills`).set(priya).send({ timeEntryIds: [e.id] })).body;
+  const [a, b] = await Promise.all([
+    request(app).post(`/matters/${m.id}/bills/${draft.id}/issue`).set(priya),
+    request(app).post(`/matters/${m.id}/bills/${draft.id}/issue`).set(priya),
+  ]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+  const issuedNumber = (a.status === 200 ? a : b).body.bill_number;
+  const bills = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body.bills;
+  assert.equal(bills.find((x) => x.id === draft.id).bill_number, issuedNumber);
+  assert.equal((await request(app).delete(`/matters/${m.id}/time/${e.id}`).set(priya)).status, 400);
+
+  // Rates: shown to the matter's fee earner, not to an assistant.
+  assert.ok((await request(app).get(`/matters/${m.id}/billing`).set(priya)).body.entries.every((x) => x.rate !== undefined));
+  const jess = { Authorization: `Bearer ${await tokenFor("jess")}` };
+  const sarahMatter = (await request(app).get("/matters?limit=100").set(jess)).body.matters[0];
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  await request(app).post(`/matters/${sarahMatter.id}/time`).set(sarah).send({ workDate: "2026-10-05", units: 1, activity: "Other" });
+  const asJess = (await request(app).get(`/matters/${sarahMatter.id}/billing`).set(jess)).body;
+  assert.ok(asJess.entries.length && asJess.entries.every((x) => x.rate === undefined));
+  assert.ok((await request(app).get(`/matters/${sarahMatter.id}/billing`).set(david)).body.entries.every((x) => x.rate !== undefined));
+});
+
+test("review fixes: staff and matter assignments are validated; odd input gets a 400, not a crash", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const priyaId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("priya")}` })).body.id;
+
+  // A repeated department is fine (not a half-created account).
+  const dup = await request(app).post("/users").set(david)
+    .send({ name: "Dup Dept", email: "dupdept@vjcrawfordconveyancing.co.uk", password: "dup-dept-pass-1", departments: ["family", "family"] });
+  assert.equal(dup.status, 201);
+  assert.deepEqual(dup.body.departments, ["family"]);
+
+  // A conveyancing matter can't be given a family-only fee earner.
+  const conv = (await request(app).get("/matters?limit=100").set(sarah)).body.matters[0];
+  const bad = await request(app).patch(`/matters/${conv.id}`).set(sarah).send({ feeEarnerId: priyaId });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /doesn't work in Conveyancing/);
+  assert.equal((await request(app).post("/matters").set(sarah).send({ address: "x", client: "y", type: "Purchase", supervisorId: priyaId })).status, 400);
+
+  // Odd input: impossible dates, built-in names, repeated query parameters.
+  assert.equal((await request(app).post(`/matters/${conv.id}/tasks`).set(sarah).send({ description: "x", dueDate: "2026-02-30" })).status, 400);
+  assert.equal((await request(app).post("/matters").set(david).send({ department: "__proto__", address: "x", client: "y", type: "z" })).status, 400);
+  assert.equal((await request(app).post("/matters").set(david).send({ department: "constructor", address: "x", client: "y", type: "z" })).status, 400);
+  assert.equal((await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "constructor"] })).status, 400);
+  assert.equal((await request(app).get("/matters?search=Mill&search=Lane").set(sarah)).status, 200);
+  assert.equal((await request(app).post(`/matters/${conv.id}/notes`).set(sarah).send({ text: 5 })).status, 400);
+  assert.equal((await request(app).post("/auth/login").send({ email: ["a"], password: "x" })).status, 400);
+
+  // Dates come back as plain dates.
+  const detail = (await request(app).get(`/matters/${conv.id}`).set(sarah)).body;
+  assert.match(String(detail.date_instructed), /^\d{4}-\d{2}-\d{2}$/);
+});

@@ -1,6 +1,6 @@
 const express = require("express");
-const bcrypt = require("bcryptjs");
-const { query } = require("../db");
+const { hashPassword } = require("../utils/passwords");
+const { query, pool } = require("../db");
 const asyncHandler = require("../utils/asyncHandler");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
@@ -29,17 +29,35 @@ async function checkDepartments(firmId, departments) {
   return bad ? `${AREA_BY_KEY[bad]?.name || bad} isn't one of the firm's departments.` : null;
 }
 
-async function setDepartments(userId, departments) {
-  await query(`DELETE FROM user_departments WHERE user_id = $1`, [userId]);
+async function setDepartments(db, userId, departments) {
+  await db.query(`DELETE FROM user_departments WHERE user_id = $1`, [userId]);
   if (departments.length) {
-    await query(`INSERT INTO user_departments (user_id, department) SELECT $1, unnest($2::text[])`, [userId, departments]);
+    await db.query(`INSERT INTO user_departments (user_id, department) SELECT $1, unnest($2::text[])`, [userId, departments]);
   }
 }
 
+/** Runs fn(client) in a transaction, so a staff change is saved completely or not at all. */
+async function inTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+const uniqueList = (v) => (Array.isArray(v) ? [...new Set(v)] : v);
+
 const departmentNames = (list) => (list.length ? list.map((d) => AREA_BY_KEY[d]?.name || d).join(", ") : "none");
 
-function audit(firmId, actorId, targetId, action, details = "") {
-  return query(
+function audit(firmId, actorId, targetId, action, details = "", db = { query }) {
+  return db.query(
     `INSERT INTO staff_audit (firm_id, actor_id, target_id, action, details) VALUES ($1,$2,$3,$4,$5)`,
     [firmId, actorId, targetId, action, details]
   );
@@ -90,7 +108,8 @@ router.post(
   "/",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { name, email, password, role = "fee_earner", supervisorId, departments = [], allDepartments = false, hourlyRate = null } = req.body;
+    const { name, email, password, role = "fee_earner", supervisorId, allDepartments = false, hourlyRate = null } = req.body;
+    const departments = uniqueList(req.body.departments ?? []);
     if (hourlyRate !== null && hourlyRate !== "" && !(Number(hourlyRate) >= 0)) return res.status(400).json({ error: "The hourly rate must be £0 or more." });
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ error: "Name, email and a temporary password are required." });
@@ -114,17 +133,20 @@ router.post(
     const existing = await query("SELECT id FROM users WHERE email = $1", [email.trim().toLowerCase()]);
     if (existing.rows.length) return res.status(409).json({ error: "A user with that email already exists." });
 
-    const passwordHash = await bcrypt.hash(password, 12);
-    const result = await query(
-      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id, all_departments, hourly_rate)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [req.user.firmId, name.trim(), email.trim().toLowerCase(), passwordHash, role, supervisorId || null, allDepartments,
-       hourlyRate === "" || hourlyRate === null ? null : Number(hourlyRate)]
-    );
-    const id = result.rows[0].id;
-    await setDepartments(id, departments);
-    await audit(req.user.firmId, req.user.id, id, "added",
-      `Added as ${ROLE_LABELS[role]} — ${allDepartments ? "all departments" : `departments: ${departmentNames(departments)}`}`);
+    const passwordHash = await hashPassword(password);
+    const id = await inTransaction(async (db) => {
+      const result = await db.query(
+        `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id, all_departments, hourly_rate)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [req.user.firmId, name.trim(), email.trim().toLowerCase(), passwordHash, role, supervisorId || null, allDepartments,
+         hourlyRate === "" || hourlyRate === null ? null : Number(hourlyRate)]
+      );
+      const newId = result.rows[0].id;
+      await setDepartments(db, newId, departments);
+      await audit(req.user.firmId, req.user.id, newId, "added",
+        `Added as ${ROLE_LABELS[role]} — ${allDepartments ? "all departments" : `departments: ${departmentNames(departments)}`}`, db);
+      return newId;
+    });
     res.status(201).json(await getUser(id));
   })
 );
@@ -134,7 +156,8 @@ router.patch(
   "/:id",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { name, email, role, supervisorId, active, departments, allDepartments, hourlyRate } = req.body;
+    const { name, email, role, supervisorId, active, allDepartments, hourlyRate } = req.body;
+    const departments = uniqueList(req.body.departments);
     if (hourlyRate !== undefined && hourlyRate !== null && hourlyRate !== "" && !(Number(hourlyRate) >= 0)) {
       return res.status(400).json({ error: "The hourly rate must be £0 or more." });
     }
@@ -208,13 +231,15 @@ router.patch(
 
     if (!changes.length) return res.json(before);
 
-    if (!sameDepartments) await setDepartments(req.params.id, departments);
-    if (setClauses.length) {
-      params.push(req.params.id, req.user.firmId);
-      await query(`UPDATE users SET ${setClauses.join(", ")} WHERE id = $${params.length - 1} AND firm_id = $${params.length}`, params);
-    }
     const action = active === false && changes.includes("deactivated") ? "deactivated" : active === true && changes.includes("reactivated") ? "reactivated" : "updated";
-    await audit(req.user.firmId, req.user.id, req.params.id, action, changes.join("; "));
+    await inTransaction(async (db) => {
+      if (!sameDepartments) await setDepartments(db, req.params.id, departments);
+      if (setClauses.length) {
+        params.push(req.params.id, req.user.firmId);
+        await db.query(`UPDATE users SET ${setClauses.join(", ")} WHERE id = $${params.length - 1} AND firm_id = $${params.length}`, params);
+      }
+      await audit(req.user.firmId, req.user.id, req.params.id, action, changes.join("; "), db);
+    });
     res.json(await getUser(req.params.id));
   })
 );
@@ -232,7 +257,7 @@ router.post(
     if (!password || password.length < 10) {
       return res.status(400).json({ error: "The temporary password must be at least 10 characters." });
     }
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
     const result = await query(
       `UPDATE users SET password_hash = $1 WHERE id = $2 AND firm_id = $3 RETURNING id`,
       [passwordHash, req.params.id, req.user.firmId]
