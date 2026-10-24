@@ -14,7 +14,7 @@ export function userName(users, id) {
 function adaptDocument(d) {
   return {
     id: d.id, name: d.name, category: d.category, date: d.doc_date || "", notes: d.notes || "",
-    fileName: d.file_name || "", fileSize: d.file_size || 0,
+    fileName: d.file_name || "", fileSize: d.file_size || 0, folderId: d.folder_id || null,
   };
 }
 function adaptEmail(e) {
@@ -163,6 +163,7 @@ export function adaptMatter(m, users) {
     })),
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
+    folders: (m.folders || []).map((f) => ({ id: f.id, name: f.name })),
     emails: (m.emails || []).map(adaptEmail),
     enquiries: (m.enquiries || []).map(adaptEnquiry),
     searches: (m.searches || []).map(adaptSearch),

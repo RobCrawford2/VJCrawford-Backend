@@ -4,7 +4,7 @@ import {
   X, Check, Building2, Clock, ArrowLeft, PoundSterling, Home as HomeIcon,
   Scale, Landmark, KeyRound, Send, Paperclip, StickyNote, RotateCcw,
   ShieldCheck, FileSearch, FileSignature, Stamp, AlertTriangle, Link2, Gavel,
-  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff
+  Settings as SettingsIcon, Copy, CheckCircle2, Download, Plug, Bell, ListChecks, LogOut, Lock, Upload, Mic, Pencil, Trash2, Eye, EyeOff, Folder
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
@@ -14,6 +14,7 @@ import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
 import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
+import { DocumentsTab, FolderTemplatesCard } from "./Documents";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -603,6 +604,7 @@ export default function App() {
         setSettings((prev) => ({
           ...prev,
           departments: s.departments || ["conveyancing"],
+          folderTemplates: s.folderTemplates || [],
           domain: s.domain || prev.domain,
           staleDays: s.stale_days ?? prev.staleDays,
           requireStageSignoff: s.require_stage_signoff ?? true,
@@ -637,7 +639,7 @@ export default function App() {
   async function saveDepartments(departments) {
     try {
       const saved = await api.updateFirmSettings({ departments });
-      setSettings((prev) => ({ ...prev, departments: saved.departments }));
+      setSettings((prev) => ({ ...prev, departments: saved.departments, folderTemplates: saved.folderTemplates || prev.folderTemplates }));
     } catch (err) {
       notify(err.message || "Couldn't change the departments.");
     }
@@ -1704,6 +1706,33 @@ export default function App() {
         .ac-doc-actions { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
         .ac-doc-actions .ac-tablebtn { display: inline-flex; align-items: center; gap: 4px; }
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
+        .ac-doc-row[draggable="true"] { cursor: grab; }
+        .ac-doc-move { font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 2px; background: var(--card); color: var(--ink-soft); max-width: 150px; }
+        .ac-docs { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; align-items: start; }
+        .ac-folders { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
+        .ac-folders-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--slate); font-weight: 600; margin: 12px 8px 4px; }
+        .ac-folder {
+          display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 1px solid transparent;
+          border-radius: 3px; padding: 6px 8px; font-size: 12.5px; color: var(--ink-soft); cursor: pointer;
+        }
+        .ac-folder .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ac-folder .n { font-size: 11px; color: var(--slate-light); font-variant-numeric: tabular-nums; }
+        .ac-folder:hover { background: var(--paper); }
+        .ac-folder.on { background: var(--brass-bg); color: var(--ink); font-weight: 600; }
+        .ac-folder.on .n { color: var(--brass); }
+        .ac-folder.drop { border-color: var(--brass); border-style: dashed; background: var(--brass-bg); }
+        .ac-folder.add { color: var(--slate); font-size: 12px; }
+        .ac-folder.add:hover { color: var(--brass); }
+        .ac-folder-form input { width: 100%; font-size: 12.5px; padding: 5px 8px; }
+        .ac-folders-hint { font-size: 11px; color: var(--slate-light); margin: 8px 8px 0; }
+        @media (max-width: 800px) {
+          .ac-docs { grid-template-columns: 1fr; }
+          .ac-folders { position: static; flex-direction: row; flex-wrap: wrap; }
+          .ac-folders .ac-folder { width: auto; }
+          .ac-folders-label, .ac-folders-hint { display: none; }
+          .ac-docs .ac-doc-row { flex-wrap: wrap; }
+          .ac-docs .ac-doc-actions { width: 100%; flex-wrap: wrap; padding-left: 46px; }
+        }
         .ac-email-dir {
           font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
           padding: 2px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
@@ -2052,7 +2081,7 @@ export default function App() {
               onUpdateTask={(taskId, patch) => updateTask(selected.id, taskId, patch)}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
-              onAddDoc={() => setShowAddDoc(true)}
+              onAddDoc={(folderId) => setShowAddDoc({ folderId: folderId || null })}
               onAttachFile={(documentId, file) => attachDocumentFile(selected.id, documentId, file)}
               onOpenFile={(doc, download) => openDocumentFile(selected.id, doc, download)}
               onReportOnTitle={() => downloadReportOnTitle(selected)}
@@ -2095,7 +2124,7 @@ export default function App() {
 
       {showNewMatter && <NewMatterForm onClose={() => setShowNewMatter(false)} onCreate={addMatter} users={users} departments={myDepartments} />}
       {showEditMatter && selected && <EditMatterForm matter={selected} allMatters={matters} users={users} section={showEditMatter === true ? null : showEditMatter} onClose={() => setShowEditMatter(false)} onSave={(patch) => editMatterDetails(selected.id, patch)} />}
-      {showAddDoc && selected && <AddDocForm onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
+      {showAddDoc && selected && <AddDocForm folders={selected.folders} folderId={showAddDoc.folderId} onClose={() => setShowAddDoc(false)} onAdd={(d, file) => addDocument(selected.id, d, file)} />}
       {showAddEmail && selected && <AddEmailForm onClose={() => setShowAddEmail(false)} onAdd={(e) => addEmail(selected.id, e)} />}
       {showAddNote && selected && <AddNoteForm onClose={() => setShowAddNote(false)} onAdd={(text) => addNote(selected.id, text)} />}
       {showAddEnquiry && selected && <AddEnquiryForm onClose={() => setShowAddEnquiry(false)} onAdd={(q) => addEnquiry(selected.id, q)} />}
@@ -3619,41 +3648,17 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
       )}
 
       {activeTab === "documents" && (
-        <div className="ac-detail-body" style={{ gridTemplateColumns: "1fr" }}>
-          <div className="ac-col-main">
-            <div className="ac-section-head">
-              <h2>Documents</h2>
-              <button className="ac-addbtn" onClick={onAddDoc}><Plus size={13} /> Add document</button>
-            </div>
-            {matter.documents.length === 0 && <p style={{ color: "var(--slate)", fontSize: 13 }}>No documents recorded yet.</p>}
-            {matter.documents.map((d) => (
-              <div key={d.id} className="ac-doc-row">
-                <div className="ac-doc-icon"><FileText size={16} /></div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="ac-doc-name">{d.name}</div>
-                  <div className="ac-doc-meta">{d.category} · {formatDate(d.date)}</div>
-                  {d.fileName && <div className="ac-doc-file"><Paperclip size={11} /> {d.fileName} · {formatFileSize(d.fileSize)}</div>}
-                  {d.notes && <div className="ac-doc-notes">{d.notes}</div>}
-                </div>
-                <div className="ac-doc-actions">
-                  <RowActions onEdit={() => onEditItem("documents", d)} onDelete={() => onDeleteItem("documents", d, `document “${d.name}”${d.fileName ? " and its file" : ""}`)} />
-                  {d.fileName ? (
-                    <>
-                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, false)}>View</button>
-                      <button className="ac-tablebtn" onClick={() => onOpenFile(d, true)}><Download size={12} /> Download</button>
-                    </>
-                  ) : (
-                    <label className="ac-tablebtn" style={{ cursor: "pointer" }}>
-                      <Paperclip size={12} /> Attach file
-                      <input type="file" accept={DOC_FILE_EXTENSIONS.join(",")} style={{ display: "none" }}
-                        onChange={(e) => { const file = e.target.files[0]; e.target.value = ""; if (file) onAttachFile(d.id, file); }} />
-                    </label>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <DocumentsTab
+          matter={matter}
+          onChanged={onMatterChanged}
+          onAddDoc={onAddDoc}
+          onAttachFile={onAttachFile}
+          onOpenFile={onOpenFile}
+          onEdit={(d) => onEditItem("documents", d)}
+          onDelete={(d) => onDeleteItem("documents", d, `document “${d.name}”${d.fileName ? " and its file" : ""}`)}
+          RowActions={RowActions}
+          fileAccept={DOC_FILE_EXTENSIONS.join(",")}
+        />
       )}
 
       {activeTab === "emails" && (
@@ -4119,6 +4124,15 @@ function SettingsPanel({ isAdmin, settings, matters, onClose, onSave, onSaveDepa
 
         <DepartmentsSetting isAdmin={isAdmin} departments={settings.departments || ["conveyancing"]} onSave={onSaveDepartments} />
 
+        {(settings.folderTemplates || []).length > 0 && (
+          <div className="ac-card">
+            <h3><Folder size={12} /> Standard document folders</h3>
+            <FolderTemplatesCard key={(settings.folderTemplates || []).map((t) => t.department).join()} templates={settings.folderTemplates}
+              areaName={areaName} isAdmin={isAdmin} onSaved={(folderTemplates) => onSave({ folderTemplates })} />
+            {!isAdmin && <p style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 0 }}>Only an admin can change these.</p>}
+          </div>
+        )}
+
         {(settings.departments || ["conveyancing"]).includes("conveyancing") && <div className="ac-card">
           <h3><Gavel size={12} /> Checks before exchange</h3>
           <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
@@ -4193,8 +4207,8 @@ function OutlookConsentModal({ onCancel, onApprove }) {
 /* Add document form                                                      */
 /* ---------------------------------------------------------------------- */
 
-function AddDocForm({ onClose, onAdd }) {
-  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: todayISO(), notes: "" });
+function AddDocForm({ folders = [], folderId = null, onClose, onAdd }) {
+  const [f, setF] = useState({ name: "", category: DOC_CATEGORIES[0], date: todayISO(), notes: "", folderId: folderId || "" });
   const [file, setFile] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -4259,6 +4273,15 @@ function AddDocForm({ onClose, onAdd }) {
             <input type="date" value={f.date} onChange={set("date")} />
           </div>
         </div>
+        {folders.length > 0 && (
+          <div className="ac-field">
+            <label>Folder</label>
+            <select value={f.folderId} onChange={set("folderId")}>
+              <option value="">Unfiled</option>
+              {folders.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </div>
+        )}
         <div className="ac-field">
           <label>Notes</label>
           <DictTextarea value={f.notes} onChange={set("notes")} placeholder="Anything worth flagging about this document…" />

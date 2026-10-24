@@ -166,6 +166,18 @@ async function runSeed(pool, { password = "password123" } = {}) {
       `INSERT INTO tasks (matter_id, description, due_date, status, created_by) VALUES ($1,$2,'2026-08-18','Open',$3)`,
       [whitfieldId, "Follow up with client for instructions on indemnity insurance re: environmental search", marcus.id]
     );
+    // A few documents (filed into the standard folders by category when the matter is first opened).
+    await client.query(
+      `INSERT INTO documents (matter_id, name, category, doc_date, created_by) VALUES
+       ($1, 'Client care letter', 'Correspondence', '2026-07-28', $2),
+       ($1, 'Passport — Tom Whitfield', 'ID / AML', '2026-07-28', $2),
+       ($1, 'Draft contract', 'Contract', '2026-08-02', $2),
+       ($1, 'Official copies of the register', 'Title', '2026-08-02', $2),
+       ($1, 'Environmental search result', 'Search', '2026-08-07', $2),
+       ($1, 'Mortgage offer — Barclays', 'Mortgage', '2026-08-05', $2),
+       ($1, 'Seller''s property information form (TA6)', 'Other', '2026-08-02', $2)`,
+      [whitfieldId, marcus.id]
+    );
 
     // Client records (one per client name — in the demo data the same name is
     // the same client, so the Faulkners' purchase and sale share theirs) and

@@ -19,6 +19,7 @@ const { conflictCheck, summariseCheck, countMatches } = require("../utils/confli
 const { createClient, checkClient, findVisibleClient } = require("./clients");
 const { billingSummary } = require("./billing");
 const { FUNDING_TYPES } = require("../config/areas");
+const { ensureFolders } = require("./folders");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -36,7 +37,7 @@ function logActivity(client, matterId, userId, type, text) {
 async function loadMatterDetail(matterId, user) {
   // Linked matters are only shown if the user could open them.
   const linkVisibility = matterVisibilityClause(user, 2);
-  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties, deadlines] = await Promise.all([
+  const [matter, documents, emails, enquiries, searches, undertakings, tasks, activity, links, replies, comments, bank, clients, parties, deadlines, folders] = await Promise.all([
     query(`SELECT * FROM matters WHERE id = $1`, [matterId]),
     query(`SELECT * FROM documents WHERE matter_id = $1 ORDER BY doc_date DESC NULLS LAST, created_at DESC`, [matterId]),
     query(`SELECT * FROM emails WHERE matter_id = $1 ORDER BY email_date DESC, created_at DESC`, [matterId]),
@@ -85,6 +86,7 @@ async function loadMatterDetail(matterId, user) {
        FROM deadlines d LEFT JOIN users u ON u.id = d.done_by WHERE d.matter_id = $1 ORDER BY d.due_date, d.due_time NULLS FIRST`,
       [matterId]
     ),
+    query(`SELECT id, name, position FROM document_folders WHERE matter_id = $1 ORDER BY position, lower(name)`, [matterId]),
   ]);
 
   if (!matter.rows.length) return null;
@@ -92,6 +94,7 @@ async function loadMatterDetail(matterId, user) {
   return {
     ...matter.rows[0],
     documents: documents.rows,
+    folders: folders.rows,
     emails: emails.rows,
     enquiries: enquiries.rows.map((q) => ({
       ...q,
@@ -615,6 +618,7 @@ router.get(
   "/:id",
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
+    await ensureFolders({ query }, req.params.id);
     const detail = await loadMatterDetail(req.params.id, req.user);
     if (!detail) return res.status(404).json({ error: "Matter not found." });
     const [pending, canSign, requireSignoff] = await Promise.all([
@@ -1080,16 +1084,20 @@ router.post(
   "/:id/documents",
   asyncHandler(async (req, res) => {
     if (!(await assertMatterVisible(req, res, req.params.id))) return;
-    const { name, category, date, notes } = req.body;
+    const { name, category, date, notes, folderId } = req.body;
     if (!name || !category) return res.status(400).json({ error: "name and category are required." });
+    if (folderId) {
+      const f = await query(`SELECT 1 FROM document_folders WHERE id = $1 AND matter_id = $2`, [folderId, req.params.id]);
+      if (!f.rows.length) return res.status(400).json({ error: "That folder isn't on this matter." });
+    }
 
     const client_ = await pool.connect();
     try {
       await client_.query("BEGIN");
       const result = await client_.query(
-        `INSERT INTO documents (matter_id, name, category, doc_date, notes, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [req.params.id, name, category, date || null, notes || null, req.user.id]
+        `INSERT INTO documents (matter_id, name, category, doc_date, notes, created_by, folder_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [req.params.id, name, category, date || null, notes || null, req.user.id, folderId || null]
       );
       await logActivity(client_, req.params.id, req.user.id, "doc", `Document added: ${name}`);
       await client_.query("COMMIT");

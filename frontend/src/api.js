@@ -90,6 +90,11 @@ export const api = {
     return request(`/matters/${id}/documents/${documentId}/file`, { method: "PUT", formData });
   },
   getDocumentFile: (id, documentId) => request(`/matters/${id}/documents/${documentId}/file`, { blob: true }),
+  moveDocument: (id, documentId, folderId) => request(`/matters/${id}/documents/${documentId}/folder`, { method: "PUT", body: { folderId } }),
+  addFolder: (id, name) => request(`/matters/${id}/folders`, { method: "POST", body: { name } }),
+  updateFolder: (id, folderId, patch) => request(`/matters/${id}/folders/${folderId}`, { method: "PATCH", body: patch }),
+  deleteFolder: (id, folderId) => request(`/matters/${id}/folders/${folderId}`, { method: "DELETE" }),
+  addStandardFolders: (id) => request(`/matters/${id}/folders/standard`, { method: "POST" }),
 
   addEmail: (id, email) => request(`/matters/${id}/emails`, { method: "POST", body: email }),
   matchEmail: (id, emailId) => request(`/matters/${id}/emails/${emailId}/match`, { method: "POST" }),

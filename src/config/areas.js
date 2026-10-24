@@ -161,6 +161,34 @@ const DEADLINES = {
 };
 for (const area of AREAS) area.deadlines = DEADLINES[area.key] || [];
 
+/**
+ * Standard document folders each new matter starts with (admins can set the
+ * firm's own list per department in Settings). For conveyancing, documents
+ * that pre-date folders are filed by their category (FOLDER_FOR_CATEGORY).
+ */
+const FOLDERS = {
+  conveyancing: ["Client care & ID", "Contract pack", "Title", "Searches", "Enquiries", "Mortgage", "Report on Title",
+    "Exchange & completion", "SDLT & Land Registry", "Correspondence", "Accounts"],
+  private_client: ["Client care & ID", "Will / LPA drafts", "Death certificate & will", "Assets & liabilities", "IHT & HMRC",
+    "Grant of probate", "Estate accounts", "Correspondence", "Accounts"],
+  family: ["Client care & ID", "Court papers", "Financial disclosure (Form E)", "Evidence", "Orders", "Correspondence", "Accounts"],
+  employment: ["Client care & ID", "Contract & policies", "ACAS", "Tribunal papers (ET1 / ET3)", "Disclosure", "Witness statements",
+    "Settlement", "Correspondence", "Accounts"],
+  litigation: ["Client care & ID", "Pre-action", "Statements of case", "Disclosure", "Witness statements", "Experts",
+    "Court orders & hearings", "Costs", "Correspondence", "Accounts"],
+  personal_injury: ["Client care & ID", "Letter of claim / Portal", "Liability", "Medical evidence", "Losses & special damages",
+    "Offers & settlement", "Court papers", "Correspondence", "Accounts"],
+  corporate: ["Client care & ID", "Heads of terms", "Due diligence", "Transaction documents", "Disclosure letter", "Completion",
+    "Companies House filings", "Correspondence", "Accounts"],
+  crime: ["Client care & legal aid", "Police station", "Charge & prosecution papers", "Evidence & disclosure", "Defence statement",
+    "Court hearings", "Sentencing", "Correspondence"],
+};
+for (const area of AREAS) area.folders = FOLDERS[area.key] || ["Correspondence", "Documents"];
+const FOLDER_FOR_CATEGORY = {
+  Contract: "Contract pack", Title: "Title", Search: "Searches", "ID / AML": "Client care & ID", Mortgage: "Mortgage",
+  Correspondence: "Correspondence", "SDLT / LR": "SDLT & Land Registry",
+};
+
 /** How new matters in each department are usually funded (can be changed per matter). */
 const DEFAULT_FUNDING = { conveyancing: "fixed_fee", personal_injury: "cfa", crime: "legal_aid" };
 for (const area of AREAS) area.defaultFunding = DEFAULT_FUNDING[area.key] || "hourly";
@@ -179,4 +207,4 @@ function stagesFor(department, type) {
 
 const closedIndexFor = (department, type) => stagesFor(department, type).length - 1;
 
-module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES, FUNDING_TYPES };
+module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES, FUNDING_TYPES, FOLDER_FOR_CATEGORY };

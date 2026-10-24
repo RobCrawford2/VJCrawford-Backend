@@ -1299,3 +1299,77 @@ test("review fixes: staff and matter assignments are validated; odd input gets a
   const detail = (await request(app).get(`/matters/${conv.id}`).set(sarah)).body;
   assert.match(String(detail.date_instructed), /^\d{4}-\d{2}-\d{2}$/);
 });
+
+test("document folders: standard set on first open, filed by category, moved, renamed, deleted, by visibility", async () => {
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+
+  // A conveyancing matter with documents opens with the standard folders, documents filed by category.
+  const created = await request(app).post("/matters").set(sarah)
+    .send({ address: "1 Folder Row", client: "Fiona Folder", type: "Purchase", conflictNote: "Checked", feeEarnerId: (await request(app).get("/auth/me").set(sarah)).body.id });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  // Documents added before the matter is first opened (like those on older matters).
+  await request(app).post(`/matters/${created.body.id}/documents`).set(sarah).send({ name: "Draft contract", category: "Contract" });
+  await request(app).post(`/matters/${created.body.id}/documents`).set(sarah).send({ name: "Misc", category: "Other" });
+  const opened = await request(app).get(`/matters/${created.body.id}`).set(sarah);
+  assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  const conv = opened.body;
+  assert.equal(conv.documents.find((d) => d.category === "Other").folder_id, null);
+  const list = (await request(app).get("/matters?limit=100").set(sarah)).body.matters;
+  const names = conv.folders.map((f) => f.name);
+  assert.equal(names[0], "Client care & ID");
+  assert.ok(names.includes("Contract pack") && names.includes("Searches"));
+  const contractFolder = conv.folders.find((f) => f.name === "Contract pack");
+  const contractDoc = conv.documents.find((doc) => doc.category === "Contract");
+  assert.equal(contractDoc.folder_id, contractFolder.id);
+  // Opening again doesn't duplicate them.
+  assert.equal((await request(app).get(`/matters/${conv.id}`).set(sarah)).body.folders.length, conv.folders.length);
+
+  // Add (duplicate names refused), rename, move a document, add a document straight into a folder.
+  const added = await request(app).post(`/matters/${conv.id}/folders`).set(sarah).send({ name: "  Planning  " });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.name, "Planning");
+  assert.equal((await request(app).post(`/matters/${conv.id}/folders`).set(sarah).send({ name: "planning" })).status, 409);
+  assert.equal((await request(app).post(`/matters/${conv.id}/folders`).set(sarah).send({ name: " " })).status, 400);
+  const renamed = await request(app).patch(`/matters/${conv.id}/folders/${added.body.id}`).set(sarah).send({ name: "Planning & building regs" });
+  assert.equal(renamed.body.name, "Planning & building regs");
+  assert.equal((await request(app).put(`/matters/${conv.id}/documents/${contractDoc.id}/folder`).set(sarah).send({ folderId: added.body.id })).status, 204);
+  const doc = await request(app).post(`/matters/${conv.id}/documents`).set(sarah)
+    .send({ name: "Planning permission", category: "Other", folderId: added.body.id });
+  assert.equal(doc.body.folder_id, added.body.id);
+
+  // A folder from another matter can't be used.
+  const other = list.find((m) => m.id !== conv.id);
+  const otherFolders = (await request(app).get(`/matters/${other.id}`).set(sarah)).body.folders;
+  assert.equal((await request(app).put(`/matters/${conv.id}/documents/${contractDoc.id}/folder`).set(sarah).send({ folderId: otherFolders[0].id })).status, 400);
+
+  // Deleting a folder leaves its documents unfiled; the standard set can be put back.
+  assert.equal((await request(app).delete(`/matters/${conv.id}/folders/${added.body.id}`).set(sarah)).status, 204);
+  assert.equal((await request(app).delete(`/matters/${conv.id}/folders/${contractFolder.id}`).set(sarah)).status, 204);
+  let detail = (await request(app).get(`/matters/${conv.id}`).set(sarah)).body;
+  assert.equal(detail.documents.find((d) => d.id === contractDoc.id).folder_id, null);
+  assert.equal(detail.documents.find((d) => d.id === doc.body.id).folder_id, null);
+  const restored = await request(app).post(`/matters/${conv.id}/folders/standard`).set(sarah);
+  assert.deepEqual(restored.body.added, ["Contract pack"]);
+  detail = (await request(app).get(`/matters/${conv.id}`).set(sarah)).body;
+  assert.ok(detail.activity.some((a) => /Folder deleted: Contract pack/.test(a.text)));
+
+  // Someone outside conveyancing can't touch them.
+  assert.equal((await request(app).post(`/matters/${conv.id}/folders`).set(priya).send({ name: "x" })).status, 404);
+  assert.equal((await request(app).put(`/matters/${conv.id}/documents/${contractDoc.id}/folder`).set(priya).send({ folderId: null })).status, 404);
+
+  // An admin can change a department's standard folders; new matters use them; null goes back to the default.
+  assert.equal((await request(app).patch("/settings").set(sarah).send({ folderTemplate: { department: "family", folders: ["A"] } })).status, 403);
+  assert.equal((await request(app).patch("/settings").set(david).send({ folderTemplate: { department: "family", folders: [" "] } })).status, 400);
+  const set = await request(app).patch("/settings").set(david)
+    .send({ folderTemplate: { department: "family", folders: ["Court papers", "Correspondence", "court papers", ""] } });
+  assert.equal(set.status, 200);
+  assert.deepEqual(set.body.folderTemplates.find((t) => t.department === "family").folders, ["Court papers", "Correspondence"]);
+  const fam = await request(app).post("/matters").set(priya).send({ department: "family", type: "Divorce", client: "Folder Test", address: "Folder Test - divorce", conflictNote: "Checked", feeEarnerId: (await request(app).get("/auth/me").set(priya)).body.id });
+  assert.equal(fam.status, 201, JSON.stringify(fam.body));
+  const famDetail = (await request(app).get(`/matters/${fam.body.id}`).set(priya)).body;
+  assert.deepEqual(famDetail.folders.map((f) => f.name), ["Court papers", "Correspondence"]);
+  const reset = await request(app).patch("/settings").set(david).send({ folderTemplate: { department: "family", folders: null } });
+  assert.equal(reset.body.folderTemplates.find((t) => t.department === "family").customised, false);
+});
