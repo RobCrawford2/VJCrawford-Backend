@@ -14,6 +14,7 @@ import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
 import { CONVEYANCING_STAGES, registerAreas, areaOf, areaName, allAreas, isConveyancing, stagesOf, closedIndexOf, isClosed, describeLabel, partyRoles } from "./areas";
 import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictCheckStep, conflictStepProblem } from "./Clients";
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
+import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
 
@@ -359,6 +360,12 @@ function needsAttention(matter, staleDays = 14) {
       : `Diary date passed: ${d.title} (${formatDate(d.dueDate)}) — mark it done or move it`);
     else if (urgency(d) === "soon") reasons.push(`${d.critical ? "Critical deadline" : "Deadline"} ${left === 0 ? "today" : `in ${left} day${left === 1 ? "" : "s"}`}: ${d.title} (${formatDate(d.dueDate)})`);
   }
+  const b = matter.billing;
+  if (open && b) {
+    if (b.funding === "hourly" && b.estimate === null) reasons.push("No costs estimate recorded — the client must be given one");
+    else if (b.percentOfEstimate !== null && b.percentOfEstimate >= 100) reasons.push(`Costs estimate exceeded: ${formatMoney(b.costsToDate)} against ${formatMoney(b.estimate)} — update the client`);
+    else if (b.percentOfEstimate !== null && b.percentOfEstimate >= 75 && b.funding === "hourly") reasons.push(`Costs have reached ${b.percentOfEstimate}% of the estimate — consider updating the client`);
+  }
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
@@ -531,6 +538,8 @@ export default function App() {
   const [showUndertakings, setShowUndertakings] = useState(false);
   const [clientsPanel, setClientsPanel] = useState(null); // null | { clientId }
   const [showDiary, setShowDiary] = useState(false);
+  const [showTimesheet, setShowTimesheet] = useState(false);
+  const [stoppingTimer, setStoppingTimer] = useState(null);
   const [homeRefresh, setHomeRefresh] = useState(0);
   const [editingItem, setEditingItem] = useState(null); // { kind, item }
   const [stageRequestDraft, setStageRequestDraft] = useState(null);
@@ -1315,6 +1324,38 @@ export default function App() {
         .ac-deadline.critical .title svg { color: #8a3b1f; }
         .ac-deadline.done { opacity: 0.65; }
         @media (max-width: 700px) { .ac-deadline { flex-wrap: wrap; } .ac-deadline .when { width: auto; } }
+        .ac-timerchip { display: inline-flex; align-items: center; gap: 6px; background: #fdf1ea; border: 1px solid #e2a06a; color: #8a3b1f; border-radius: 14px; padding: 4px 10px; font-size: 12px; font-weight: 700; font-family: var(--font-mono); white-space: nowrap; }
+        .ac-timerchip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); animation: ac-blink 1s infinite; }
+        @keyframes ac-blink { 50% { opacity: 0.3; } }
+        .ac-timer-note { font-size: 12px; color: #8a3b1f; font-weight: 600; align-self: center; }
+        .ac-time-grid { display: grid; grid-template-columns: 1.2fr 0.6fr 0.6fr 2fr; gap: 10px; }
+        @media (max-width: 700px) { .ac-time-grid { grid-template-columns: 1fr 1fr; } }
+        .ac-billing-summary { display: flex; flex-wrap: wrap; gap: 10px 28px; }
+        .ac-billing-summary > div:not(.ac-estimate-bar) { display: flex; flex-direction: column; }
+        .ac-billing-summary .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--slate); font-weight: 700; }
+        .ac-billing-summary .v { font-size: 15px; font-weight: 600; color: var(--ink); font-family: var(--font-mono); }
+        .ac-billing-summary .v small { font-size: 11px; color: var(--slate); }
+        .ac-estimate-bar { flex-basis: 100%; position: relative; height: 22px; background: var(--paper); border-radius: 3px; overflow: hidden; }
+        .ac-estimate-bar > div { height: 100%; background: var(--success); }
+        .ac-estimate-bar > div.near { background: #c97a2e; }
+        .ac-estimate-bar > div.over { background: var(--danger); }
+        .ac-estimate-bar span { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 10px; font-size: 11.5px; font-weight: 600; color: var(--ink); }
+        .ac-time-row { display: grid; grid-template-columns: 100px 1fr 64px 86px 52px; gap: 10px; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+        .ac-time-row .w .meta { display: block; font-size: 11px; color: var(--slate); }
+        .ac-time-row .t, .ac-time-row .a { text-align: right; font-family: var(--font-mono); }
+        .ac-time-row.nb { color: var(--slate); }
+        .ac-time-row .x { display: flex; gap: 2px; justify-content: flex-end; }
+        .ac-bill-entry { display: grid; grid-template-columns: auto 90px 1fr 60px 80px; gap: 8px; align-items: baseline; font-size: 12.5px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink); padding: 4px 0; margin: 0; }
+        .ac-bill-entry input { width: auto; }
+        .ac-bill-entry .t, .ac-bill-entry .a { text-align: right; font-family: var(--font-mono); }
+        .ac-bill-entry em { color: var(--slate); font-style: normal; }
+        .ac-bill-totals { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; padding: 8px 10px; background: var(--paper); border-radius: 3px; }
+        .ac-bill-totals strong { margin-left: auto; }
+        .ac-bill-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+        .ac-bill-row .meta { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
+        .ac-bill-row.cancelled { opacity: 0.6; }
+        .ac-bill-cancel { flex-basis: 100%; display: flex; gap: 6px; }
+        .ac-bill-cancel input { flex: 1; }
         .ac-deptselect { width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--card); font-size: 13px; font-weight: 600; color: var(--ink); }
         .ac-depttag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); background: var(--brass-bg); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
         .ac-detail-body.ac-money { grid-template-columns: 1fr 1fr; }
@@ -1714,6 +1755,10 @@ export default function App() {
               return total > 0 ? <span className="ac-badge">{total}</span> : null;
             })()}
           </button>
+          <TimerChip onStop={setStoppingTimer} />
+          <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTimesheet(true)} title="My time recorded">
+            <Clock size={17} /><span className="lbl">Time</span>
+          </button>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowDiary(true)} title="Hearings and deadlines diary">
             <Calendar size={17} /><span className="lbl">Diary</span>
           </button>
@@ -2061,6 +2106,14 @@ export default function App() {
           onClose={() => setShowStandardTasks(false)}
           onAdd={async (tasks) => { await api.addTasks(selected.id, tasks); await afterMutation(); setShowStandardTasks(false); }}
         />
+      )}
+      {showTimesheet && (
+        <TimesheetPanel onClose={() => setShowTimesheet(false)} hourlyRate={authUser.hourlyRate}
+          onOpenMatter={(id) => { setSelectedId(id); setActiveTab("time"); }} />
+      )}
+      {stoppingTimer && (
+        <RecordTimerModal timer={stoppingTimer} onClose={() => setStoppingTimer(null)}
+          onSaved={(matterId) => { if (matterId === selectedId) afterMutation(); }} />
       )}
       {showDiary && (
         <DiaryPanel
@@ -2649,6 +2702,7 @@ function attentionAction(reason, matter) {
   const r = reason.toLowerCase();
   if (r.startsWith("deadline") || r.startsWith("critical deadline") || r.startsWith("diary date")) return { label: "Diary", tab: "diary" };
   if (r.includes("client id not checked")) return { label: "ID check", scroll: "client-records" };
+  if (r.includes("costs estimate") || r.includes("of the estimate")) return { label: "Time & billing", tab: "time" };
   if (r.includes("bank details")) return { label: "Bank details", tab: "money" };
   if (r.includes("undertaking")) return { label: "Undertakings", tab: "undertakings" };
   if (r.includes("search")) return { label: "Searches", tab: "searches" };
@@ -3063,6 +3117,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
           {[
             ["overview", <><Clock size={13} /> Overview</>],
             ["diary", <><Calendar size={13} /> Diary ({matter.deadlines.filter((d) => d.status === "open").length})</>],
+            ["time", <><Clock size={13} /> Time &amp; billing</>],
             ...(conv ? [
               ["money", <><PoundSterling size={13} /> Money</>],
               ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
@@ -3253,6 +3308,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             {conv && <DocumentsCard matter={matter} onGenerate={onGenerateDocument} onReportOnTitle={onReportOnTitle} />}
           </div>
         </div>
+      )}
+
+      {activeTab === "time" && (
+        <TimeTab matter={matter} currentUserId={currentUserId} onChanged={onMatterChanged} onEditBilling={() => onEdit("billing")} />
       )}
 
       {activeTab === "diary" && (
@@ -4418,6 +4477,7 @@ function CompletionFigures({ type, money, onChange }) {
 
 const EDIT_SECTIONS = {
   basics: "Matter summary",
+  billing: "Funding & estimate",
   client: "Client",
   property: "Property & title",
   money: "Money",
@@ -4430,7 +4490,7 @@ const EDIT_SECTIONS = {
 function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = null }) {
   const conv = isConveyancing(matter);
   // Property, money, dates and chain are conveyancing sections.
-  const show = (...names) => (!section || names.includes(section)) && (conv || names.some((n) => ["basics", "client", "team"].includes(n)));
+  const show = (...names) => (!section || names.includes(section)) && (conv || names.some((n) => ["basics", "client", "team", "billing"].includes(n)));
   const [f, setF] = useState({
     address: matter.address,
     client: matter.client,
@@ -4452,6 +4512,8 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
     clientDetails: { ...matter.clientDetails },
     property: { ...matter.property },
     money: { ...matter.money },
+    funding: matter.funding,
+    feeEstimate: matter.feeEstimate,
   });
   const setIn = (group, k) => (e) => setF((prev) => ({ ...prev, [group]: { ...prev[group], [k]: e.target.value } }));
   const [error, setError] = useState("");
@@ -4481,6 +4543,8 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
       client: f.client.trim(),
       type: f.type,
       price: f.price === "" ? "" : Number(f.price),
+      funding: f.funding,
+      feeEstimate: f.feeEstimate === "" ? "" : Number(f.feeEstimate),
       feeEarnerId: f.feeEarnerId,
       supervisorId: f.supervisorId,
       linkedMatterIds: f.linkedMatterIds,
@@ -4609,6 +4673,22 @@ function EditMatterForm({ matter, allMatters, users, onClose, onSave, section = 
         />
 
         </>)}
+        {show("billing") && (<>
+        <div className="ac-fieldset-title">Funding &amp; estimate</div>
+        <div className="ac-row2">
+          <div className="ac-field">
+            <label>How is it funded?</label>
+            <select value={f.funding} onChange={set("funding")}>
+              {Object.entries(FUNDING_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </div>
+          <div className="ac-field">
+            <label>{f.funding === "fixed_fee" ? "Fixed fee, before VAT (£)" : "Costs estimate given to the client, before VAT (£)"}</label>
+            <input type="number" min="0" step="0.01" value={f.feeEstimate} onChange={set("feeEstimate")} />
+          </div>
+        </div>
+        </>)}
+
         {show("team") && (<>
         <div className="ac-fieldset-title">Our team</div>
         <div className="ac-row2">
@@ -5322,6 +5402,12 @@ function StaffForm({ initial, users, selfId, onCancel, onSave, isNew, firmDepart
           </select>
         </div>
       </div>
+      {f.role !== "secretary" && (
+        <div className="ac-field" style={{ maxWidth: 220 }}>
+          <label>Hourly rate (£, before VAT)</label>
+          <input type="number" min="0" step="1" value={f.hourlyRate ?? ""} onChange={set("hourlyRate")} placeholder="e.g. 200" />
+        </div>
+      )}
       <div className="ac-field">
         <label>Departments they can see</label>
         {f.role === "admin" ? (
@@ -5375,7 +5461,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged, firmDepartments 
   }
 
   async function add(f) {
-    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password, departments: f.departments, allDepartments: f.allDepartments });
+    await api.createUser({ name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null, password: f.password, departments: f.departments, allDepartments: f.allDepartments, hourlyRate: f.hourlyRate ?? null });
     setAdding(false);
     await afterChange({ text: `${f.name} added. Their login is ${f.email.trim().toLowerCase()} with temporary password:`, secret: f.password });
   }
@@ -5385,6 +5471,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged, firmDepartments 
       name: f.name, email: f.email, role: f.role, supervisorId: f.supervisorId || null,
       // Only departments the firm still runs (one may have been switched off since).
       departments: f.departments.filter((d) => firmDepartments.includes(d)), allDepartments: f.allDepartments,
+      hourlyRate: f.hourlyRate === "" || f.hourlyRate === undefined ? null : f.hourlyRate,
     });
     setEditingId(null);
     await afterChange({ text: `${f.name} updated.` });
@@ -5459,6 +5546,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged, firmDepartments 
                 </div>
                 <div className="ac-staff-meta">
                   {u.role === "admin" || u.all_departments ? "All departments" : (u.departments || []).map(areaName).join(", ") || "No departments"}
+                  {u.hourly_rate ? ` · £${Number(u.hourly_rate)}/hour` : ""}
                 </div>
               </div>
               <span className={`ac-pill ${u.active ? "ac-pill--closed" : "ac-pill--setup"}`}>{u.active ? "Active" : "Deactivated"}</span>
@@ -5468,7 +5556,7 @@ function StaffPanel({ users, currentUserId, onClose, onChanged, firmDepartments 
                 users={users}
                 selfId={u.id}
                 firmDepartments={firmDepartments}
-                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "", departments: u.departments || [], allDepartments: !!u.all_departments }}
+                initial={{ name: u.name, email: u.email, role: u.role, supervisorId: u.supervisor_id || "", departments: u.departments || [], allDepartments: !!u.all_departments, hourlyRate: u.hourly_rate === null || u.hourly_rate === undefined ? "" : Number(u.hourly_rate) }}
                 onCancel={() => setEditingId(null)}
                 onSave={(f) => save(u.id, f)}
               />

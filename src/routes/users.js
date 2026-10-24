@@ -10,7 +10,7 @@ router.use(requireAuth);
 const ROLES = ["secretary", "assistant", "fee_earner", "supervisor", "admin"];
 const ROLE_LABELS = { secretary: "Secretary", assistant: "Assistant", fee_earner: "Fee earner", supervisor: "Supervisor", admin: "Admin" };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USER_COLUMNS = "id, name, email, role, supervisor_id, active, created_at, all_departments";
+const USER_COLUMNS = "id, name, email, role, supervisor_id, active, created_at, all_departments, hourly_rate";
 const { AREA_BY_KEY } = require("../config/areas");
 // Departments each person can work in, alongside their row.
 const SELECT_USERS = `SELECT ${USER_COLUMNS},
@@ -63,7 +63,8 @@ router.get(
       `${SELECT_USERS} WHERE firm_id = $1 ORDER BY active DESC, name`,
       [req.user.firmId]
     );
-    res.json(result.rows);
+    // Hourly rates are for admins (and each person's own, via /auth/me).
+    res.json(req.user.role === "admin" ? result.rows : result.rows.map(({ hourly_rate, ...u }) => u));
   })
 );
 
@@ -89,7 +90,8 @@ router.post(
   "/",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { name, email, password, role = "fee_earner", supervisorId, departments = [], allDepartments = false } = req.body;
+    const { name, email, password, role = "fee_earner", supervisorId, departments = [], allDepartments = false, hourlyRate = null } = req.body;
+    if (hourlyRate !== null && hourlyRate !== "" && !(Number(hourlyRate) >= 0)) return res.status(400).json({ error: "The hourly rate must be £0 or more." });
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({ error: "Name, email and a temporary password are required." });
     }
@@ -114,9 +116,10 @@ router.post(
 
     const passwordHash = await bcrypt.hash(password, 12);
     const result = await query(
-      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id, all_departments)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [req.user.firmId, name.trim(), email.trim().toLowerCase(), passwordHash, role, supervisorId || null, allDepartments]
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id, all_departments, hourly_rate)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [req.user.firmId, name.trim(), email.trim().toLowerCase(), passwordHash, role, supervisorId || null, allDepartments,
+       hourlyRate === "" || hourlyRate === null ? null : Number(hourlyRate)]
     );
     const id = result.rows[0].id;
     await setDepartments(id, departments);
@@ -131,7 +134,10 @@ router.patch(
   "/:id",
   requireRole("admin"),
   asyncHandler(async (req, res) => {
-    const { name, email, role, supervisorId, active, departments, allDepartments } = req.body;
+    const { name, email, role, supervisorId, active, departments, allDepartments, hourlyRate } = req.body;
+    if (hourlyRate !== undefined && hourlyRate !== null && hourlyRate !== "" && !(Number(hourlyRate) >= 0)) {
+      return res.status(400).json({ error: "The hourly rate must be £0 or more." });
+    }
     if (departments !== undefined) {
       const departmentProblem = await checkDepartments(req.user.firmId, departments);
       if (departmentProblem) return res.status(400).json({ error: departmentProblem });
@@ -182,6 +188,11 @@ router.patch(
     if (role !== undefined && role !== before.role) { set("role", role); changes.push(`role changed from ${ROLE_LABELS[before.role]} to ${ROLE_LABELS[role]}`); }
     if (supervisorId !== undefined && (supervisorId || null) !== before.supervisor_id) { set("supervisor_id", supervisorId || null); changes.push("supervisor changed"); }
     if (active !== undefined && active !== before.active) { set("active", active); changes.push(active ? "reactivated" : "deactivated"); }
+    const newRate = hourlyRate === undefined ? undefined : hourlyRate === "" || hourlyRate === null ? null : Number(hourlyRate);
+    if (newRate !== undefined && newRate !== (before.hourly_rate === null ? null : Number(before.hourly_rate))) {
+      set("hourly_rate", newRate);
+      changes.push(`hourly rate changed from ${before.hourly_rate === null ? "none" : `£${Number(before.hourly_rate)}`} to ${newRate === null ? "none" : `£${newRate}`}`);
+    }
     if (allDepartments !== undefined && allDepartments !== before.all_departments) {
       set("all_departments", allDepartments); changes.push(allDepartments ? "given access to all departments" : "no longer has access to all departments");
     }

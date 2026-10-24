@@ -194,6 +194,24 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [faulknerPurchaseId, faulknerSaleId, morris.id]
     );
 
+    // Hourly rates, an estimate on the family matter and some time recorded on it.
+    await client.query(
+      `UPDATE users SET hourly_rate = CASE email
+         WHEN 'david@vjcrawfordconveyancing.co.uk' THEN 250 WHEN 'sarah@vjcrawfordconveyancing.co.uk' THEN 200
+         WHEN 'marcus@vjcrawfordconveyancing.co.uk' THEN 180 WHEN 'priya@vjcrawfordconveyancing.co.uk' THEN 210
+         WHEN 'jess@vjcrawfordconveyancing.co.uk' THEN 120 END
+       WHERE firm_id = $1`,
+      [firm.id]
+    );
+    await client.query(`UPDATE matters SET fee_estimate = 3000 WHERE id = $1`, [morris.id]);
+    await client.query(
+      `INSERT INTO time_entries (matter_id, user_id, work_date, units, rate, amount, activity, description) VALUES
+       ($1, $2, '2026-07-14', 10, 210, 210, 'Attendance (meeting)', 'Initial meeting — background, finances and options'),
+       ($1, $2, '2026-07-21', 4, 210, 84, 'Letter / email out', 'Letter to Greaves Family Law proposing mediation'),
+       ($1, $2, '2026-08-11', 15, 210, 315, 'Drafting', 'Form A and covering letter')`,
+      [morris.id, priya.id]
+    );
+
     await client.query("COMMIT");
     console.log("[seed] Seed complete.");
     // Only echo the password when it's the well-known local default; a

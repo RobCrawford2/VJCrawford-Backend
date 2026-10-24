@@ -55,6 +55,8 @@ app.use("/tasks", taskRoutes);
 app.use("/undertakings", undertakingRoutes);
 app.use("/clients", require("./routes/clients"));
 app.use("/deadlines", require("./routes/deadlines"));
+app.use("/matters", require("./routes/billing").matterRouter);
+app.use("/time", require("./routes/billing").timeRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not found." });

@@ -161,6 +161,11 @@ const DEADLINES = {
 };
 for (const area of AREAS) area.deadlines = DEADLINES[area.key] || [];
 
+/** How new matters in each department are usually funded (can be changed per matter). */
+const DEFAULT_FUNDING = { conveyancing: "fixed_fee", personal_injury: "cfa", crime: "legal_aid" };
+for (const area of AREAS) area.defaultFunding = DEFAULT_FUNDING[area.key] || "hourly";
+const FUNDING_TYPES = ["hourly", "fixed_fee", "cfa", "legal_aid"];
+
 const AREA_BY_KEY = Object.fromEntries(AREAS.map((a) => [a.key, a]));
 const AREA_KEYS = AREAS.map((a) => a.key);
 
@@ -173,4 +178,4 @@ function stagesFor(department, type) {
 
 const closedIndexFor = (department, type) => stagesFor(department, type).length - 1;
 
-module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES };
+module.exports = { AREAS, AREA_BY_KEY, AREA_KEYS, stagesFor, closedIndexFor, CONVEYANCING_STAGES, FUNDING_TYPES };

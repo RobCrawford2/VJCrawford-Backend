@@ -17,6 +17,8 @@ const { buildReportOnTitle } = require("../reports/reportOnTitle");
 const { buildDocument, TEMPLATE_LIST } = require("../reports/letters");
 const { conflictCheck, summariseCheck, countMatches } = require("../utils/conflicts");
 const { createClient, checkClient, findVisibleClient } = require("./clients");
+const { billingSummary } = require("./billing");
+const { FUNDING_TYPES } = require("../config/areas");
 
 function logActivity(client, matterId, userId, type, text) {
   return client.query(
@@ -103,6 +105,7 @@ async function loadMatterDetail(matterId) {
     clients: clients.rows,
     parties: parties.rows,
     deadlines: deadlines.rows,
+    billing: await billingSummary({ query }, matterId),
   };
 }
 
@@ -328,6 +331,8 @@ router.post(
       return res.status(400).json({ error: "address, client and type are required." });
     }
     if (!area) return res.status(400).json({ error: "Unknown department." });
+    const funding = req.body.funding || area.defaultFunding;
+    if (!FUNDING_TYPES.includes(funding)) return res.status(400).json({ error: `funding must be one of: ${FUNDING_TYPES.join(", ")}.` });
     if (!area.types.includes(type)) {
       return res.status(400).json({ error: `type must be one of: ${area.types.join(", ")}.` });
     }
@@ -382,12 +387,13 @@ router.post(
         `INSERT INTO matters (
            firm_id, reference, address, client, type, price, fee_earner_id, supervisor_id,
            other_side_solicitor, other_side_solicitor_email, estate_agent, lender,
-           date_instructed, target_exchange, target_completion, mortgage_offer_expiry, department
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CURRENT_DATE, $13,$14,$15,$16)
+           date_instructed, target_exchange, target_completion, mortgage_offer_expiry, department, funding, fee_estimate
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CURRENT_DATE, $13,$14,$15,$16,$17,$18)
          RETURNING *`,
         [req.user.firmId, reference, address, client, type, price || null, feeEarnerId || null, supervisorId || null,
          otherSideSolicitor || null, otherSideSolicitorEmail || null, estateAgent || null, lender || null,
-         targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null, department]
+         targetExchange || null, targetCompletion || null, mortgageOfferExpiry || null, department,
+         funding, req.body.feeEstimate === "" || req.body.feeEstimate === undefined ? null : req.body.feeEstimate]
       );
       let matter = result.rows[0];
       const extras = EXTRA_CREATE_FIELDS.filter((k) => req.body[k] !== undefined && req.body[k] !== "");
@@ -776,7 +782,7 @@ const PATCHABLE_FIELDS = {
   depositReceivedDate: "deposit_received_date", os1PriorityExpiry: "os1_priority_expiry",
   leaseYearsRemaining: "lease_years_remaining",
   mortgageAdvance: "mortgage_advance", redemptionAmount: "redemption_amount", agentFee: "agent_fee",
-  fundsReceived: "funds_received", costs: "costs",
+  fundsReceived: "funds_received", costs: "costs", funding: "funding", feeEstimate: "fee_estimate",
 };
 
 // Fields that can also be supplied when a matter is first opened (POST /matters).
@@ -804,6 +810,12 @@ router.patch(
     const params = [];
     if (req.body.tenure && !TENURES.includes(req.body.tenure)) {
       return res.status(400).json({ error: `tenure must be one of: ${TENURES.join(", ")}.` });
+    }
+    if (req.body.funding !== undefined && !FUNDING_TYPES.includes(req.body.funding)) {
+      return res.status(400).json({ error: `funding must be one of: ${FUNDING_TYPES.join(", ")}.` });
+    }
+    if (req.body.feeEstimate !== undefined && req.body.feeEstimate !== "" && req.body.feeEstimate !== null && !(Number(req.body.feeEstimate) >= 0)) {
+      return res.status(400).json({ error: "The estimate must be £0 or more." });
     }
     if (req.body.type !== undefined) {
       const { department } = await matterStages({ query }, req.params.id);

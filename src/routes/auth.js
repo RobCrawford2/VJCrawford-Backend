@@ -129,7 +129,7 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const result = await query(
-      `SELECT u.id, u.name, u.email, u.role, u.firm_id, f.name AS firm_name, f.domain, f.stale_days
+      `SELECT u.id, u.name, u.email, u.role, u.firm_id, u.hourly_rate, f.name AS firm_name, f.domain, f.stale_days
        FROM users u JOIN firms f ON f.id = u.firm_id
        WHERE u.id = $1`,
       [req.user.id]
@@ -140,6 +140,7 @@ router.get(
       id: u.id, name: u.name, email: u.email, role: u.role, firmId: u.firm_id, firmName: u.firm_name, domain: u.domain, staleDays: u.stale_days,
       // Departments this person can work in (admins / "all departments": every one the firm runs).
       allDepartments: req.user.allDepartments, departments: req.user.departments,
+      hourlyRate: u.hourly_rate === null ? null : Number(u.hourly_rate),
     });
   })
 );

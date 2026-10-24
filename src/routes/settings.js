@@ -22,7 +22,7 @@ router.get(
       ...result.rows[0],
       departments: await firmDepartments(req.user.firmId),
       // Every department the system supports, with its matter types and stages.
-      areas: AREAS.map(({ key, name, prefix, types, stages, deadlines }) => ({ key, name, prefix, types, stages, deadlines })),
+      areas: AREAS.map(({ key, name, prefix, types, stages, deadlines, defaultFunding }) => ({ key, name, prefix, types, stages, deadlines, defaultFunding })),
     });
   })
 );

@@ -1094,3 +1094,109 @@ test("diary: deadlines are added, moved, completed and logged; the diary shows t
   const pi = areas.find((a) => a.key === "personal_injury").deadlines;
   assert.deepEqual(pi[0].rule, { from: "Date of accident or date of knowledge", years: 3 });
 });
+
+test("time recording: 6-minute units at the fee earner's rate; only your own (unbilled) time can be changed", async () => {
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const me = (await request(app).get("/auth/me").set(priya)).body;
+  assert.equal(me.hourlyRate, 210);
+  const priyaId = me.id;
+  const m = (await request(app).post("/matters").set(priya).send({ department: "family", address: "Billing test", client: "Bill Payer", type: "Divorce", feeEarnerId: priyaId })).body;
+  assert.equal(m.funding, "hourly");
+  const base = `/matters/${m.id}/time`;
+
+  assert.equal((await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 0, activity: "Drafting" })).status, 400);
+  assert.equal((await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 30, activity: "Juggling" })).status, 400);
+  const e1 = await request(app).post(base).set(priya).send({ workDate: "2026-10-01", minutes: 20, activity: "Telephone call", description: "Call with client" });
+  assert.equal(e1.status, 201);
+  assert.equal(e1.body.units, 4); // 20 minutes rounds up to 4 × 6 minutes
+  assert.equal(Number(e1.body.amount), 84); // 0.4 h × £210
+  const e2 = (await request(app).post(base).set(priya).send({ workDate: "2026-10-02", units: 10, activity: "Drafting", description: "Petition" })).body;
+  await request(app).post(base).set(priya).send({ workDate: "2026-10-02", units: 2, activity: "Other", description: "Admin", billable: false });
+
+  const billing = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(billing.entries.length, 3);
+  assert.equal(billing.summary.unbilledUnits, 14);
+  assert.equal(billing.summary.unbilledValue, 294);
+  assert.equal(billing.summary.percentOfEstimate, null);
+
+  // Estimate, and the matter detail carries the running totals.
+  assert.equal((await request(app).patch(`/matters/${m.id}`).set(priya).send({ funding: "barter" })).status, 400);
+  await request(app).patch(`/matters/${m.id}`).set(priya).send({ feeEstimate: 400 });
+  assert.equal((await request(app).get(`/matters/${m.id}`).set(priya)).body.billing.percentOfEstimate, 74);
+
+  // Editing: your own entry, recalculated; not someone else's unless you supervise the matter.
+  const edited = await request(app).patch(`${base}/${e2.id}`).set(priya).send({ units: 5 });
+  assert.equal(Number(edited.body.amount), 105);
+  assert.equal((await request(app).patch(`${base}/${e2.id}`).set(sarah).send({ units: 1 })).status, 404); // can't see the matter
+  assert.equal((await request(app).patch(`${base}/${e2.id}`).set(david).send({ description: "Petition (revised)" })).status, 200); // admin
+
+  // Rates are only listed for admins; timesheet shows your own.
+  assert.ok((await request(app).get("/users").set(david)).body.some((u) => u.hourly_rate !== undefined));
+  assert.ok((await request(app).get("/users").set(priya)).body.every((u) => u.hourly_rate === undefined));
+  const sheet = (await request(app).get("/time?from=2026-10-01&to=2026-10-02").set(priya)).body;
+  assert.ok(sheet.entries.length >= 3);
+  assert.ok(sheet.totals.units >= 11);
+});
+
+test("billing: draft from unbilled time and disbursements, issue with the next number, cancel, Word bill", async () => {
+  const JSZip = require("jszip");
+  const priya = { Authorization: `Bearer ${await tokenFor("priya")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const marcus = { Authorization: `Bearer ${await tokenFor("marcus")}` };
+  const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
+  const m = (await request(app).post("/matters").set(priya).send({ department: "family", address: "Bill me", client: "Pay Ing", type: "Children", feeEarnerId: priyaId })).body;
+  const entry = (await request(app).post(`/matters/${m.id}/time`).set(priya).send({ workDate: "2026-10-05", units: 10, activity: "Drafting" })).body;
+  const nonBillable = (await request(app).post(`/matters/${m.id}/time`).set(priya).send({ workDate: "2026-10-05", units: 1, activity: "Other", billable: false })).body;
+
+  const bills = `/matters/${m.id}/bills`;
+  assert.equal((await request(app).post(bills).set(priya).send({})).status, 400);
+  assert.equal((await request(app).post(bills).set(priya).send({ timeEntryIds: [nonBillable.id] })).status, 400);
+  const draft = await request(app).post(bills).set(priya).send({
+    timeEntryIds: [entry.id],
+    disbursements: [{ description: "Court fee", amount: 232, vat: false }, { description: "Courier", amount: 10, vat: true }],
+    narrative: "Child arrangements application",
+  });
+  assert.equal(draft.status, 201);
+  assert.equal(Number(draft.body.profit_costs), 210);
+  assert.equal(Number(draft.body.vat), 44); // 20% of (210 + 10)
+  assert.equal(Number(draft.body.total), 496); // 210 + 242 + 44
+  // Time on a draft is locked and can't go on a second bill.
+  assert.equal((await request(app).patch(`/matters/${m.id}/time/${entry.id}`).set(priya).send({ units: 1 })).status, 400);
+  assert.equal((await request(app).post(bills).set(priya).send({ timeEntryIds: [entry.id] })).status, 400);
+
+  // Word draft, then issue (fee earner) with the next firm-wide number.
+  const doc = await request(app).get(`${bills}/${draft.body.id}/document`).set(priya)
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+  const text = (await (await JSZip.loadAsync(doc.body)).file("word/document.xml").async("string")).replace(/<[^>]+>/g, "");
+  for (const t of ["DRAFT", "Pay Ing", "Child arrangements application", "Court fee", "£496.00", "Schedule of time"]) assert.ok(text.includes(t), `bill missing ${t}`);
+  const issued = await request(app).post(`${bills}/${draft.body.id}/issue`).set(priya);
+  assert.equal(issued.status, 200);
+  assert.ok(issued.body.bill_number >= 1);
+  assert.equal((await request(app).delete(`${bills}/${draft.body.id}`).set(priya)).status, 400);
+  const billing = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(billing.summary.billedCosts, 210);
+  assert.equal(billing.summary.unbilledValue, 0);
+
+  // A fixed fee bill gets the next number; cancelling frees the time.
+  const fixed = (await request(app).post(bills).set(priya).send({ profitCosts: 500 })).body;
+  const second = await request(app).post(`${bills}/${fixed.id}/issue`).set(david);
+  assert.equal(second.body.bill_number, issued.body.bill_number + 1);
+  assert.equal((await request(app).post(`${bills}/${draft.body.id}/cancel`).set(priya).send({})).status, 400);
+  assert.equal((await request(app).post(`${bills}/${draft.body.id}/cancel`).set(priya).send({ reason: "Wrong client" })).status, 204);
+  const after = (await request(app).get(`/matters/${m.id}/billing`).set(priya)).body;
+  assert.equal(after.summary.unbilledValue, 210);
+  assert.equal(after.summary.billedCosts, 500);
+  const log = (await request(app).get(`/matters/${m.id}`).set(priya)).body.activity.map((a) => a.text);
+  assert.ok(log.includes(`Bill ${issued.body.bill_number} issued: £496.00 including VAT`));
+  assert.ok(log.includes(`Bill ${issued.body.bill_number} cancelled — Wrong client`));
+  // Someone who can't see the matter can't bill it.
+  assert.equal((await request(app).post(bills).set(marcus).send({ profitCosts: 1 })).status, 404);
+
+  // Rates: admin sets them, audited.
+  const r = await request(app).patch(`/users/${priyaId}`).set(david).send({ hourlyRate: 225 });
+  assert.equal(Number(r.body.hourly_rate), 225);
+  assert.equal((await request(app).patch(`/users/${priyaId}`).set(david).send({ hourlyRate: -5 })).status, 400);
+  assert.ok((await request(app).get("/users/audit").set(david)).body.some((a) => a.details.includes("hourly rate changed from £210 to £225")));
+});

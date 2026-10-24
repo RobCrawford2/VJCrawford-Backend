@@ -143,6 +143,9 @@ export function adaptMatter(m, users) {
     // Client records linked to the matter (the firm-wide register), and the other parties.
     clients: (m.clients || []).map(adaptClient),
     otherParties: (m.parties || []).map((p) => ({ id: p.id, name: p.name, role: p.role, notes: p.notes || "" })),
+    funding: m.funding || "hourly",
+    feeEstimate: m.fee_estimate !== null && m.fee_estimate !== undefined ? Number(m.fee_estimate) : "",
+    billing: m.billing || null,
     deadlines: (m.deadlines || []).map((d) => ({
       id: d.id, kind: d.kind, title: d.title, dueDate: d.due_date, dueTime: d.due_time || "", location: d.location || "",
       notes: d.notes || "", critical: !!d.critical, status: d.status, doneByName: d.done_by_name || "", doneAt: d.done_at,
@@ -261,6 +264,8 @@ export function toApiMatterPatch(patch) {
     out.mortgageOfferExpiry = patch.keyDates.mortgageOfferExpiry;
     if ("os1PriorityExpiry" in patch.keyDates) out.os1PriorityExpiry = patch.keyDates.os1PriorityExpiry;
   }
+  if ("funding" in patch) out.funding = patch.funding;
+  if ("feeEstimate" in patch) out.feeEstimate = patch.feeEstimate === "" ? "" : Number(patch.feeEstimate);
   Object.assign(out, detailFields(patch));
   return out;
 }
