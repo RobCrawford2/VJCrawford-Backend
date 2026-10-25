@@ -29,7 +29,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     const firm = (
       await client.query(
         `INSERT INTO firms (name, domain, stale_days) VALUES ($1, $2, 14) RETURNING id`,
-        ["V J Crawford Law (Demo)", "vjcrawfordconveyancing.co.uk"]
+        ["V J Crawford Law (Demo)", "vjcrawfordlaw.co.uk"]
       )
     ).rows[0];
 
@@ -37,23 +37,23 @@ async function runSeed(pool, { password = "password123" } = {}) {
 
     const david = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,'admin') RETURNING id`,
-      [firm.id, "David Okonkwo", "david@vjcrawfordconveyancing.co.uk", passwordHash]
+      [firm.id, "David Okonkwo", "david@vjcrawfordlaw.co.uk", passwordHash]
     )).rows[0];
 
     const sarah = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Sarah Ncube", "sarah@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Sarah Ncube", "sarah@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
 
     const marcus = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Marcus Webb", "marcus@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Marcus Webb", "marcus@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
 
     // Support staff: an assistant working for Sarah, a secretary for Marcus.
     for (const [name, email, role, boss] of [
-      ["Jess Taylor", "jess@vjcrawfordconveyancing.co.uk", "assistant", sarah.id],
-      ["Lucy Brown", "lucy@vjcrawfordconveyancing.co.uk", "secretary", marcus.id],
+      ["Jess Taylor", "jess@vjcrawfordlaw.co.uk", "assistant", sarah.id],
+      ["Lucy Brown", "lucy@vjcrawfordlaw.co.uk", "secretary", marcus.id],
     ]) {
       await client.query(
         `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -65,7 +65,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Everyone above works in conveyancing; Priya is the family fee earner.
     const priya = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Priya Shah", "priya@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Priya Shah", "priya@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(
       `INSERT INTO firm_departments (firm_id, department) VALUES ($1,'conveyancing'), ($1,'family'), ($1,'private_client')`,
@@ -80,13 +80,13 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Emma runs Wills, Trusts & Probate.
     const emma = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Emma Lowe", "emma@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Emma Lowe", "emma@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'private_client')`, [emma.id]);
     // Aisha does employment (and corporate); departments are switched on below as each is set up.
     const aisha = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Aisha Khan", "aisha@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Aisha Khan", "aisha@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'employment')`, [firm.id]);
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment'), ($1, 'corporate')`, [aisha.id]);
@@ -94,7 +94,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Tom does litigation (and personal injury).
     const tom = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Tom Reid", "tom@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Tom Reid", "tom@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'litigation')`, [firm.id]);
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation'), ($1, 'personal_injury')`, [tom.id]);
@@ -102,7 +102,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Dan does crime.
     const dan = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
-      [firm.id, "Dan Hughes", "dan@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+      [firm.id, "Dan Hughes", "dan@vjcrawfordlaw.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'crime')`, [firm.id]);
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'crime')`, [dan.id]);
@@ -571,9 +571,9 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Hourly rates, an estimate on the family matter and some time recorded on it.
     await client.query(
       `UPDATE users SET hourly_rate = CASE email
-         WHEN 'david@vjcrawfordconveyancing.co.uk' THEN 250 WHEN 'sarah@vjcrawfordconveyancing.co.uk' THEN 200
-         WHEN 'marcus@vjcrawfordconveyancing.co.uk' THEN 180 WHEN 'priya@vjcrawfordconveyancing.co.uk' THEN 210
-         WHEN 'jess@vjcrawfordconveyancing.co.uk' THEN 120 END
+         WHEN 'david@vjcrawfordlaw.co.uk' THEN 250 WHEN 'sarah@vjcrawfordlaw.co.uk' THEN 200
+         WHEN 'marcus@vjcrawfordlaw.co.uk' THEN 180 WHEN 'priya@vjcrawfordlaw.co.uk' THEN 210
+         WHEN 'jess@vjcrawfordlaw.co.uk' THEN 120 END
        WHERE firm_id = $1`,
       [firm.id]
     );
@@ -592,16 +592,16 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // Only echo the password when it's the well-known local default; a
     // custom DEMO_PASSWORD shouldn't end up in the host's logs.
     const shown = password === "password123" ? password : "<DEMO_PASSWORD>";
-    console.log(`[seed] Demo login: sarah@vjcrawfordconveyancing.co.uk / ${shown} (fee earner)`);
-    console.log(`[seed]             marcus@vjcrawfordconveyancing.co.uk / ${shown} (fee earner)`);
-    console.log(`[seed]             david@vjcrawfordconveyancing.co.uk / ${shown} (admin)`);
-    console.log(`[seed]             jess@vjcrawfordconveyancing.co.uk / ${shown} (assistant to Sarah)`);
-    console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
-    console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
-    console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
-    console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment & corporate fee earner)`);
-    console.log(`[seed]             tom@vjcrawfordconveyancing.co.uk / ${shown} (litigation & personal injury fee earner)`);
-    console.log(`[seed]             dan@vjcrawfordconveyancing.co.uk / ${shown} (criminal fee earner)`);
+    console.log(`[seed] Demo login: sarah@vjcrawfordlaw.co.uk / ${shown} (fee earner)`);
+    console.log(`[seed]             marcus@vjcrawfordlaw.co.uk / ${shown} (fee earner)`);
+    console.log(`[seed]             david@vjcrawfordlaw.co.uk / ${shown} (admin)`);
+    console.log(`[seed]             jess@vjcrawfordlaw.co.uk / ${shown} (assistant to Sarah)`);
+    console.log(`[seed]             lucy@vjcrawfordlaw.co.uk / ${shown} (secretary to Marcus)`);
+    console.log(`[seed]             priya@vjcrawfordlaw.co.uk / ${shown} (family fee earner)`);
+    console.log(`[seed]             emma@vjcrawfordlaw.co.uk / ${shown} (wills, trusts & probate fee earner)`);
+    console.log(`[seed]             aisha@vjcrawfordlaw.co.uk / ${shown} (employment & corporate fee earner)`);
+    console.log(`[seed]             tom@vjcrawfordlaw.co.uk / ${shown} (litigation & personal injury fee earner)`);
+    console.log(`[seed]             dan@vjcrawfordlaw.co.uk / ${shown} (criminal fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
