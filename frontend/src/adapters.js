@@ -164,9 +164,18 @@ export function adaptMatter(m, users) {
     notes: m.notes || "",
     documents: (m.documents || []).map(adaptDocument),
     folders: (m.folders || []).map((f) => ({ id: f.id, name: f.name })),
-    // Wills, Trusts & Probate (kept as the server sends them; see PrivateClient.jsx).
-    pcDetails: m.pc_details || {},
-    pcFields: m.pcFields || [],
+    // Details for the department and type (see Details.jsx), kept as the server sends them.
+    details: m.details || {},
+    detailFields: m.detailFields || [],
+    // Lists and calculation cards (see Practice.jsx).
+    lists: m.lists || [],
+    insights: m.insights || [],
+    serverAttention: m.serverAttention || [],
+    // Family (see Family.jsx).
+    children: m.children || [],
+    familyAssets: m.familyAssets || null,
+    assetSchedule: m.assetSchedule || null,
+    // Wills, Trusts & Probate (see PrivateClient.jsx).
     estateItems: m.estateItems || null,
     beneficiaries: m.beneficiaries || null,
     estateSummary: m.estateSummary || null,

@@ -16,7 +16,11 @@ import { ClientsPanel, MatterClientsCard, PartiesCard, ClientSearch, ConflictChe
 import { DiaryTab, DiaryCard, DiaryPanel, urgency, daysUntil } from "./Diary";
 import { DocumentsTab, FolderTemplatesCard } from "./Documents";
 import { PropertyViewCard } from "./PropertyView";
-import { PcDetailsCard, EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
+import { EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from "./PrivateClient";
+import { DetailsCard, ConfidentialBanner } from "./Details";
+import { AssetScheduleTab, ChildrenCard, DivorceDatesCard } from "./Family";
+import { familyAttention } from "./familyCalc";
+import { InsightCards, ListTab, listIcon } from "./Practice";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -254,6 +258,241 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Family — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  Divorce: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Check for domestic abuse / safety concerns; confidential address (C8) if needed", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Obtain the original or certified marriage certificate (translated if needed)", "assistant"], ["Confirm jurisdiction and that the marriage has lasted over a year", "fee_earner"], ["Agree sole or joint application; prepare the application", "fee_earner"]],
+    3: [["Issue the application online and pay the court fee (or help with fees)", "assistant"], ["Diary 20 weeks from issue for the conditional order", "assistant"]],
+    4: [["Check service on the respondent; diary 14 days for acknowledgment", "assistant"], ["If no acknowledgment: consider deemed service, bailiff or alternative service", "fee_earner"]],
+    5: [["Advise on finances and pensions; start financial disclosure", "fee_earner"], ["Advise on arrangements for the children", "fee_earner"]],
+    6: [["Apply for the conditional order with the statement in support", "fee_earner"], ["Note the date of pronouncement; diary 6 weeks and 1 day", "assistant"]],
+    7: [["Check finances / pensions are settled (or advised on) before the final order", "fee_earner"], ["Apply for the final order", "fee_earner"], ["Send final order to client; advise on updating will and nominations", "secretary"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  "Financial settlement": {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Explain costs and the court's approach (s.25 factors); consider legal aid / LSPO", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Gather documents: bank statements, payslips, P60s, pensions (CETVs), mortgage", "assistant"], ["Request CETVs from every pension provider", "assistant"], ["Arrange valuation of the family home", "assistant"], ["Consider mediation / arbitration / collaborative route", "fee_earner"]],
+    3: [["Attend MIAM or record the exemption", "fee_earner"], ["Issue Form A (if proceedings are needed)", "fee_earner"]],
+    4: [["Prepare client's Form E with documents", "fee_earner"], ["Exchange Forms E by the court's date", "fee_earner"], ["Prepare questionnaire, chronology and statement of issues", "fee_earner"], ["Build the asset schedule from both Forms E", "assistant"]],
+    5: [["Attend the first appointment; note directions", "fee_earner"], ["Instruct valuers / pension on divorce expert (PODE) if directed", "fee_earner"]],
+    6: [["Prepare FDR bundle and position statement; make open / without prejudice proposals", "fee_earner"], ["Attend FDR", "fee_earner"]],
+    7: [["Draft the consent order and D81 statement of information", "fee_earner"], ["Lodge the consent order (or prepare for the final hearing)", "fee_earner"]],
+    8: [["Serve the pension sharing annex on the provider", "assistant"], ["Transfer property (TR1) / pay lump sums as ordered", "fee_earner"], ["Advise client on updating will and nominations", "fee_earner"]],
+    9: [["Send final bill and close the file", "secretary"]],
+  },
+  Children: {
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Check for safeguarding / domestic abuse concerns; confidential address (C8)", "fee_earner"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Advise on the welfare checklist and the court's approach", "fee_earner"], ["Attend MIAM or record the exemption", "fee_earner"], ["Try to agree arrangements (letter / mediation / parenting plan)", "fee_earner"]],
+    3: [["Prepare and issue the C100 (and C1A if there are harm allegations)", "fee_earner"], ["Diary the FHDRA and Cafcass safeguarding letter", "assistant"]],
+    4: [["Receive and review the Cafcass safeguarding letter", "fee_earner"], ["Attend the FHDRA; note directions", "fee_earner"]],
+    5: [["Prepare statements as directed", "fee_earner"], ["Diary the section 7 report; review it when received", "assistant"], ["Consider a fact-finding hearing if harm is disputed", "fee_earner"]],
+    6: [["Prepare position statement and attend the DRA", "fee_earner"]],
+    7: [["Prepare the bundle for the final hearing", "assistant"], ["Send the sealed order to the client and explain it", "fee_earner"]],
+    8: [["Send final bill and close the file", "secretary"]],
+  },
+  "Injunction / domestic abuse": {
+    0: [["Take urgent instructions and complete a risk assessment (DASH)", "fee_earner"], ["Signpost to an IDVA / refuge and the police", "fee_earner"], ["Keep the client's address confidential (C8)", "fee_earner"]],
+    1: [["Verify client identity", "assistant"], ["Apply for legal aid (emergency certificate if urgent)", "fee_earner"]],
+    2: [["Draft the witness statement and FL401", "fee_earner"], ["Draft the proposed order", "fee_earner"]],
+    3: [["Issue and attend the without-notice / on-notice hearing", "fee_earner"]],
+    4: [["Arrange personal service of the order and papers on the respondent", "assistant"], ["Send a copy of the order to the police", "assistant"], ["Diary the order's expiry date", "assistant"]],
+    5: [["Prepare for and attend the return hearing", "fee_earner"]],
+    6: [["Send the final order to the client and police; explain breach reporting", "fee_earner"], ["Diary a review before the order expires", "assistant"]],
+    7: [["Send final bill (or legal aid claim) and close the file", "secretary"]],
+  },
+});
+
+// Employment — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  "Tribunal claim — for employee": {
+    0: [["Send client care letter, terms and costs estimate (consider insurance / union funding)", "secretary"], ["Diary the tribunal time limit and the ACAS deadline", "assistant"]],
+    1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Get the contract, policies, payslips, dismissal and grievance letters", "assistant"], ["Identify each claim and its time limit; advise on merits and remedy", "fee_earner"], ["Prepare a first schedule of loss", "fee_earner"], ["Advise the client to look for work and keep a record (mitigation)", "fee_earner"]],
+    3: [["Start ACAS early conciliation (Day A) before the primary time limit", "fee_earner"], ["Record the ACAS certificate (Day B) and recalculate the time limit", "assistant"]],
+    4: [["Draft and present the ET1 with the ACAS certificate number", "fee_earner"], ["Diary the ET3 response date", "assistant"]],
+    5: [["Review the ET3 and advise on prospects", "fee_earner"], ["Prepare the agenda for the preliminary hearing; note directions", "fee_earner"]],
+    6: [["Disclose documents and review the employer's", "fee_earner"], ["Serve an updated schedule of loss with mitigation evidence", "fee_earner"]],
+    7: [["Draft and exchange witness statements", "fee_earner"], ["Agree the hearing bundle", "assistant"], ["Consider instructing counsel", "fee_earner"]],
+    8: [["Prepare for the hearing or settle (COT3 / settlement agreement)", "fee_earner"]],
+    9: [["Report the judgment / remedy to the client; consider appeal (42 days) or reconsideration (14 days)", "fee_earner"], ["Chase payment of the award", "assistant"]],
+    10: [["Send final bill and close the file", "secretary"]],
+  },
+  "Tribunal claim — for employer": {
+    0: [["Send client care letter, terms and costs estimate (check employment practices insurance)", "secretary"], ["Diary the ET3 deadline (28 days from the claim being sent)", "assistant"]],
+    1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Get the personnel file, policies, investigation and dismissal documents", "assistant"], ["Identify witnesses and take initial statements", "fee_earner"], ["Advise on prospects and settlement value", "fee_earner"]],
+    3: [["Speak to ACAS about conciliation", "fee_earner"]],
+    4: [["Draft and file the ET3 response and grounds of resistance", "fee_earner"]],
+    5: [["Prepare for the preliminary hearing; consider strike-out or a deposit order", "fee_earner"]],
+    6: [["Collate and disclose documents", "assistant"]],
+    7: [["Draft and exchange witness statements", "fee_earner"], ["Prepare the hearing bundle", "assistant"]],
+    8: [["Prepare for the hearing or settle (COT3 / settlement agreement)", "fee_earner"]],
+    9: [["Report the outcome; consider a costs application or appeal", "fee_earner"]],
+    10: [["Send final bill and close the file", "secretary"]],
+  },
+  "Settlement agreement": {
+    0: [["Confirm the employer's contribution to fees and who we invoice", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Check payments, tax treatment (£30,000 exemption, PENP), restrictive covenants, reference and confidentiality", "fee_earner"]],
+    3: [["Advise the client on the terms and the claims being given up", "fee_earner"]],
+    4: [["Negotiate improvements if instructed", "fee_earner"]],
+    5: [["Client signs; complete and sign the adviser's certificate", "fee_earner"], ["Return the signed agreement to the employer", "secretary"]],
+    6: [["Confirm the settlement payment has been received", "assistant"]],
+    7: [["Invoice the employer for the agreed contribution and close the file", "secretary"]],
+  },
+});
+
+// Litigation — the same checklist for each kind of dispute (the department's stages), and debt recovery.
+const LITIGATION_TASKS = {
+  0: [["Send client care letter, terms and costs estimate (consider ATE / funding)", "secretary"], ["Diary the limitation date", "assistant"], ["Tell the client to keep all documents (disclosure duty)", "fee_earner"]],
+  1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Review documents and advise on merits, value and costs risk", "fee_earner"], ["Send the letter before claim under the right pre-action protocol", "fee_earner"], ["Consider ADR / mediation and make a settlement offer (Part 36?)", "fee_earner"]],
+  3: [["Draft particulars of claim and statement of truth", "fee_earner"], ["Issue the claim and pay the court fee", "assistant"], ["Serve the claim form within 4 months; diary deemed service", "assistant"]],
+  4: [["Diary acknowledgment and defence dates; consider default judgment", "assistant"], ["Review the defence; consider reply / Part 18 / summary judgment", "fee_earner"], ["Complete the directions questionnaire and costs budget", "fee_earner"]],
+  5: [["Disclosure: search, list (N265) and inspection", "fee_earner"], ["Review the other side's disclosure", "fee_earner"]],
+  6: [["Take and serve witness statements", "fee_earner"], ["Instruct experts / serve reports and questions", "fee_earner"]],
+  7: [["Pre-trial checklist; bundle; brief counsel", "fee_earner"], ["Consider settlement / Part 36 position before trial", "fee_earner"]],
+  8: [["Draw up the order; assess or agree costs", "fee_earner"], ["Enforce the judgment if unpaid", "fee_earner"]],
+  9: [["Send final bill and close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Contract / debt dispute": LITIGATION_TASKS,
+  "Property dispute": LITIGATION_TASKS,
+  "Professional negligence": { ...LITIGATION_TASKS, 2: [["Send the letter of claim under the Professional Negligence Pre-Action Protocol", "fee_earner"], ["Diary 21 days for acknowledgment and 3 months for the response", "assistant"], ["Consider expert evidence on breach of duty", "fee_earner"]] },
+  "Other dispute": LITIGATION_TASKS,
+  "Debt recovery": {
+    0: [["Get the contract / terms, invoices and statement of account", "assistant"], ["Check the debtor's details (Companies House / insolvency register)", "assistant"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Send the letter before claim (with the Debt PAP pack for individuals / sole traders)", "fee_earner"], ["Diary the response date (30 days under the Debt PAP)", "assistant"]],
+    3: [["Issue the claim with interest and fixed costs", "assistant"]],
+    4: [["Request default judgment if no response in time", "assistant"], ["Consider an admission / instalment offer, or a defence", "fee_earner"]],
+    5: [["Send the judgment to the debtor; diary payment", "assistant"]],
+    6: [["Order to obtain information if assets unclear", "fee_earner"], ["Choose enforcement: writ / warrant of control, attachment of earnings, charging order, third party debt order", "fee_earner"]],
+    7: [["Account to the client and close the file", "secretary"]],
+  },
+});
+
+// Personal injury — the department's stages; clinical negligence has its own.
+const PI_TASKS = {
+  0: [["Send client care letter, CFA and ATE information", "secretary"], ["Diary the limitation date", "assistant"], ["Check for before-the-event insurance", "assistant"]],
+  1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Submit the claim notification (OIC / portal CNF) or send the letter of claim", "fee_earner"], ["Get photos, witness details, accident report / police report", "assistant"]],
+  3: [["Chase the liability decision; diary the protocol deadline", "assistant"], ["If liability is denied, review evidence and advise", "fee_earner"]],
+  4: [["Instruct the medical expert (MedCo for RTA soft tissue)", "assistant"], ["Review the medical report; agree factual corrections", "fee_earner"], ["Request the CRU certificate", "assistant"]],
+  5: [["Prepare the schedule of special damages with evidence", "fee_earner"], ["Value general damages (JC Guidelines / tariff) and advise the client", "fee_earner"], ["Make or respond to offers (Part 36)", "fee_earner"]],
+  6: [["Draft and issue proceedings (Stage 3 / Part 7)", "fee_earner"]],
+  7: [["Settle and get the client's signed authority; court approval if a child", "fee_earner"], ["Account to the client for damages less agreed deductions", "fee_earner"]],
+  8: [["Recover costs; send final bill and close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Road traffic accident": PI_TASKS,
+  "Accident at work": PI_TASKS,
+  "Public liability": PI_TASKS,
+  "Other injury": PI_TASKS,
+  "Clinical negligence": {
+    0: [["Send client care letter, CFA and ATE information", "secretary"], ["Diary the limitation date (date of knowledge?)", "fee_earner"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Request all medical records (GP and hospitals)", "assistant"], ["Paginate and screen the records; prepare a chronology", "fee_earner"]],
+    3: [["Instruct experts on breach of duty and causation", "fee_earner"], ["Conference with experts / counsel on merits", "fee_earner"]],
+    4: [["Send the letter of claim under the clinical negligence protocol", "fee_earner"], ["Notify NHS Resolution / the indemnifier", "assistant"]],
+    5: [["Diary 4 months for the letter of response; chase", "assistant"], ["Review the response and advise", "fee_earner"]],
+    6: [["Quantum evidence and schedule of loss; offers", "fee_earner"], ["Issue proceedings if not settled", "fee_earner"]],
+    7: [["Settle (court approval if a child / protected party); account to the client", "fee_earner"]],
+    8: [["Recover costs; send final bill and close the file", "secretary"]],
+  },
+});
+
+// Corporate & commercial — by type, keyed by the type's own stage index.
+const SHARE_DEAL_TASKS = {
+  0: [["Send client care letter, terms and costs estimate", "secretary"], ["Conflict check on buyer, seller and target", "assistant"]],
+  1: [["Verify client identity and beneficial owners", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Review / draft heads of terms", "fee_earner"], ["Put an NDA and exclusivity agreement in place", "fee_earner"], ["Check whether NSI Act notification is mandatory", "fee_earner"]],
+  3: [["Send the due diligence questionnaire", "fee_earner"], ["Review the data room; log issues (red / amber / green)", "fee_earner"], ["Prepare the due diligence report", "fee_earner"]],
+  4: [["Draft / review the SPA, disclosure letter and tax covenant", "fee_earner"], ["Prepare board minutes, stock transfer forms and resignations", "assistant"]],
+  5: [["Negotiate the SPA; agree warranties, limitations and price mechanism", "fee_earner"], ["Satisfy conditions; obtain consents and clearances", "fee_earner"], ["Agree the completion agenda / checklist", "fee_earner"]],
+  6: [["Hold the completion meeting / virtual signing", "fee_earner"], ["Transfer consideration; release signed documents", "fee_earner"]],
+  7: [["Stamp the stock transfer form (30 days)", "assistant"], ["File Companies House changes (officers, PSC) within 14 days", "assistant"], ["Update the statutory registers; issue share certificates", "assistant"], ["Diary warranty and tax covenant claim deadlines", "assistant"]],
+  8: [["Send completion bible and final bill; close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Share sale": SHARE_DEAL_TASKS,
+  "Share purchase": SHARE_DEAL_TASKS,
+  "Company formation": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify directors, shareholders and PSCs", "assistant"]],
+    2: [["Check the name is available; agree share structure and officers", "fee_earner"], ["Decide model or bespoke articles", "fee_earner"]],
+    3: [["Prepare the IN01 / online incorporation and articles", "assistant"]],
+    4: [["File the incorporation; send the certificate to the client", "assistant"]],
+    5: [["Write up the statutory registers and PSC register", "assistant"], ["Issue share certificates", "assistant"], ["Advise on corporation tax, VAT and PAYE registration", "fee_earner"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+  "Commercial contract": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Understand the commercial deal, risks and must-haves", "fee_earner"]],
+    3: [["Draft the contract, or review the other side's draft", "fee_earner"], ["Check liability caps, indemnities, IP, data protection and termination", "fee_earner"]],
+    4: [["Send mark-ups and agree points with the other side", "fee_earner"]],
+    5: [["Arrange signing; send the signed copy", "secretary"], ["Diary renewal and notice dates", "assistant"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+  "Shareholders' agreement": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Take instructions on reserved matters, transfers, leavers, deadlock and dividends", "fee_earner"]],
+    3: [["Draft the agreement and any new articles", "fee_earner"]],
+    4: [["Agree comments from all shareholders", "fee_earner"]],
+    5: [["Arrange signing; pass the special resolution and file the articles", "assistant"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+});
+
+// Crime — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  "Police station": {
+    0: [["Log the call (DSCC reference) and arrange attendance within 45 minutes where possible", "fee_earner"]],
+    1: [["Conflict check on co-suspects", "assistant"]],
+    2: [["Review the custody record; note the relevant time and reviews", "fee_earner"], ["Obtain disclosure from the officer; private consultation", "fee_earner"], ["Check fitness for interview and need for an appropriate adult / interpreter", "fee_earner"]],
+    3: [["Advise on interview (answer / prepared statement / no comment); attend", "fee_earner"], ["Record the advice and reasons on file", "fee_earner"]],
+    4: [["Note the outcome; make representations on bail / charge", "fee_earner"], ["Diary any bail return date; open a court file if charged", "assistant"]],
+    5: [["Submit the police station claim and close the file", "secretary"]],
+  },
+  "Magistrates' court": {
+    0: [["Take instructions; check custody / bail position", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Apply for a representation order (interests of justice and means)", "assistant"]],
+    3: [["Review the IDPC; advise on plea and credit", "fee_earner"], ["Represent at the first hearing; make bail application if needed", "fee_earner"], ["Complete the preparation for effective trial form", "fee_earner"]],
+    4: [["Review initial disclosure; consider a defence statement and section 8 application", "fee_earner"]],
+    5: [["Warn defence witnesses; obtain evidence and character references", "assistant"], ["Prepare cross-examination and submissions", "fee_earner"]],
+    6: [["Attend trial / sentence; mitigation and pre-sentence report", "fee_earner"], ["Advise on appeal (15 business days)", "fee_earner"]],
+    7: [["Submit the legal aid claim and close the file", "secretary"]],
+  },
+  "Crown Court": {
+    0: [["Take instructions; check custody / bail position", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Representation order (and any contribution order)", "assistant"]],
+    3: [["Note the sending date; diary the PTPH and custody time limit", "assistant"]],
+    4: [["Prepare for the PTPH: plea, issues, witness requirements; brief counsel", "fee_earner"]],
+    5: [["Review the served case and initial disclosure", "fee_earner"], ["Serve the defence statement within 28 days; defence witness notice", "fee_earner"], ["Consider a section 8 disclosure application", "fee_earner"]],
+    6: [["Instruct experts; take defence witness statements; prepare bundles", "fee_earner"], ["Conference with counsel and the client", "fee_earner"]],
+    7: [["Attend trial / sentence; mitigation and character references", "fee_earner"]],
+    8: [["Advise on appeal within 28 days (and in writing)", "fee_earner"]],
+    9: [["Submit the litigator's fee claim and close the file", "secretary"]],
+  },
+  Appeal: {
+    0: [["Check the time limit for appeal immediately", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Obtain transcripts / papers; advise on merits", "fee_earner"]],
+    3: [["Lodge the notice and grounds of appeal", "fee_earner"]],
+    4: [["Prepare for the leave / appeal hearing", "fee_earner"]],
+    5: [["Report the outcome to the client", "fee_earner"]],
+    6: [["Submit the claim and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -421,6 +660,8 @@ function needsAttention(matter, staleDays = 14) {
   const noId = (matter.clients || []).filter((c) => !c.idVerifiedOn);
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
+  if (matter.department === "family" && open) reasons.push(...familyAttention(matter, todayISO()));
+  if (open && matter.serverAttention) reasons.push(...matter.serverAttention);
   const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && isOverdue(t.dueDate));
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   if (open) {
@@ -1756,6 +1997,14 @@ export default function App() {
         .ac-doc-notes { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; }
         .ac-doc-row[draggable="true"] { cursor: grab; }
         .ac-muted { color: var(--slate); font-size: 13px; }
+        .ac-confidential {
+          display: flex; gap: 10px; align-items: flex-start; background: #7c3232; color: #fff; border-radius: 3px;
+          padding: 10px 14px; margin: 4px 0 12px; font-size: 13px; line-height: 1.45;
+        }
+        .ac-confidential svg { flex-shrink: 0; margin-top: 2px; }
+        .ac-calc { border-top: 1px dashed var(--line); padding-top: 12px; }
+        .ac-calc-steps { margin: 8px 0; padding-left: 18px; font-size: 12px; color: var(--ink-soft); }
+        .ac-calc-steps li { margin-bottom: 3px; }
         .ac-muted.small, .ac-linkbtn.small { font-size: 11.5px; }
         .ac-linkbtn.small { color: var(--brass); }
         .ac-check { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-soft); margin: 4px 0 12px; text-transform: none; font-weight: 500; }
@@ -2881,6 +3130,12 @@ function attentionAction(reason, matter) {
   if (r.includes("lease")) return { label: "Property", edit: "property" };
   if (r.includes("mortgage offer") || r.includes("os1") || r.includes("target exchange") || r.includes("target completion")) return { label: "Dates", edit: "dates" };
   if (r.includes("no activity")) return { label: "Log update", note: true };
+  if (r.includes("injunction order") || r.includes("conditional order") || r.includes("final order")) return { label: "Details", scroll: "matter-details" };
+  if (r.includes("part 36") || r.includes("offer")) return { label: "Offers", tab: "list:offers" };
+  if (r.startsWith("checklist:")) return { label: "Checklist", tab: "list:checklist" };
+  if (r.includes("due diligence")) return { label: "Due diligence", tab: "list:dd" };
+  if (r.startsWith("statement / report from")) return { label: "Witnesses", tab: "list:witnesses" };
+  if ((matter.lists || []).length || (matter.insights || []).length) return { label: "Details", scroll: "matter-details" };
   return {};
 }
 
@@ -3282,6 +3537,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             <button className="ac-addbtn" onClick={() => onEdit()}><FileSignature size={13} /> Edit all details</button>
           </div>
         </div>
+        <ConfidentialBanner matter={matter} />
         <div className="ac-tabs">
           {[
             ["overview", <><Clock size={13} /> Overview</>],
@@ -3293,6 +3549,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
               ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
             ] : []),
             ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
+            ...(matter.department === "family" && matter.type === "Financial settlement" ? [["assets", <><Scale size={13} /> Assets ({(matter.familyAssets || []).length})</>]] : []),
+            ...(matter.lists || []).map((l) => [`list:${l.key}`, <>{listIcon(l.icon)} {l.title} ({l.items.length})</>]),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -3368,7 +3626,10 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             )}
 
             {isProbate(matter) && <EstateSummaryCard matter={matter} onOpenEstate={() => setActiveTab("estate")} />}
-            {isPrivateClient(matter) && <PcDetailsCard matter={matter} onChanged={onMatterChanged} />}
+            {matter.type === "Divorce" && matter.department === "family" && <DivorceDatesCard matter={matter} />}
+            <InsightCards matter={matter} />
+            <DetailsCard matter={matter} onChanged={onMatterChanged} />
+            {matter.department === "family" && <ChildrenCard matter={matter} onChanged={onMatterChanged} />}
 
             <div className="ac-card">
               <h3><Users size={12} /> Client</h3>
@@ -3741,6 +4002,8 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
       )}
 
       {activeTab === "estate" && isProbate(matter) && <EstateTab matter={matter} onChanged={onMatterChanged} />}
+      {activeTab === "assets" && matter.familyAssets && <AssetScheduleTab matter={matter} onChanged={onMatterChanged} />}
+      {(matter.lists || []).filter((l) => activeTab === `list:${l.key}`).map((l) => <ListTab key={l.key} matter={matter} list={l} onChanged={onMatterChanged} />)}
 
       {activeTab === "documents" && (
         <DocumentsTab

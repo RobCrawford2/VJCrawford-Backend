@@ -2,7 +2,6 @@
  * Wills, Trusts & Probate.
  *
  * On a matter (mounted at /matters):
- *   PATCH  /:id/pc-details                       the type's details (deceased, grant, attorneys…)
  *   POST   /:id/estate-items                     add an asset or liability
  *   PATCH  /:id/estate-items/:itemId             update one
  *   DELETE /:id/estate-items/:itemId
@@ -23,15 +22,11 @@ const asyncHandler = require("../utils/asyncHandler");
 const { requireAuth } = require("../middleware/auth");
 const { matterVisibilityClause, canUseDepartment } = require("../utils/permissions");
 const {
-  DETAIL_FIELDS, ASSET_CATEGORIES, LIABILITY_CATEGORIES, ITEM_STATUSES, GIFT_TYPES, PROBATE, estateSummary,
+  ASSET_CATEGORIES, LIABILITY_CATEGORIES, ITEM_STATUSES, GIFT_TYPES, PROBATE, estateSummary,
 } = require("../config/privateClient");
 const { estateAccount, deathNotificationLetter, paymentLetter } = require("../reports/estate");
+const { validDate, isBlank, text } = require("../utils/validate");
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
-/** A real calendar date in YYYY-MM-DD form (so not 30 February). */
-const validDate = (v) => DATE.test(String(v)) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
-const isBlank = (v) => v === undefined || v === null || (typeof v === "string" && !v.trim());
-const text = (v) => (isBlank(v) ? null : String(v).trim());
 
 async function findMatter(req, res) {
   const v = matterVisibilityClause(req.user, 3);
@@ -74,11 +69,11 @@ async function privateClientDetail(matter) {
     query(`SELECT * FROM estate_beneficiaries WHERE matter_id = $1 ORDER BY created_at`, [matter.id]),
     query(`SELECT * FROM safe_custody WHERE matter_id = $1 ORDER BY received_on DESC, created_at DESC`, [matter.id]),
   ]);
-  const out = { pcFields: DETAIL_FIELDS[matter.type] || [], safeCustody: custody.rows };
+  const out = { safeCustody: custody.rows };
   if (matter.type === PROBATE) {
     out.estateItems = items.rows;
     out.beneficiaries = beneficiaries.rows;
-    out.estateSummary = estateSummary(items.rows, beneficiaries.rows, matter.pc_details || {});
+    out.estateSummary = estateSummary(items.rows, beneficiaries.rows, matter.details || {});
   }
   return out;
 }
@@ -88,53 +83,6 @@ async function privateClientDetail(matter) {
 // -----------------------------------------------------------------------
 const matterRouter = express.Router();
 matterRouter.use(requireAuth);
-
-/** Checks one detail value against its field definition; returns [value, error]. */
-function cleanDetail(field, raw) {
-  if (isBlank(raw) || raw === false && field.kind !== "bool") return [null, null];
-  switch (field.kind) {
-    case "date":
-      return validDate(String(raw)) ? [String(raw), null] : [null, `${field.label} must be a date.`];
-    case "money": {
-      const v = Number(raw);
-      return Number.isFinite(v) && v >= 0 ? [Math.round(v * 100) / 100, null] : [null, `${field.label} must be £0 or more.`];
-    }
-    case "percent": {
-      const v = Number(raw);
-      return Number.isFinite(v) && v >= 0 && v <= 100 ? [v, null] : [null, `${field.label} must be between 0 and 100.`];
-    }
-    case "bool":
-      return [raw === true, null];
-    case "select":
-      return field.options.includes(raw) ? [raw, null] : [null, `${field.label} must be one of: ${field.options.join(", ")}.`];
-    default:
-      return String(raw).length > 2000 ? [null, `${field.label} is too long.`] : [String(raw).trim(), null];
-  }
-}
-
-matterRouter.patch(
-  "/:id/pc-details",
-  asyncHandler(async (req, res) => {
-    const m = await findMatter(req, res);
-    if (!m) return;
-    const fields = DETAIL_FIELDS[m.type] || [];
-    const body = req.body && typeof req.body === "object" ? req.body : {};
-    const next = { ...(m.pc_details || {}) };
-    let changed = 0;
-    for (const field of fields) {
-      if (!Object.hasOwn(body, field.key)) continue;
-      const [value, error] = cleanDetail(field, body[field.key]);
-      if (error) return res.status(400).json({ error });
-      if (value === null) delete next[field.key];
-      else next[field.key] = value;
-      changed++;
-    }
-    if (!changed) return res.status(400).json({ error: "No recognised fields to update." });
-    const r = await query(`UPDATE matters SET pc_details = $2::jsonb WHERE id = $1 RETURNING pc_details`, [m.id, JSON.stringify(next)]);
-    await log(m.id, req.user.id, "edit", `${m.type === PROBATE ? "Estate" : m.type} details updated`);
-    res.json(r.rows[0].pc_details);
-  })
-);
 
 // ---- Estate register (assets and liabilities) ----
 
@@ -347,9 +295,9 @@ async function docContext(m, firmId) {
     query(`SELECT * FROM estate_beneficiaries WHERE matter_id = $1 ORDER BY created_at`, [m.id]),
   ]);
   return {
-    matter: m, firm: firm.rows[0], feeEarner: m.fee_earner_name || null, details: m.pc_details || {},
+    matter: m, firm: firm.rows[0], feeEarner: m.fee_earner_name || null, details: m.details || {},
     items: items.rows, beneficiaries: beneficiaries.rows,
-    summary: estateSummary(items.rows, beneficiaries.rows, m.pc_details || {}),
+    summary: estateSummary(items.rows, beneficiaries.rows, m.details || {}),
   };
 }
 

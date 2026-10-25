@@ -83,6 +83,29 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, "Emma Lowe", "emma@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'private_client')`, [emma.id]);
+    // Aisha does employment (and corporate); departments are switched on below as each is set up.
+    const aisha = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Aisha Khan", "aisha@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'employment')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment'), ($1, 'corporate')`, [aisha.id]);
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'corporate')`, [firm.id]);
+    // Tom does litigation (and personal injury).
+    const tom = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Tom Reid", "tom@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'litigation')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation'), ($1, 'personal_injury')`, [tom.id]);
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'personal_injury')`, [firm.id]);
+    // Dan does crime.
+    const dan = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Dan Hughes", "dan@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'crime')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'crime')`, [dan.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -159,12 +182,64 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, priya.id, david.id]
     )).rows[0];
     await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [morris.id, priya.id]);
+    await client.query(
+      `UPDATE matters SET details = $2::jsonb WHERE id = $1`,
+      [morris.id, JSON.stringify({ otherParty: "Mark Morris", court: "Bristol Family Court", caseNumber: "BS26F00412", miam: "MIAM attended", formAIssued: "2026-07-30", firstAppointment: "2026-11-19" })]
+    );
+    await client.query(
+      `INSERT INTO family_assets (matter_id, kind, owner, category, description, value, proposed_client_percent, source, created_by) VALUES
+       ($1,'asset','joint','Family home','14 Cotham Vale, Bristol (net of 3% sale costs)',485000,60,'Agreed valuation',$2),
+       ($1,'liability','joint','Mortgage','Nationwide mortgage',162000,60,'Redemption statement',$2),
+       ($1,'asset','client','Bank / savings','Santander current and ISA',18400,NULL,'Form E 2.3',$2),
+       ($1,'asset','other','Bank / savings','Barclays savings',41200,NULL,'Form E 2.3',$2),
+       ($1,'asset','other','Vehicle','Audi A4',14500,NULL,'Form E 2.7',$2),
+       ($1,'liability','other','Loan / credit card','Barclaycard',6300,NULL,'Form E 2.14',$2),
+       ($1,'pension','client','Defined benefit (final salary)','NHS Pension Scheme',96000,NULL,'CETV Aug 2026',$2),
+       ($1,'pension','other','Defined contribution','Aviva workplace pension',212000,40,'CETV Jul 2026',$2)`,
+      [morris.id, priya.id]
+    );
+    await client.query(
+      `INSERT INTO family_children (matter_id, name, date_of_birth, lives_with, school) VALUES
+       ($1,'Ella Morris','2014-03-09','Client','Cotham School'), ($1,'Jacob Morris','2018-11-22','Client','Westbury Park Primary')`,
+      [morris.id]
+    );
+
+    // More family: the divorce, a children case and an urgent injunction (dates relative to today, so the warnings show).
+    const isoIn = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
+    const famMatter = async (reference, description, clientName, type, stage, details, funding, estimate) => {
+      const id = (await client.query(
+        `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+           date_instructed, funding, fee_estimate, details)
+         VALUES ($1,$2,'family',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING id`,
+        [firm.id, reference, description, clientName, type, stage, priya.id, david.id, isoIn(-200), funding, estimate, JSON.stringify(details)]
+      )).rows[0].id;
+      await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [id, priya.id]);
+      return id;
+    };
+    await famMatter("FAM-2026-0002", "Divorce — Morris", "Hannah Morris", "Divorce", 6, {
+      weAct: "Applicant", applicationType: "Divorce", dateOfMarriage: "2011-06-18", placeOfMarriage: "Bristol Register Office",
+      dateOfSeparation: "2025-11-01", applicationIssued: isoIn(-190), acknowledgmentFiled: isoIn(-175),
+      conditionalOrderApplied: isoIn(-48), conditionalOrderPronounced: isoIn(-50), otherParty: "Mark Morris", caseNumber: "1726-4410-9921-0042",
+    }, "fixed_fee", 650);
+    const childrenId = await famMatter("FAM-2026-0003", "Child arrangements — Patel", "Ravi Patel", "Children", 4, {
+      otherParty: "Anjali Patel", court: "Birmingham Family Court", caseNumber: "BM26P00877", miam: "MIAM attended",
+      c100Issued: isoIn(-70), cafcassLetter: isoIn(-40), fhdraDate: isoIn(-10), section7Due: isoIn(35),
+    }, "hourly", 3500);
+    await client.query(
+      `INSERT INTO family_children (matter_id, name, date_of_birth, lives_with) VALUES ($1,'Arjun Patel','2019-04-15','Other party')`,
+      [childrenId]
+    );
+    await famMatter("FAM-2026-0004", "Non-molestation order — K. Doyle", "Kerry Doyle", "Injunction / domestic abuse", 6, {
+      orderType: "Non-molestation order", withoutNotice: true, applicationIssued: isoIn(-170), orderMade: isoIn(-168),
+      orderExpires: isoIn(12), servedOnRespondent: isoIn(-166), policeNotified: true, otherParty: "Sean Doyle",
+      court: "Manchester Family Court", caseNumber: "MA26F00133", confidentialAddress: true,
+    }, "legal_aid", null);
 
     // Wills, Trusts & Probate: an estate in administration, a will and an LPA.
     const pcMatter = async (reference, description, clientName, type, stage, instructed, details, funding, estimate) => {
       const id = (await client.query(
         `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
-           date_instructed, funding, fee_estimate, pc_details, folders_ready)
+           date_instructed, funding, fee_estimate, details, folders_ready)
          VALUES ($1,$2,'private_client',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,false) RETURNING id`,
         [firm.id, reference, description, clientName, type, stage, emma.id, david.id, instructed, funding, estimate, JSON.stringify(details)]
       )).rows[0].id;
@@ -225,6 +300,221 @@ async function runSeed(pool, { password = "password123" } = {}) {
               ($1,'IHT account (IHT400) due (12 months after the end of the month of death)','filing','2027-05-31',true,$2)`,
       [estateId, emma.id]
     );
+
+    // Matters for the departments set up from configuration (src/config/practice), with list items.
+    const practiceMatter = async ({ reference, department, description, clientName, type, stage, feeEarner, details, funding, estimate, lists = {} }) => {
+      const id = (await client.query(
+        `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+           date_instructed, funding, fee_estimate, details)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) RETURNING id`,
+        [firm.id, reference, department, description, clientName, type, stage, feeEarner, david.id, isoIn(-60), funding, estimate, JSON.stringify(details)]
+      )).rows[0].id;
+      await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [id, feeEarner]);
+      for (const [list, items] of Object.entries(lists)) {
+        for (const [i, data] of items.entries()) {
+          await client.query(`INSERT INTO matter_list_items (matter_id, list, data, position, created_by) VALUES ($1,$2,$3::jsonb,$4,$5)`, [id, list, JSON.stringify(data), i, feeEarner]);
+        }
+      }
+      return id;
+    };
+
+    // Employment
+    await practiceMatter({
+      reference: "EMP-2026-0001", department: "employment", description: "Unfair dismissal — Lewis v Brightwell Logistics", clientName: "Jordan Lewis",
+      type: "Tribunal claim — for employee", stage: 3, feeEarner: aisha.id, funding: "hourly", estimate: 7500,
+      details: {
+        otherParty: "Brightwell Logistics Ltd", jobTitle: "Warehouse supervisor", claims: "Unfair dismissal; failure to make reasonable adjustments",
+        dateOfBirth: "1979-02-14", startDate: "2015-01-05", edt: isoIn(-40), grossWeeklyPay: 820, netWeeklyPay: 610, acasDayA: isoIn(-20),
+      },
+      lists: {
+        schedule: [
+          { head: "Basic award", description: "11 years × 1.5 / 1 weeks at £751", amount: 11264.5 },
+          { head: "Loss of earnings to date", description: "6 weeks × £610 net", amount: 3660 },
+          { head: "Loss of statutory rights", amount: 600 },
+          { head: "Injury to feelings", description: "Lower Vento band", amount: 8000 },
+        ],
+        offers: [{ date: isoIn(-5), madeBy: "Other side", offerType: "COT3 / ACAS", amount: 6000, terms: "Through ACAS; agreed reference", status: "Open" }],
+      },
+    });
+    await practiceMatter({
+      reference: "EMP-2026-0002", department: "employment", description: "Settlement agreement — Nina Clarke", clientName: "Nina Clarke",
+      type: "Settlement agreement", stage: 3, feeEarner: aisha.id, funding: "fixed_fee", estimate: 500,
+      details: {
+        otherParty: "Northgate Insurance plc", dateOfBirth: "1984-09-30", startDate: "2012-04-02", terminationDate: isoIn(14), grossWeeklyPay: 1150,
+        noticePay: 13800, holidayPay: 2100, settlementPayment: 42000, legalFeesContribution: 500, receivedOn: isoIn(-3), paymentDue: isoIn(42),
+      },
+    });
+    await practiceMatter({
+      reference: "EMP-2026-0003", department: "employment", description: "Ahmed v Harbour Cafés Ltd", clientName: "Harbour Cafés Ltd",
+      type: "Tribunal claim — for employer", stage: 4, feeEarner: aisha.id, funding: "hourly", estimate: 9000,
+      details: {
+        otherParty: "Samir Ahmed", claims: "Unfair dismissal; unpaid holiday pay", startDate: "2021-06-01", edt: isoIn(-75), dateOfBirth: "1996-12-03",
+        grossWeeklyPay: 520, claimSentToRespondent: isoIn(-20), tribunal: "Bristol", caseNumber: "1401234/2026",
+      },
+      lists: { offers: [{ date: isoIn(-2), madeBy: "Us", offerType: "Without prejudice save as to costs", amount: 2500, status: "Open" }] },
+    });
+
+    // Litigation
+    await practiceMatter({
+      reference: "LIT-2026-0001", department: "litigation", description: "Wexford Joinery v Castlegate Developments — unpaid invoices", clientName: "Wexford Joinery Ltd",
+      type: "Contract / debt dispute", stage: 4, feeEarner: tom.id, funding: "hourly", estimate: 18000,
+      details: {
+        weAct: "Claimant", otherParty: "Castlegate Developments Ltd", claimValue: 48500, causeOfAction: "2025-09-30", letterBeforeClaim: isoIn(-120),
+        claimIssued: isoIn(-30), claimNumber: "K00BS412", court: "County Court at Bristol", claimFormServed: isoIn(-27), particularsServed: isoIn(-25),
+        aosFiled: isoIn(-15), interestRate: 8, interestFrom: "2025-10-30",
+      },
+      lists: {
+        offers: [
+          { date: isoIn(-40), madeBy: "Us", offerType: "Part 36", amount: 44000, status: "Rejected", respondedOn: isoIn(-25) },
+          { date: isoIn(-16), madeBy: "Other side", offerType: "Part 36", amount: 30000, terms: "Inclusive of interest", status: "Open" },
+        ],
+        chronology: [
+          { date: "2025-03-14", event: "Subcontract signed for joinery at Castlegate's Harbourside scheme", source: "Subcontract, cl. 4 (payment)" },
+          { date: "2025-08-29", event: "Works completed; final account invoice issued (£48,500)", source: "Invoice WJ-2291" },
+          { date: "2025-09-30", event: "Payment due date passes; no pay less notice served", source: "Subcontract cl. 4.3", disputed: true },
+          { date: "2026-02-11", event: "Castlegate alleges defective doors; withholds payment", source: "Email from site manager", disputed: true },
+        ],
+        witnesses: [
+          { name: "Gareth Wexford", role: "Witness of fact", evidence: "Contract, works and invoices", status: "Proof taken" },
+          { name: "Independent joinery expert (TBC)", role: "Expert (single joint)", evidence: "Alleged defects", status: "To approach", due: isoIn(30) },
+        ],
+      },
+    });
+    await practiceMatter({
+      reference: "LIT-2026-0002", department: "litigation", description: "Hale v Barrow Surveyors — negligent survey", clientName: "Michael & Ruth Hale",
+      type: "Professional negligence", stage: 2, feeEarner: tom.id, funding: "hourly", estimate: 25000,
+      details: { weAct: "Claimant", otherParty: "Barrow Surveyors LLP", claimValue: 62000, causeOfAction: "2020-11-12", dateOfKnowledge: "2025-04-03", letterBeforeClaim: isoIn(-30) },
+      lists: { chronology: [
+        { date: "2020-11-12", event: "Level 2 survey report: no significant defects", source: "Survey report" },
+        { date: "2025-04-03", event: "Subsidence discovered during extension works", source: "Structural engineer's report" },
+      ] },
+    });
+    await practiceMatter({
+      reference: "LIT-2026-0003", department: "litigation", description: "Arden Print v Lumen Events — debt", clientName: "Arden Print Ltd",
+      type: "Debt recovery", stage: 6, feeEarner: tom.id, funding: "fixed_fee", estimate: 900,
+      details: {
+        weAct: "Claimant", otherParty: "Lumen Events Ltd", debtorType: "Business", invoiceDue: "2026-03-31", claimValue: 6240, causeOfAction: "2026-03-31",
+        letterBeforeClaim: "2026-05-02", claimIssued: "2026-06-10", judgmentDate: isoIn(-20), judgmentAmount: 6802.4, amountRecovered: 1500,
+      },
+    });
+
+    // Corporate & commercial
+    await practiceMatter({
+      reference: "CC-2026-0001", department: "corporate", description: "Acquisition of Pembroke Marine Services Ltd", clientName: "Harbour Group Holdings Ltd",
+      type: "Share purchase", stage: 4, feeEarner: aisha.id, funding: "hourly", estimate: 45000,
+      details: {
+        weAct: "Buyer", otherParty: "The shareholders of Pembroke Marine Services Ltd", targetCompany: "Pembroke Marine Services Ltd", companyNumber: "08812345",
+        consideration: 1850000, deferredConsideration: 250000, headsAgreed: isoIn(-70), longstopDate: isoIn(10), warrantyMonths: 24, taxCovenantYears: 7, wiInsurance: true,
+      },
+      lists: {
+        checklist: [
+          { item: "Share purchase agreement", category: "Transaction document", responsible: "Us", status: "With other side", due: isoIn(5) },
+          { item: "Disclosure letter and bundle", category: "Transaction document", responsible: "Other side", status: "Drafting", due: isoIn(5) },
+          { item: "Tax covenant", category: "Transaction document", responsible: "Us", status: "Agreed" },
+          { item: "Bank consent to change of control", category: "Condition precedent", responsible: "Other side", status: "Not started", due: isoIn(-2) },
+          { item: "Buyer board minutes approving the acquisition", category: "Board / shareholder approval", responsible: "Us", status: "Drafting", due: isoIn(-1) },
+          { item: "Stock transfer forms", category: "Completion deliverable", responsible: "Other side", status: "Not started" },
+          { item: "Resignations of outgoing directors", category: "Completion deliverable", responsible: "Other side", status: "Not started" },
+          { item: "W&I insurance policy bound", category: "Ancillary document", responsible: "Client", status: "Agreed" },
+        ],
+        dd: [
+          { area: "Commercial contracts", issue: "Main customer contract (38% of revenue) terminable on change of control", risk: "Red", protection: "Condition precedent", status: "Open" },
+          { area: "Employment", issue: "Two contractors likely to be employees (IR35 exposure)", risk: "Amber", protection: "Specific indemnity", status: "Open" },
+          { area: "Property", issue: "Boatyard lease expires in 14 months; no renewal rights", risk: "Amber", protection: "Further enquiry", status: "Open" },
+          { area: "Corporate", issue: "Share capital history reconciles to filings", risk: "Green", protection: "Accept", status: "Resolved" },
+        ],
+      },
+    });
+    await practiceMatter({
+      reference: "CC-2026-0002", department: "corporate", description: "Incorporation — Fern & Finch Interiors Ltd", clientName: "Fern & Finch Interiors Ltd",
+      type: "Company formation", stage: 5, feeEarner: aisha.id, funding: "fixed_fee", estimate: 450,
+      details: {
+        proposedName: "Fern & Finch Interiors Ltd", companyType: "Private limited by shares", sicCode: "74100 — specialised design", directors: "Holly Fern; Marcus Finch",
+        shareholders: "Holly Fern 50; Marcus Finch 50 (£1 ordinary)", articles: "Model articles", incorporationDate: isoIn(-40), companyNumber: "16455120", startedTrading: isoIn(-20),
+      },
+    });
+    await practiceMatter({
+      reference: "CC-2026-0003", department: "corporate", description: "Supply agreement — Coastline Foods", clientName: "Harbour Group Holdings Ltd",
+      type: "Commercial contract", stage: 5, feeEarner: aisha.id, funding: "hourly", estimate: 3000,
+      details: { otherParty: "Coastline Foods Ltd", contractType: "Supply of goods", contractValue: 240000, signedOn: "2024-02-01", startDate: "2024-03-01", renewalDate: isoIn(115), noticeDays: 90, governingLaw: "England and Wales" },
+    });
+
+    // Crime
+    const hoursAgo = (h) => new Date(Date.now() - h * 3600000).toLocaleString("sv-SE", { timeZone: "Europe/London" }).slice(0, 16).replace(" ", "T");
+    await practiceMatter({
+      reference: "CRI-2026-0001", department: "crime", description: "R v Kyle Mason — police station (burglary)", clientName: "Kyle Mason",
+      type: "Police station", stage: 2, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        policeStation: "Bristol Patchway", custodyNumber: "BS-26-118842", relevantTime: hoursAgo(5), clientDob: "2002-03-19",
+        offenceSummary: "Burglary of a dwelling (Westbury-on-Trym)", legalAid: "Police station scheme (free)", custodyStatus: "Not in custody",
+      },
+    });
+    await practiceMatter({
+      reference: "CRI-2026-0002", department: "crime", description: "R v Shannon Price — theft from a shop", clientName: "Shannon Price",
+      type: "Magistrates' court", stage: 5, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        court: "Bristol Magistrates' Court", firstHearing: isoIn(-21), venue: "Either way — kept in the magistrates' court", initialDisclosure: isoIn(-6),
+        trialDate: isoIn(38), clientDob: "1995-08-04", urn: "52SS0412326", legalAid: "Representation order granted", maat: "6123455", custodyStatus: "Court bail",
+        bailConditions: "Not to enter Cribbs Causeway shopping centre",
+      },
+      lists: { charges: [{ offence: "Theft from a shop", legislation: "s.1 Theft Act 1968", dateOfOffence: isoIn(-60), classification: "Either way", plea: "Not guilty", outcome: "Pending" }] },
+    });
+    await practiceMatter({
+      reference: "CRI-2026-0003", department: "crime", description: "R v Jamal Okoro — wounding with intent", clientName: "Jamal Okoro",
+      type: "Crown Court", stage: 5, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        court: "Bristol Crown Court", firstHearing: isoIn(-171), sentDate: isoIn(-170), remandedFrom: isoIn(-171), ptphDate: isoIn(-140),
+        initialDisclosure: isoIn(-24), trialDate: isoIn(30), clientDob: "1999-11-27", urn: "52SS0399126", legalAid: "Representation order granted",
+        custodyStatus: "Remanded in custody",
+      },
+      lists: { charges: [
+        { offence: "Wounding with intent", legislation: "s.18 Offences Against the Person Act 1861", dateOfOffence: isoIn(-175), classification: "Indictable only", plea: "Not guilty", outcome: "Pending" },
+        { offence: "Possession of a bladed article", legislation: "s.139 Criminal Justice Act 1988", dateOfOffence: isoIn(-175), classification: "Either way", plea: "Guilty", outcome: "Convicted" },
+      ] },
+    });
+
+    // Personal injury
+    await practiceMatter({
+      reference: "PI-2026-0001", department: "personal_injury", description: "RTA — rear-end collision, Gloucester Road", clientName: "Leanne Moss",
+      type: "Road traffic accident", stage: 3, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Craig Benson", insurer: "Admiral", insurerRef: "ADM-77120", dateOfAccident: isoIn(-95), clientDob: "1991-06-22",
+        accidentLocation: "Gloucester Road, Bristol", injuries: "Neck and shoulder soft tissue; wrist sprain", route: "MoJ Portal — RTA",
+        claimNotified: isoIn(-26), liability: "Awaiting decision", generalDamages: 7500, cfaSigned: isoIn(-90), successFeePercent: 25, atePremium: 350,
+      },
+      lists: { specials: [
+        { head: "Medical / treatment", description: "6 physiotherapy sessions", period: "Past", amount: 650, evidence: "Invoices" },
+        { head: "Travel", description: "Mileage to appointments", period: "Past", amount: 85, evidence: "Mileage log" },
+        { head: "Loss of earnings", description: "2 weeks off work", period: "Past", amount: 1240, evidence: "Payslips" },
+        { head: "Care and assistance", description: "Help from partner, 4 weeks", period: "Past", amount: 900 },
+      ] },
+    });
+    await practiceMatter({
+      reference: "PI-2026-0002", department: "personal_injury", description: "Accident at work — crushed hand, Hexley Manufacturing", clientName: "Daniel Price",
+      type: "Accident at work", stage: 5, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Hexley Manufacturing Ltd", insurer: "Zurich", dateOfAccident: "2025-02-17", clientDob: "1988-01-09", route: "MoJ Portal — employer's liability",
+        claimNotified: "2025-04-02", liability: "Admitted with contributory negligence", contributoryPercent: 20, injuries: "Crush injury to the left hand; two fractured fingers",
+        medicalExpert: "Mr A Shah, consultant hand surgeon", medicalReportDate: "2026-05-14", generalDamages: 28000, cruAmount: 2300,
+        cfaSigned: "2025-03-01", successFeePercent: 50, atePremium: 1500,
+      },
+      lists: {
+        specials: [
+          { head: "Loss of earnings", description: "14 weeks off work", period: "Past", amount: 7980, evidence: "Payslips; employer letter", agreed: true },
+          { head: "Care and assistance", period: "Past", amount: 2100 },
+          { head: "Loss of earnings", description: "Reduced overtime, 2 years", period: "Future", amount: 6500 },
+        ],
+        offers: [{ date: isoIn(-12), madeBy: "Other side", offerType: "Part 36", amount: 22000, terms: "Net of CRU and interim payments", status: "Open" }],
+      },
+    });
+    await practiceMatter({
+      reference: "PI-2026-0003", department: "personal_injury", description: "Playground fall — Ava Brooks (child)", clientName: "Ava Brooks (by her mother, Sarah Brooks)",
+      type: "Public liability", stage: 2, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Riverside Leisure Ltd", dateOfAccident: "2025-07-12", clientDob: "2016-05-01", accidentLocation: "Riverside adventure playground",
+        injuries: "Fractured forearm", route: "MoJ Portal — public liability", claimNotified: isoIn(-7), liability: "Awaiting decision",
+      },
+    });
 
     // A deliberately overdue + issue-flagged search, matching the frontend demo.
     await client.query(
@@ -309,6 +599,9 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
     console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
     console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
+    console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment & corporate fee earner)`);
+    console.log(`[seed]             tom@vjcrawfordconveyancing.co.uk / ${shown} (litigation & personal injury fee earner)`);
+    console.log(`[seed]             dan@vjcrawfordconveyancing.co.uk / ${shown} (criminal fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

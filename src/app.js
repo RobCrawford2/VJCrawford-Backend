@@ -67,6 +67,9 @@ app.use("/deadlines", require("./routes/deadlines"));
 app.use("/matters", require("./routes/billing").matterRouter);
 app.use("/matters", require("./routes/folders").router);
 app.use("/matters", require("./routes/privateClient").matterRouter);
+app.use("/matters", require("./routes/details").router);
+app.use("/matters", require("./routes/family").router);
+app.use("/matters", require("./routes/lists").router);
 app.use("/safe-custody", require("./routes/privateClient").custodyRouter);
 app.use("/time", require("./routes/billing").timeRouter);
 

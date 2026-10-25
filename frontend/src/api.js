@@ -91,7 +91,20 @@ export const api = {
   },
   getDocumentFile: (id, documentId) => request(`/matters/${id}/documents/${documentId}/file`, { blob: true }),
   // Wills, Trusts & Probate
-  updatePcDetails: (id, details) => request(`/matters/${id}/pc-details`, { method: "PATCH", body: details }),
+  updateDetails: (id, details) => request(`/matters/${id}/details`, { method: "PATCH", body: details }),
+  // Lists kept on a matter (offers, schedule of loss, charges…)
+  addListItem: (id, list, item) => request(`/matters/${id}/lists/${list}`, { method: "POST", body: item }),
+  updateListItem: (id, list, itemId, patch) => request(`/matters/${id}/lists/${list}/${itemId}`, { method: "PATCH", body: patch }),
+  deleteListItem: (id, list, itemId) => request(`/matters/${id}/lists/${list}/${itemId}`, { method: "DELETE" }),
+  getListDocument: (id, list) => request(`/matters/${id}/lists/${list}/document`, { blob: true }),
+  // Family
+  addFamilyAsset: (id, item) => request(`/matters/${id}/family-assets`, { method: "POST", body: item }),
+  updateFamilyAsset: (id, itemId, patch) => request(`/matters/${id}/family-assets/${itemId}`, { method: "PATCH", body: patch }),
+  deleteFamilyAsset: (id, itemId) => request(`/matters/${id}/family-assets/${itemId}`, { method: "DELETE" }),
+  getAssetSchedule: (id) => request(`/matters/${id}/asset-schedule`, { blob: true }),
+  addChild: (id, child) => request(`/matters/${id}/children`, { method: "POST", body: child }),
+  updateChild: (id, childId, patch) => request(`/matters/${id}/children/${childId}`, { method: "PATCH", body: patch }),
+  deleteChild: (id, childId) => request(`/matters/${id}/children/${childId}`, { method: "DELETE" }),
   addEstateItem: (id, item) => request(`/matters/${id}/estate-items`, { method: "POST", body: item }),
   updateEstateItem: (id, itemId, patch) => request(`/matters/${id}/estate-items/${itemId}`, { method: "PATCH", body: patch }),
   deleteEstateItem: (id, itemId) => request(`/matters/${id}/estate-items/${itemId}`, { method: "DELETE" }),
