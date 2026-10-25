@@ -25,6 +25,25 @@ const AREAS = [
     prefix: "CV",
     types: ["Purchase", "Sale", "Remortgage"],
     stages: CONVEYANCING_STAGES,
+    // A sale runs differently from a purchase. Same number of stages, lined up
+    // so Pre-Exchange Review, Exchange and Completion are in the same places
+    // (exchange checks, warnings and existing files rely on that).
+    typeStages: {
+      Sale: [
+        ["Instructed", "Client care letter and terms; memorandum of sale from the estate agent"],
+        ["ID & AML Checks", "Seller's identity verified; checked they are the registered owner(s)"],
+        ["Title & property forms", "Official copies obtained; TA6, TA10 (and TA7 / management pack if leasehold) from the client"],
+        ["Contract pack issued", "Draft contract, title and property forms sent to the buyer's solicitors"],
+        ["Buyer's enquiries", "The buyer's enquiries answered with the client"],
+        ["Redemption figures", "Redemption statements for the mortgage and any other charges"],
+        ["Contract & transfer signed", "Client signs the contract and transfer (TR1), held ready for exchange"],
+        ["Pre-Exchange Review", "File checked; completion date agreed through the chain"],
+        ["Exchange", "Contracts exchanged; client and estate agent told"],
+        ["Completion", "Completion money received; mortgage redeemed; keys released"],
+        ["Post-Completion", "Discharge (DS1) sent, undertakings met, agent paid, proceeds to the client"],
+        ["Closed", "File closed and archived"],
+      ],
+    },
   },
   {
     key: "private_client",

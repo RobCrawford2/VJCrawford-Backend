@@ -1735,3 +1735,31 @@ test("crime: own stages, PACE clock, custody time limit, defence statement, plea
   assert.equal((await request(app).post(`/matters/${mags.id}/lists/charges`).set(dan).send({ offence: "Common assault", classification: "Summary only" })).status, 201);
   assert.equal((await request(app).get(`/matters/${mags.id}`).set(aisha)).status, 404);
 });
+
+test("conveyancing sales: own stage names lined up with purchases; exchange needs the review but not a deposit; import accepts sale stage names", async () => {
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const david = { Authorization: `Bearer ${await tokenFor("david")}` };
+  const conv = (await request(app).get("/settings").set(sarah)).body.areas.find((a) => a.key === "conveyancing");
+  const sale = conv.typeStages.Sale;
+  assert.equal(sale.length, conv.stages.length);
+  for (const name of ["Pre-Exchange Review", "Exchange", "Completion", "Closed"]) assert.equal(sale.indexOf(name), conv.stages.indexOf(name));
+  assert.ok(!sale.includes("Searches") && !sale.includes("Mortgage Offer") && !sale.includes("Report on Title"));
+  assert.equal(conv.typeStageHints.Sale.length, sale.length);
+
+  const me = (await request(app).get("/auth/me").set(sarah)).body.id;
+  const m = (await request(app).post("/matters").set(sarah).send({ address: "7 Seller Street", client: "Sam Seller", type: "Sale", feeEarnerId: me, conflictNote: "Checked" })).body;
+  assert.equal((await request(app).post(`/matters/${m.id}/stage`).set(sarah).send({ stageIndex: 3 })).status, 200);
+  const log = (await request(app).get(`/matters/${m.id}`).set(sarah)).body.activity.map((a) => a.text);
+  assert.ok(log.includes("Moved to Contract pack issued"));
+  // Exchange: blocked only by the pre-exchange review (a seller has no deposit or mortgage offer to show).
+  const blocked = await request(app).post(`/matters/${m.id}/stage`).set(sarah).send({ stageIndex: 8 });
+  assert.equal(blocked.status, 400);
+  assert.deepEqual(blocked.body.exchangeBlockers, ["The pre-exchange review hasn't been confirmed."]);
+
+  // Spreadsheet import understands sale stage names (and the old purchase names still work).
+  const res = await request(app).post("/matters/import").set(david)
+    .send({ rows: [{ Address: "1 Import Row", Client: "Ima Seller", Type: "Sale", Stage: "Buyer's enquiries" }, { Address: "2 Import Row", Client: "Ivor Buyer", Type: "Purchase", Stage: "Searches" }], dryRun: true });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.valid, 2);
+  assert.deepEqual(res.body.errors, []);
+});
