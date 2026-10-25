@@ -919,12 +919,12 @@ test("departments: admins switch departments on for the firm and grant staff acc
   const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
 
   const settings = (await request(app).get("/settings").set(david)).body;
-  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family"]);
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment"]);
   assert.equal(settings.areas.length, 8);
   assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
   const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
   assert.equal(off.status, 400); // family has matters
-  assert.match(off.body.error, /Family/);
+  assert.match(off.body.error, /can't be switched off while it has matters/);
   const on = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client", "family", "employment"] });
   assert.equal(on.status, 200);
   assert.ok(on.body.departments.includes("employment"));
@@ -1531,4 +1531,63 @@ test("family: own stages per type, details, asset schedule with proposed split, 
   assert.equal(m.details.financialOrderInPlace, true);
   assert.equal(m.details.placeOfMarriage, undefined);
   assert.ok((await request(app).get(`/matters/${injunction.id}`).set(priya)).body.details.confidentialAddress);
+});
+
+const isoIn = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
+const binary = (res, cb) => { const c = []; res.on("data", (d) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); };
+
+test("employment: own stages, time limit with ACAS, awards, schedule of loss and offers lists, Word export", async () => {
+  const aisha = { Authorization: `Bearer ${await tokenFor("aisha")}` };
+  const sarah = { Authorization: `Bearer ${await tokenFor("sarah")}` };
+  const list = (await request(app).get("/matters?limit=100").set(aisha)).body.matters;
+  const claim = list.find((m) => m.reference === "EMP-2026-0001");
+  const employer = list.find((m) => m.reference === "EMP-2026-0003");
+  const settlement = list.find((m) => m.reference === "EMP-2026-0002");
+  assert.equal((await request(app).post(`/matters/${claim.id}/stage`).set(aisha).send({ stageIndex: 11 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${settlement.id}/stage`).set(aisha).send({ stageIndex: 8 })).status, 400);
+
+  // Set ACAS dates and a known dismissal date: 6-month limit (act after 1 Oct 2026) extended by the ACAS period.
+  const det = await request(app).patch(`/matters/${claim.id}/details`).set(aisha)
+    .send({ edt: "2026-10-15", acasDayA: "2026-11-01", acasDayB: "2026-12-01", startDate: "2014-03-01", dateOfBirth: "1980-05-10", grossWeeklyPay: 900 });
+  assert.equal(det.status, 200);
+  let m = (await request(app).get(`/matters/${claim.id}`).set(aisha)).body;
+  const limit = m.insights.find((c) => c.title === "Tribunal time limit");
+  assert.ok(limit.rows.some((r) => r.label.startsWith("Primary limit (6 months") && r.value === "14 Apr 2027"));
+  // 30 days of conciliation added to 14 Apr 2027.
+  assert.ok(limit.rows.some((r) => r.label === "Last day to present the ET1" && r.value.startsWith("14 May 2027")));
+  const awards = m.insights.find((c) => c.title === "Awards");
+  // 12 years: 5 at 1.5 (the years starting after the 41st birthday) and 7 at 1 = 14.5 weeks × £751 cap.
+  assert.ok(awards.rows.some((r) => r.label === "Basic award (unfair dismissal)" && r.value === "£10,889.50"));
+
+  // Lists: schedule of loss and offers come with the matter, with summaries.
+  const schedule = m.lists.find((l) => l.key === "schedule");
+  assert.equal(schedule.items.length, 4);
+  assert.ok(schedule.summary.rows.some((r) => r.label === "Net claim" && r.value === "£23,524.50"));
+  const added = await request(app).post(`/matters/${claim.id}/lists/schedule`).set(aisha).send({ head: "Other", description: "New job earnings", amount: "1000", deduction: true });
+  assert.equal(added.status, 201);
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/schedule`).set(aisha).send({ head: "Other" })).status, 400);
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/schedule`).set(aisha).send({ head: "Nonsense", amount: 1 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/charges`).set(aisha).send({ x: 1 })).status, 404);
+  m = (await request(app).get(`/matters/${claim.id}`).set(aisha)).body;
+  assert.ok(m.lists.find((l) => l.key === "schedule").summary.rows.some((r) => r.label === "Net claim" && r.value === "£22,524.50"));
+  const offer = m.lists.find((l) => l.key === "offers").items[0];
+  assert.equal((await request(app).patch(`/matters/${claim.id}/lists/offers/${offer.id}`).set(aisha).send({ status: "Rejected" })).status, 200);
+  m = (await request(app).get(`/matters/${claim.id}`).set(aisha)).body;
+  assert.ok(m.activity.some((a) => /Offers: .* — Rejected/.test(a.text)));
+  assert.equal((await request(app).delete(`/matters/${claim.id}/lists/schedule/${added.body.id}`).set(aisha)).status, 204);
+  const doc = await request(app).get(`/matters/${claim.id}/lists/schedule/document`).set(aisha).buffer(true).parse(binary);
+  assert.equal(doc.status, 200);
+  assert.equal(doc.body.slice(0, 2).toString(), "PK");
+
+  // Employer side: ET3 due 28 days after the claim was sent → flagged.
+  const emp = (await request(app).get(`/matters/${employer.id}`).set(aisha)).body;
+  assert.ok(emp.serverAttention.some((t) => t.startsWith("ET3 response due")));
+  // Settlement agreement: £30,000 tax-free, the rest taxable.
+  const set = (await request(app).get(`/matters/${settlement.id}`).set(aisha)).body;
+  assert.ok(set.insights[0].rows.some((r) => r.label === "— taxable above £30,000" && r.value === "£12,000.00"));
+  assert.equal(set.lists.length, 0);
+
+  // Other departments can't see any of it; datetimes and numbers validate.
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/schedule`).set(sarah).send({ head: "Other", amount: 1 })).status, 404);
+  assert.equal((await request(app).patch(`/matters/${claim.id}/details`).set(aisha).send({ hearingDays: -2 })).status, 400);
 });

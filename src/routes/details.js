@@ -21,6 +21,15 @@ function cleanDetail(field, raw) {
   switch (field.kind) {
     case "date":
       return validDate(String(raw)) ? [String(raw), null] : [null, `${field.label} must be a date.`];
+    case "datetime": {
+      const v = String(raw).slice(0, 16);
+      return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v) && validDate(v.slice(0, 10)) && Number(v.slice(11, 13)) < 24 && Number(v.slice(14, 16)) < 60
+        ? [v, null] : [null, `${field.label} must be a date and time.`];
+    }
+    case "number": {
+      const v = Number(raw);
+      return Number.isFinite(v) && v >= 0 ? [v, null] : [null, `${field.label} must be a number (0 or more).`];
+    }
     case "money": {
       const v = Number(raw);
       return Number.isFinite(v) && v >= 0 ? [Math.round(v * 100) / 100, null] : [null, `${field.label} must be £0 or more.`];

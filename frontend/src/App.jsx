@@ -20,6 +20,7 @@ import { EstateSummaryCard, EstateTab, SafeCustodyCard, SafeCustodyPanel } from 
 import { DetailsCard, ConfidentialBanner } from "./Details";
 import { AssetScheduleTab, ChildrenCard, DivorceDatesCard } from "./Family";
 import { familyAttention } from "./familyCalc";
+import { InsightCards, ListTab, listIcon } from "./Practice";
 import { TimeTab, TimesheetPanel, TimerChip, RecordTimerModal, FUNDING_LABELS } from "./Billing";
 import { api, setAuthToken, getStoredToken, setUnauthorizedHandler } from "./api";
 import { adaptMatter, adaptTaskRow, userName, toApiNewMatter, toApiMatterPatch } from "./adapters";
@@ -305,6 +306,46 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Employment — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  "Tribunal claim — for employee": {
+    0: [["Send client care letter, terms and costs estimate (consider insurance / union funding)", "secretary"], ["Diary the tribunal time limit and the ACAS deadline", "assistant"]],
+    1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Get the contract, policies, payslips, dismissal and grievance letters", "assistant"], ["Identify each claim and its time limit; advise on merits and remedy", "fee_earner"], ["Prepare a first schedule of loss", "fee_earner"], ["Advise the client to look for work and keep a record (mitigation)", "fee_earner"]],
+    3: [["Start ACAS early conciliation (Day A) before the primary time limit", "fee_earner"], ["Record the ACAS certificate (Day B) and recalculate the time limit", "assistant"]],
+    4: [["Draft and present the ET1 with the ACAS certificate number", "fee_earner"], ["Diary the ET3 response date", "assistant"]],
+    5: [["Review the ET3 and advise on prospects", "fee_earner"], ["Prepare the agenda for the preliminary hearing; note directions", "fee_earner"]],
+    6: [["Disclose documents and review the employer's", "fee_earner"], ["Serve an updated schedule of loss with mitigation evidence", "fee_earner"]],
+    7: [["Draft and exchange witness statements", "fee_earner"], ["Agree the hearing bundle", "assistant"], ["Consider instructing counsel", "fee_earner"]],
+    8: [["Prepare for the hearing or settle (COT3 / settlement agreement)", "fee_earner"]],
+    9: [["Report the judgment / remedy to the client; consider appeal (42 days) or reconsideration (14 days)", "fee_earner"], ["Chase payment of the award", "assistant"]],
+    10: [["Send final bill and close the file", "secretary"]],
+  },
+  "Tribunal claim — for employer": {
+    0: [["Send client care letter, terms and costs estimate (check employment practices insurance)", "secretary"], ["Diary the ET3 deadline (28 days from the claim being sent)", "assistant"]],
+    1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+    2: [["Get the personnel file, policies, investigation and dismissal documents", "assistant"], ["Identify witnesses and take initial statements", "fee_earner"], ["Advise on prospects and settlement value", "fee_earner"]],
+    3: [["Speak to ACAS about conciliation", "fee_earner"]],
+    4: [["Draft and file the ET3 response and grounds of resistance", "fee_earner"]],
+    5: [["Prepare for the preliminary hearing; consider strike-out or a deposit order", "fee_earner"]],
+    6: [["Collate and disclose documents", "assistant"]],
+    7: [["Draft and exchange witness statements", "fee_earner"], ["Prepare the hearing bundle", "assistant"]],
+    8: [["Prepare for the hearing or settle (COT3 / settlement agreement)", "fee_earner"]],
+    9: [["Report the outcome; consider a costs application or appeal", "fee_earner"]],
+    10: [["Send final bill and close the file", "secretary"]],
+  },
+  "Settlement agreement": {
+    0: [["Confirm the employer's contribution to fees and who we invoice", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Check payments, tax treatment (£30,000 exemption, PENP), restrictive covenants, reference and confidentiality", "fee_earner"]],
+    3: [["Advise the client on the terms and the claims being given up", "fee_earner"]],
+    4: [["Negotiate improvements if instructed", "fee_earner"]],
+    5: [["Client signs; complete and sign the adviser's certificate", "fee_earner"], ["Return the signed agreement to the employer", "secretary"]],
+    6: [["Confirm the settlement payment has been received", "assistant"]],
+    7: [["Invoice the employer for the agreed contribution and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -473,6 +514,7 @@ function needsAttention(matter, staleDays = 14) {
   if (open && noId.length && matter.currentStageIndex >= 2) reasons.push(`Client ID not checked: ${noId.map((c) => c.name).join(", ")}`);
   if (isConveyancing(matter)) reasons.push(...conveyancingAttention(matter, today));
   if (matter.department === "family" && open) reasons.push(...familyAttention(matter, todayISO()));
+  if (open && matter.serverAttention) reasons.push(...matter.serverAttention);
   const overdueTasks = (matter.tasks || []).filter((t) => t.status === "Open" && isOverdue(t.dueDate));
   if (overdueTasks.length) reasons.push(`${overdueTasks.length} task${overdueTasks.length === 1 ? "" : "s"} overdue`);
   if (open) {
@@ -2942,6 +2984,8 @@ function attentionAction(reason, matter) {
   if (r.includes("mortgage offer") || r.includes("os1") || r.includes("target exchange") || r.includes("target completion")) return { label: "Dates", edit: "dates" };
   if (r.includes("no activity")) return { label: "Log update", note: true };
   if (r.includes("injunction order") || r.includes("conditional order") || r.includes("final order")) return { label: "Details", scroll: "matter-details" };
+  if (r.includes("part 36") || r.includes("offer")) return { label: "Offers", tab: "list:offers" };
+  if ((matter.lists || []).length || (matter.insights || []).length) return { label: "Details", scroll: "matter-details" };
   return {};
 }
 
@@ -3356,6 +3400,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             ] : []),
             ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
             ...(matter.department === "family" && matter.type === "Financial settlement" ? [["assets", <><Scale size={13} /> Assets ({(matter.familyAssets || []).length})</>]] : []),
+            ...(matter.lists || []).map((l) => [`list:${l.key}`, <>{listIcon(l.icon)} {l.title} ({l.items.length})</>]),
             ["undertakings", <><Gavel size={13} /> Undertakings ({matter.undertakings.length})</>],
             ["tasks", <><ListChecks size={13} /> Tasks ({matter.tasks.filter((t) => t.status === "Open").length})</>],
             ["documents", <><FileText size={13} /> Documents ({matter.documents.length})</>],
@@ -3432,6 +3477,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
             {isProbate(matter) && <EstateSummaryCard matter={matter} onOpenEstate={() => setActiveTab("estate")} />}
             {matter.type === "Divorce" && matter.department === "family" && <DivorceDatesCard matter={matter} />}
+            <InsightCards matter={matter} />
             <DetailsCard matter={matter} onChanged={onMatterChanged} />
             {matter.department === "family" && <ChildrenCard matter={matter} onChanged={onMatterChanged} />}
 
@@ -3807,6 +3853,7 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
 
       {activeTab === "estate" && isProbate(matter) && <EstateTab matter={matter} onChanged={onMatterChanged} />}
       {activeTab === "assets" && matter.familyAssets && <AssetScheduleTab matter={matter} onChanged={onMatterChanged} />}
+      {(matter.lists || []).filter((l) => activeTab === `list:${l.key}`).map((l) => <ListTab key={l.key} matter={matter} list={l} onChanged={onMatterChanged} />)}
 
       {activeTab === "documents" && (
         <DocumentsTab

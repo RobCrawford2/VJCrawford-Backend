@@ -83,6 +83,13 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, "Emma Lowe", "emma@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'private_client')`, [emma.id]);
+    // Aisha does employment (and corporate); departments are switched on below as each is set up.
+    const aisha = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Aisha Khan", "aisha@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'employment')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment')`, [aisha.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -278,6 +285,59 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [estateId, emma.id]
     );
 
+    // Matters for the departments set up from configuration (src/config/practice), with list items.
+    const practiceMatter = async ({ reference, department, description, clientName, type, stage, feeEarner, details, funding, estimate, lists = {} }) => {
+      const id = (await client.query(
+        `INSERT INTO matters (firm_id, reference, department, address, client, type, current_stage_index, fee_earner_id, supervisor_id,
+           date_instructed, funding, fee_estimate, details)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) RETURNING id`,
+        [firm.id, reference, department, description, clientName, type, stage, feeEarner, david.id, isoIn(-60), funding, estimate, JSON.stringify(details)]
+      )).rows[0].id;
+      await client.query(`INSERT INTO activity_log (matter_id, user_id, type, text) VALUES ($1,$2,'stage','Matter opened at Instructed')`, [id, feeEarner]);
+      for (const [list, items] of Object.entries(lists)) {
+        for (const [i, data] of items.entries()) {
+          await client.query(`INSERT INTO matter_list_items (matter_id, list, data, position, created_by) VALUES ($1,$2,$3::jsonb,$4,$5)`, [id, list, JSON.stringify(data), i, feeEarner]);
+        }
+      }
+      return id;
+    };
+
+    // Employment
+    await practiceMatter({
+      reference: "EMP-2026-0001", department: "employment", description: "Unfair dismissal — Lewis v Brightwell Logistics", clientName: "Jordan Lewis",
+      type: "Tribunal claim — for employee", stage: 3, feeEarner: aisha.id, funding: "hourly", estimate: 7500,
+      details: {
+        otherParty: "Brightwell Logistics Ltd", jobTitle: "Warehouse supervisor", claims: "Unfair dismissal; failure to make reasonable adjustments",
+        dateOfBirth: "1979-02-14", startDate: "2015-01-05", edt: isoIn(-40), grossWeeklyPay: 820, netWeeklyPay: 610, acasDayA: isoIn(-20),
+      },
+      lists: {
+        schedule: [
+          { head: "Basic award", description: "11 years × 1.5 / 1 weeks at £751", amount: 11264.5 },
+          { head: "Loss of earnings to date", description: "6 weeks × £610 net", amount: 3660 },
+          { head: "Loss of statutory rights", amount: 600 },
+          { head: "Injury to feelings", description: "Lower Vento band", amount: 8000 },
+        ],
+        offers: [{ date: isoIn(-5), madeBy: "Other side", offerType: "COT3 / ACAS", amount: 6000, terms: "Through ACAS; agreed reference", status: "Open" }],
+      },
+    });
+    await practiceMatter({
+      reference: "EMP-2026-0002", department: "employment", description: "Settlement agreement — Nina Clarke", clientName: "Nina Clarke",
+      type: "Settlement agreement", stage: 3, feeEarner: aisha.id, funding: "fixed_fee", estimate: 500,
+      details: {
+        otherParty: "Northgate Insurance plc", dateOfBirth: "1984-09-30", startDate: "2012-04-02", terminationDate: isoIn(14), grossWeeklyPay: 1150,
+        noticePay: 13800, holidayPay: 2100, settlementPayment: 42000, legalFeesContribution: 500, receivedOn: isoIn(-3), paymentDue: isoIn(42),
+      },
+    });
+    await practiceMatter({
+      reference: "EMP-2026-0003", department: "employment", description: "Ahmed v Harbour Cafés Ltd", clientName: "Harbour Cafés Ltd",
+      type: "Tribunal claim — for employer", stage: 4, feeEarner: aisha.id, funding: "hourly", estimate: 9000,
+      details: {
+        otherParty: "Samir Ahmed", claims: "Unfair dismissal; unpaid holiday pay", startDate: "2021-06-01", edt: isoIn(-75), dateOfBirth: "1996-12-03",
+        grossWeeklyPay: 520, claimSentToRespondent: isoIn(-20), tribunal: "Bristol", caseNumber: "1401234/2026",
+      },
+      lists: { offers: [{ date: isoIn(-2), madeBy: "Us", offerType: "Without prejudice save as to costs", amount: 2500, status: "Open" }] },
+    });
+
     // A deliberately overdue + issue-flagged search, matching the frontend demo.
     await client.query(
       `INSERT INTO searches (matter_id, type, date_ordered, expected_return, date_received, issue, issue_notes) VALUES
@@ -361,6 +421,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
     console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
     console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
+    console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

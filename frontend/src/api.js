@@ -92,6 +92,11 @@ export const api = {
   getDocumentFile: (id, documentId) => request(`/matters/${id}/documents/${documentId}/file`, { blob: true }),
   // Wills, Trusts & Probate
   updateDetails: (id, details) => request(`/matters/${id}/details`, { method: "PATCH", body: details }),
+  // Lists kept on a matter (offers, schedule of loss, charges…)
+  addListItem: (id, list, item) => request(`/matters/${id}/lists/${list}`, { method: "POST", body: item }),
+  updateListItem: (id, list, itemId, patch) => request(`/matters/${id}/lists/${list}/${itemId}`, { method: "PATCH", body: patch }),
+  deleteListItem: (id, list, itemId) => request(`/matters/${id}/lists/${list}/${itemId}`, { method: "DELETE" }),
+  getListDocument: (id, list) => request(`/matters/${id}/lists/${list}/document`, { blob: true }),
   // Family
   addFamilyAsset: (id, item) => request(`/matters/${id}/family-assets`, { method: "POST", body: item }),
   updateFamilyAsset: (id, itemId, patch) => request(`/matters/${id}/family-assets/${itemId}`, { method: "PATCH", body: patch }),

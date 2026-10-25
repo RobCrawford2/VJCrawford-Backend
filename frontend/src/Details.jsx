@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { FileText, Pencil, ShieldAlert } from "lucide-react";
 import { api } from "./api";
 import { notify } from "./notify";
+import { FieldInput, showFieldValue } from "./Practice";
 
 /**
  * The details recorded for a matter's department and type (the deceased on
@@ -9,8 +10,6 @@ import { notify } from "./notify";
  * server (matter.detailFields), so a new field needs no change here.
  */
 
-const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—");
-const money = (v) => `£${Number(v).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const blankIfNull = (v) => (v === null || v === undefined ? "" : String(v));
 
 const TITLES = {
@@ -22,16 +21,11 @@ const TITLES = {
   "Financial settlement": "Financial proceedings",
   Children: "Children proceedings",
   "Injunction / domestic abuse": "Injunction",
+  "Tribunal claim — for employee": "The claim",
+  "Tribunal claim — for employer": "The claim",
+  "Settlement agreement": "Settlement agreement",
+  "Employment advice": "The advice",
 };
-
-function showValue(field, v) {
-  if (v === undefined || v === null || v === "") return "—";
-  if (field.kind === "date") return fmtDate(v);
-  if (field.kind === "money") return money(v);
-  if (field.kind === "percent") return `${v}%`;
-  if (field.kind === "bool") return v ? "Yes" : "No";
-  return String(v);
-}
 
 /* ---------------------------------------------------------------------- */
 /* Details card                                                           */
@@ -48,7 +42,7 @@ export function DetailsCard({ matter, onChanged }) {
       {editing
         ? <DetailsForm matter={matter} fields={fields} onCancel={() => setEditing(false)} onSaved={async () => { setEditing(false); await onChanged(); }} />
         : fields.filter((f) => f.key !== "confidentialAddress").map((f) => (
-          <div key={f.key} className="ac-kv"><span className="k">{f.label}</span><span className="v" style={{ textAlign: "right" }}>{showValue(f, matter.details[f.key])}</span></div>
+          <div key={f.key} className="ac-kv"><span className="k">{f.label}</span><span className="v" style={{ textAlign: "right" }}>{showFieldValue(f, matter.details[f.key])}</span></div>
         ))}
     </div>
   );
@@ -74,26 +68,8 @@ function DetailsForm({ matter, fields, onCancel, onSaved }) {
       <div className="ac-pc-grid">
         {fields.map((x) => (
           <div key={x.key} className={`ac-field ${x.kind === "text" ? "wide" : ""}`}>
-            {x.kind === "bool" ? (
-              <label style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontWeight: 500, color: "var(--ink)", fontSize: 13 }}>
-                <input type="checkbox" style={{ width: "auto" }} checked={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.checked })} /> {x.label}
-              </label>
-            ) : (
-              <>
-                <label>{x.label}</label>
-                {x.kind === "select" ? (
-                  <select value={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.value })}>
-                    <option value="">—</option>
-                    {x.options.map((o) => <option key={o}>{o}</option>)}
-                  </select>
-                ) : (
-                  <input type={x.kind === "date" ? "date" : ["money", "percent"].includes(x.kind) ? "number" : "text"}
-                    min={["money", "percent"].includes(x.kind) ? 0 : undefined} max={x.kind === "percent" ? 100 : undefined}
-                    step={x.kind === "money" ? "0.01" : undefined}
-                    value={f[x.key]} onChange={(e) => setF({ ...f, [x.key]: e.target.value })} />
-                )}
-              </>
-            )}
+            {x.kind !== "bool" && <label>{x.label}</label>}
+            <FieldInput field={x} value={f[x.key]} onChange={(v) => setF((prev) => ({ ...prev, [x.key]: v }))} />
           </div>
         ))}
       </div>

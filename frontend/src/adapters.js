@@ -167,6 +167,10 @@ export function adaptMatter(m, users) {
     // Details for the department and type (see Details.jsx), kept as the server sends them.
     details: m.details || {},
     detailFields: m.detailFields || [],
+    // Lists and calculation cards (see Practice.jsx).
+    lists: m.lists || [],
+    insights: m.insights || [],
+    serverAttention: m.serverAttention || [],
     // Family (see Family.jsx).
     children: m.children || [],
     familyAssets: m.familyAssets || null,

@@ -8,7 +8,13 @@
 const { DETAIL_FIELDS: PRIVATE_CLIENT } = require("./privateClient");
 const { DETAIL_FIELDS: FAMILY } = require("./family");
 
-const BY_DEPARTMENT = { private_client: PRIVATE_CLIENT, family: FAMILY };
+const { PRACTICE } = require("./practice");
+
+const BY_DEPARTMENT = {
+  private_client: PRIVATE_CLIENT,
+  family: FAMILY,
+  ...Object.fromEntries(Object.entries(PRACTICE).map(([dept, p]) => [dept, p.details || {}])),
+};
 
 function detailFieldsFor(department, type) {
   const fields = BY_DEPARTMENT[department];
