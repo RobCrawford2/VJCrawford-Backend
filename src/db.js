@@ -25,9 +25,11 @@ const pool = new Pool({
   connectionString: normalizeConnectionString(process.env.DATABASE_URL),
   // Work in UK time, so CURRENT_DATE and timestamps follow the firm's day
   // rather than UTC (the host's timezone).
-  // JIT compilation is off: it only helps big analytical queries, and on
-  // ours it added half a second or more to each request for no gain.
-  options: "-c TimeZone=Europe/London -c jit=off",
+  // Only TimeZone goes in the startup options: some hosts (and connection
+  // poolers) refuse other startup settings outright with error 08P01, which
+  // takes every request down. (JIT is switched off on the database itself —
+  // migration 026.)
+  options: "-c TimeZone=Europe/London",
   max: Number(process.env.PG_POOL_MAX) || 15,
   // Most managed Postgres providers (Render, Railway, RDS, etc.) require SSL
   // in production but not for a local Docker instance. Adjust as needed once
