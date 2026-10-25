@@ -1,7 +1,7 @@
 {
-  "name": "vjcrawford-conveyancing-api",
+  "name": "vjcrawford-law-api",
   "version": "0.1.0",
-  "description": "Backend API for V J Crawford Conveyancing's case management system (Phase 1: database, auth, core matter API).",
+  "description": "Backend API for V J Crawford Law's case management system.",
   "private": true,
   "main": "src/server.js",
   "scripts": {

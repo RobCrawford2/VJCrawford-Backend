@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import Papa from "papaparse";
 import Login from "./Login";
+import { APP_NAME, APP_TAGLINE } from "./brand";
 import { DictTextarea, DictationContext, dictationSupported } from "./Dictation";
 import { notify, confirmAction, Notifications } from "./notify";
 import { calculateSdlt, BUYER_TYPES, RATES_AS_OF } from "./sdlt";
@@ -2141,7 +2142,7 @@ export default function App() {
       <div className="ac-topbar">
         <div className="ac-brand">
           <div className="ac-brand-mark"><Scale size={16} /></div>
-          <h1>V J Crawford Conveyancing<span className="tag">Case Management</span></h1>
+          <h1>{APP_NAME}<span className="tag">{APP_TAGLINE}</span></h1>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
           <button className="ac-iconbtn ac-topbtn" onClick={() => setShowTasksPanel(true)} title="Tasks & reminders">
@@ -4540,7 +4541,7 @@ function OutlookConsentModal({ onCancel, onApprove }) {
           In production, this would redirect to your Microsoft 365 sign-in and consent screen. This demo simulates that step so you can see the intended flow.
         </p>
         <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 8, padding: 14, margin: "14px 0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>V J Crawford Conveyancing's case management system is requesting permission to:</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{APP_NAME}'s case management system is requesting permission to:</div>
           {[
             "Read mail in mailboxes this app is given access to",
             "Send mail as the signed-in firm mailbox",

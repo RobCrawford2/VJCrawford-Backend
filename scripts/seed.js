@@ -19,17 +19,17 @@ async function runSeed(pool, { password = "password123" } = {}) {
     // etc. reference the firm's users via created_by (no cascade), so
     // deleting the firm in one step fails once any such rows exist.
     await client.query(
-      `DELETE FROM matters WHERE firm_id IN (SELECT id FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)')`
+      `DELETE FROM matters WHERE firm_id IN (SELECT id FROM firms WHERE name IN ('V J Crawford Law (Demo)', 'V J Crawford Conveyancing (Demo)'))`
     );
     await client.query(
-      `DELETE FROM staff_audit WHERE firm_id IN (SELECT id FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)')`
+      `DELETE FROM staff_audit WHERE firm_id IN (SELECT id FROM firms WHERE name IN ('V J Crawford Law (Demo)', 'V J Crawford Conveyancing (Demo)'))`
     );
-    await client.query(`DELETE FROM firms WHERE name = 'V J Crawford Conveyancing (Demo)'`);
+    await client.query(`DELETE FROM firms WHERE name IN ('V J Crawford Law (Demo)', 'V J Crawford Conveyancing (Demo)')`);
 
     const firm = (
       await client.query(
         `INSERT INTO firms (name, domain, stale_days) VALUES ($1, $2, 14) RETURNING id`,
-        ["V J Crawford Conveyancing (Demo)", "vjcrawfordconveyancing.co.uk"]
+        ["V J Crawford Law (Demo)", "vjcrawfordconveyancing.co.uk"]
       )
     ).rows[0];
 

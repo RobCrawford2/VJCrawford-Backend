@@ -1,4 +1,4 @@
-# V J Crawford Conveyancing — Frontend
+# V J Crawford Law — Frontend
 
 This is the real, deployable version of the case management app — the same
 interface built up in the prototype, now wired to the actual backend API

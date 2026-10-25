@@ -1,4 +1,4 @@
-# V J Crawford Conveyancing — Case Management API
+# V J Crawford Law — Case Management API
 
 This is **Phase 1** of moving the case management system off browser-only
 storage and onto a real backend: a Postgres database, a REST API, and real
