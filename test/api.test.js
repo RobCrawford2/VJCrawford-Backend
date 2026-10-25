@@ -919,15 +919,15 @@ test("departments: admins switch departments on for the firm and grant staff acc
   const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
 
   const settings = (await request(app).get("/settings").set(david)).body;
-  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment"]);
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation"]);
   assert.equal(settings.areas.length, 8);
   assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
   const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
   assert.equal(off.status, 400); // family has matters
   assert.match(off.body.error, /can't be switched off while it has matters/);
-  const on = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client", "family", "employment"] });
+  const on = await request(app).patch("/settings").set(david).send({ departments: [...new Set([...settings.departments, "corporate"])] });
   assert.equal(on.status, 200);
-  assert.ok(on.body.departments.includes("employment"));
+  assert.ok(on.body.departments.includes("corporate"));
 
   // Grant Sarah family: she can now open a family matter; take it away and she can't see it.
   assert.equal((await request(app).patch(`/users/${sarahId}`).set(david).send({ departments: ["conveyancing", "nonsense"] })).status, 400);
@@ -1590,4 +1590,41 @@ test("employment: own stages, time limit with ACAS, awards, schedule of loss and
   // Other departments can't see any of it; datetimes and numbers validate.
   assert.equal((await request(app).post(`/matters/${claim.id}/lists/schedule`).set(sarah).send({ head: "Other", amount: 1 })).status, 404);
   assert.equal((await request(app).patch(`/matters/${claim.id}/details`).set(aisha).send({ hearingDays: -2 })).status, 400);
+});
+
+test("litigation: limitation, CPR deadlines on business days, fee and track, Part 36 relevant period, chronology", async () => {
+  const tom = { Authorization: `Bearer ${await tokenFor("tom")}` };
+  const list = (await request(app).get("/matters?limit=100").set(tom)).body.matters;
+  const claim = list.find((m) => m.reference === "LIT-2026-0001");
+  const pn = list.find((m) => m.reference === "LIT-2026-0002");
+  const debt = list.find((m) => m.reference === "LIT-2026-0003");
+
+  let m = (await request(app).get(`/matters/${claim.id}`).set(tom)).body;
+  const value = m.insights.find((c) => c.title === "Value");
+  assert.ok(value.rows.some((r) => r.label === "Court issue fee (EX50)" && r.value === "£2,425.00"));
+  assert.ok(value.rows.some((r) => r.value.startsWith("Intermediate track")));
+  // The other side's Part 36 offer was made 16 days ago: relevant period ends in 5 days → flagged.
+  assert.ok(m.serverAttention.some((t) => t.startsWith("Part 36 offer of £30,000.00 from the other side")));
+  assert.equal(m.lists.find((l) => l.key === "chronology").items.length, 4);
+
+  // Known dates: particulars deemed served 1 Dec 2026 with an acknowledgment → defence 29 Dec; claim form posted on Christmas Eve → deemed served 30 Dec.
+  await request(app).patch(`/matters/${claim.id}/details`).set(tom).send({ claimIssued: "2026-11-20", claimFormServed: "2026-12-24", particularsServed: "2026-12-01", aosFiled: "2026-12-10" });
+  m = (await request(app).get(`/matters/${claim.id}`).set(tom)).body;
+  const proc = m.insights.find((c) => c.title === "Proceedings");
+  assert.ok(proc.rows.some((r) => r.label.startsWith("Claim form deemed served") && r.value === "30 Dec 2026"));
+  assert.ok(proc.rows.some((r) => r.label === "Defence due (28 days)" && r.value.startsWith("29 Dec 2026")));
+
+  // Professional negligence: latent damage gives 3 years from knowledge.
+  const p = (await request(app).get(`/matters/${pn.id}`).set(tom)).body;
+  assert.ok(p.insights.find((c) => c.title === "Limitation").rows.some((r) => r.value.startsWith("3 Apr 2028")));
+  assert.ok(p.insights.find((c) => c.title === "Pre-action").rows.some((r) => r.label === "Letter of response due (3 months)"));
+
+  // Debt recovery: its own 8 stages; judgment outstanding.
+  assert.equal((await request(app).post(`/matters/${debt.id}/stage`).set(tom).send({ stageIndex: 8 })).status, 400);
+  const dm = (await request(app).get(`/matters/${debt.id}`).set(tom)).body;
+  assert.ok(dm.insights.find((c) => c.title === "Judgment & enforcement").rows.some((r) => r.label === "Outstanding" && r.value === "£5,302.40"));
+
+  // Chronology entries need a date and an event.
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/chronology`).set(tom).send({ event: "x" })).status, 400);
+  assert.equal((await request(app).post(`/matters/${claim.id}/lists/chronology`).set(tom).send({ date: "2026-01-05", event: "Chaser sent" })).status, 201);
 });

@@ -189,11 +189,23 @@ const AREAS = [
     key: "litigation",
     name: "Litigation",
     prefix: "LIT",
-    types: ["Contract / debt dispute", "Property dispute", "Professional negligence", "Other dispute"],
+    types: ["Contract / debt dispute", "Property dispute", "Professional negligence", "Debt recovery", "Other dispute"],
     stages: [
       "Instructed", "ID & AML Checks", "Pre-action", "Claim issued & served", "Defence & directions",
       "Disclosure", "Witnesses & experts", "Trial / settlement", "Enforcement & costs", "Closed",
     ],
+    typeStages: {
+      "Debt recovery": [
+        ["Instructed", "Invoices, contract and statement of account received"],
+        ["ID & AML Checks", "Identity verified"],
+        ["Letter before claim", "Sent (Debt PAP: 30 days for individuals and sole traders)"],
+        ["Claim issued", "Claim issued (Money Claim Online / County Court) and served"],
+        ["Response", "Admission, defence, or nothing (default judgment)"],
+        ["Judgment", "Judgment entered; payment terms"],
+        ["Enforcement", "Warrant / writ of control, attachment of earnings, charging order…"],
+        ["Closed", "File closed"],
+      ],
+    },
   },
   {
     key: "personal_injury",

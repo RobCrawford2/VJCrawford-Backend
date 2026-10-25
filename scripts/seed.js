@@ -90,6 +90,13 @@ async function runSeed(pool, { password = "password123" } = {}) {
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'employment')`, [firm.id]);
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment')`, [aisha.id]);
+    // Tom does litigation (and personal injury).
+    const tom = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Tom Reid", "tom@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'litigation')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation')`, [tom.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -338,6 +345,50 @@ async function runSeed(pool, { password = "password123" } = {}) {
       lists: { offers: [{ date: isoIn(-2), madeBy: "Us", offerType: "Without prejudice save as to costs", amount: 2500, status: "Open" }] },
     });
 
+    // Litigation
+    await practiceMatter({
+      reference: "LIT-2026-0001", department: "litigation", description: "Wexford Joinery v Castlegate Developments — unpaid invoices", clientName: "Wexford Joinery Ltd",
+      type: "Contract / debt dispute", stage: 4, feeEarner: tom.id, funding: "hourly", estimate: 18000,
+      details: {
+        weAct: "Claimant", otherParty: "Castlegate Developments Ltd", claimValue: 48500, causeOfAction: "2025-09-30", letterBeforeClaim: isoIn(-120),
+        claimIssued: isoIn(-30), claimNumber: "K00BS412", court: "County Court at Bristol", claimFormServed: isoIn(-27), particularsServed: isoIn(-25),
+        aosFiled: isoIn(-15), interestRate: 8, interestFrom: "2025-10-30",
+      },
+      lists: {
+        offers: [
+          { date: isoIn(-40), madeBy: "Us", offerType: "Part 36", amount: 44000, status: "Rejected", respondedOn: isoIn(-25) },
+          { date: isoIn(-16), madeBy: "Other side", offerType: "Part 36", amount: 30000, terms: "Inclusive of interest", status: "Open" },
+        ],
+        chronology: [
+          { date: "2025-03-14", event: "Subcontract signed for joinery at Castlegate's Harbourside scheme", source: "Subcontract, cl. 4 (payment)" },
+          { date: "2025-08-29", event: "Works completed; final account invoice issued (£48,500)", source: "Invoice WJ-2291" },
+          { date: "2025-09-30", event: "Payment due date passes; no pay less notice served", source: "Subcontract cl. 4.3", disputed: true },
+          { date: "2026-02-11", event: "Castlegate alleges defective doors; withholds payment", source: "Email from site manager", disputed: true },
+        ],
+        witnesses: [
+          { name: "Gareth Wexford", role: "Witness of fact", evidence: "Contract, works and invoices", status: "Proof taken" },
+          { name: "Independent joinery expert (TBC)", role: "Expert (single joint)", evidence: "Alleged defects", status: "To approach", due: isoIn(30) },
+        ],
+      },
+    });
+    await practiceMatter({
+      reference: "LIT-2026-0002", department: "litigation", description: "Hale v Barrow Surveyors — negligent survey", clientName: "Michael & Ruth Hale",
+      type: "Professional negligence", stage: 2, feeEarner: tom.id, funding: "hourly", estimate: 25000,
+      details: { weAct: "Claimant", otherParty: "Barrow Surveyors LLP", claimValue: 62000, causeOfAction: "2020-11-12", dateOfKnowledge: "2025-04-03", letterBeforeClaim: isoIn(-30) },
+      lists: { chronology: [
+        { date: "2020-11-12", event: "Level 2 survey report: no significant defects", source: "Survey report" },
+        { date: "2025-04-03", event: "Subsidence discovered during extension works", source: "Structural engineer's report" },
+      ] },
+    });
+    await practiceMatter({
+      reference: "LIT-2026-0003", department: "litigation", description: "Arden Print v Lumen Events — debt", clientName: "Arden Print Ltd",
+      type: "Debt recovery", stage: 6, feeEarner: tom.id, funding: "fixed_fee", estimate: 900,
+      details: {
+        weAct: "Claimant", otherParty: "Lumen Events Ltd", debtorType: "Business", invoiceDue: "2026-03-31", claimValue: 6240, causeOfAction: "2026-03-31",
+        letterBeforeClaim: "2026-05-02", claimIssued: "2026-06-10", judgmentDate: isoIn(-20), judgmentAmount: 6802.4, amountRecovered: 1500,
+      },
+    });
+
     // A deliberately overdue + issue-flagged search, matching the frontend demo.
     await client.query(
       `INSERT INTO searches (matter_id, type, date_ordered, expected_return, date_received, issue, issue_notes) VALUES
@@ -422,6 +473,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
     console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
     console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment fee earner)`);
+    console.log(`[seed]             tom@vjcrawfordconveyancing.co.uk / ${shown} (litigation & personal injury fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

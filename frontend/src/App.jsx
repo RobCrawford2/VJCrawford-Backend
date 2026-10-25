@@ -346,6 +346,36 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Litigation — the same checklist for each kind of dispute (the department's stages), and debt recovery.
+const LITIGATION_TASKS = {
+  0: [["Send client care letter, terms and costs estimate (consider ATE / funding)", "secretary"], ["Diary the limitation date", "assistant"], ["Tell the client to keep all documents (disclosure duty)", "fee_earner"]],
+  1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Review documents and advise on merits, value and costs risk", "fee_earner"], ["Send the letter before claim under the right pre-action protocol", "fee_earner"], ["Consider ADR / mediation and make a settlement offer (Part 36?)", "fee_earner"]],
+  3: [["Draft particulars of claim and statement of truth", "fee_earner"], ["Issue the claim and pay the court fee", "assistant"], ["Serve the claim form within 4 months; diary deemed service", "assistant"]],
+  4: [["Diary acknowledgment and defence dates; consider default judgment", "assistant"], ["Review the defence; consider reply / Part 18 / summary judgment", "fee_earner"], ["Complete the directions questionnaire and costs budget", "fee_earner"]],
+  5: [["Disclosure: search, list (N265) and inspection", "fee_earner"], ["Review the other side's disclosure", "fee_earner"]],
+  6: [["Take and serve witness statements", "fee_earner"], ["Instruct experts / serve reports and questions", "fee_earner"]],
+  7: [["Pre-trial checklist; bundle; brief counsel", "fee_earner"], ["Consider settlement / Part 36 position before trial", "fee_earner"]],
+  8: [["Draw up the order; assess or agree costs", "fee_earner"], ["Enforce the judgment if unpaid", "fee_earner"]],
+  9: [["Send final bill and close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Contract / debt dispute": LITIGATION_TASKS,
+  "Property dispute": LITIGATION_TASKS,
+  "Professional negligence": { ...LITIGATION_TASKS, 2: [["Send the letter of claim under the Professional Negligence Pre-Action Protocol", "fee_earner"], ["Diary 21 days for acknowledgment and 3 months for the response", "assistant"], ["Consider expert evidence on breach of duty", "fee_earner"]] },
+  "Other dispute": LITIGATION_TASKS,
+  "Debt recovery": {
+    0: [["Get the contract / terms, invoices and statement of account", "assistant"], ["Check the debtor's details (Companies House / insolvency register)", "assistant"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Send the letter before claim (with the Debt PAP pack for individuals / sole traders)", "fee_earner"], ["Diary the response date (30 days under the Debt PAP)", "assistant"]],
+    3: [["Issue the claim with interest and fixed costs", "assistant"]],
+    4: [["Request default judgment if no response in time", "assistant"], ["Consider an admission / instalment offer, or a defence", "fee_earner"]],
+    5: [["Send the judgment to the debtor; diary payment", "assistant"]],
+    6: [["Order to obtain information if assets unclear", "fee_earner"], ["Choose enforcement: writ / warrant of control, attachment of earnings, charging order, third party debt order", "fee_earner"]],
+    7: [["Account to the client and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
