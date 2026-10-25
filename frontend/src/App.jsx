@@ -376,6 +376,36 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Personal injury — the department's stages; clinical negligence has its own.
+const PI_TASKS = {
+  0: [["Send client care letter, CFA and ATE information", "secretary"], ["Diary the limitation date", "assistant"], ["Check for before-the-event insurance", "assistant"]],
+  1: [["Verify client identity", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Submit the claim notification (OIC / portal CNF) or send the letter of claim", "fee_earner"], ["Get photos, witness details, accident report / police report", "assistant"]],
+  3: [["Chase the liability decision; diary the protocol deadline", "assistant"], ["If liability is denied, review evidence and advise", "fee_earner"]],
+  4: [["Instruct the medical expert (MedCo for RTA soft tissue)", "assistant"], ["Review the medical report; agree factual corrections", "fee_earner"], ["Request the CRU certificate", "assistant"]],
+  5: [["Prepare the schedule of special damages with evidence", "fee_earner"], ["Value general damages (JC Guidelines / tariff) and advise the client", "fee_earner"], ["Make or respond to offers (Part 36)", "fee_earner"]],
+  6: [["Draft and issue proceedings (Stage 3 / Part 7)", "fee_earner"]],
+  7: [["Settle and get the client's signed authority; court approval if a child", "fee_earner"], ["Account to the client for damages less agreed deductions", "fee_earner"]],
+  8: [["Recover costs; send final bill and close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Road traffic accident": PI_TASKS,
+  "Accident at work": PI_TASKS,
+  "Public liability": PI_TASKS,
+  "Other injury": PI_TASKS,
+  "Clinical negligence": {
+    0: [["Send client care letter, CFA and ATE information", "secretary"], ["Diary the limitation date (date of knowledge?)", "fee_earner"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Request all medical records (GP and hospitals)", "assistant"], ["Paginate and screen the records; prepare a chronology", "fee_earner"]],
+    3: [["Instruct experts on breach of duty and causation", "fee_earner"], ["Conference with experts / counsel on merits", "fee_earner"]],
+    4: [["Send the letter of claim under the clinical negligence protocol", "fee_earner"], ["Notify NHS Resolution / the indemnifier", "assistant"]],
+    5: [["Diary 4 months for the letter of response; chase", "assistant"], ["Review the response and advise", "fee_earner"]],
+    6: [["Quantum evidence and schedule of loss; offers", "fee_earner"], ["Issue proceedings if not settled", "fee_earner"]],
+    7: [["Settle (court approval if a child / protected party); account to the client", "fee_earner"]],
+    8: [["Recover costs; send final bill and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",

@@ -919,7 +919,7 @@ test("departments: admins switch departments on for the firm and grant staff acc
   const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
 
   const settings = (await request(app).get("/settings").set(david)).body;
-  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation"]);
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation", "personal_injury"]);
   assert.equal(settings.areas.length, 8);
   assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
   const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
@@ -1627,4 +1627,38 @@ test("litigation: limitation, CPR deadlines on business days, fee and track, Par
   // Chronology entries need a date and an event.
   assert.equal((await request(app).post(`/matters/${claim.id}/lists/chronology`).set(tom).send({ event: "x" })).status, 400);
   assert.equal((await request(app).post(`/matters/${claim.id}/lists/chronology`).set(tom).send({ date: "2026-01-05", event: "Chaser sent" })).status, 201);
+});
+
+test("personal injury: limitation (incl. children), portal deadlines in business days, valuation, CFA cap, specials", async () => {
+  const tom = { Authorization: `Bearer ${await tokenFor("tom")}` };
+  const list = (await request(app).get("/matters?limit=100").set(tom)).body.matters;
+  const work = list.find((m) => m.reference === "PI-2026-0002");
+  const child = list.find((m) => m.reference === "PI-2026-0003");
+  const rta = list.find((m) => m.reference === "PI-2026-0001");
+
+  // Employer's liability: £28,000 general + £10,080 past + £6,500 future = £44,580; 20% contributory → £35,664.
+  const w = (await request(app).get(`/matters/${work.id}`).set(tom)).body;
+  const val = w.insights.find((c) => c.title === "Valuation");
+  assert.ok(val.rows.some((r) => r.label === "Full value" && r.value === "£44,580.00"));
+  assert.ok(val.rows.some((r) => r.label === "Value after contributory negligence" && r.value === "£35,664.00"));
+  assert.ok(val.rows.some((r) => r.label === "Likely track" && r.value.startsWith("Intermediate")));
+  // CFA cap: 25% of ((28,000 + 10,080) × 80% − 2,300 CRU) = £7,041.00; client keeps at least 35,664 − 7,041 − 1,500 ATE.
+  const cfa = w.insights.find((c) => c.title === "Client's deductions (CFA)");
+  assert.ok(cfa.rows.some((r) => r.label.startsWith("Most the success fee") && r.value === "£7,041.00"));
+  assert.ok(cfa.rows.some((r) => r.label === "Client receives at least" && r.value === "£27,123.00"));
+
+  // A child: limitation runs to the 21st birthday, and settlement needs approval.
+  const c = (await request(app).get(`/matters/${child.id}`).set(tom)).body;
+  const lim = c.insights.find((x) => x.title === "Limitation");
+  assert.ok(lim.rows.some((r) => r.value.startsWith("1 May 2037")));
+  assert.ok(lim.rows.some((r) => r.label === "Child claimant"));
+
+  // RTA portal: 15 business days from Fri 18 Dec 2026, skipping 25 and 28 Dec and 1 Jan → Wed 13 Jan 2027.
+  await request(app).patch(`/matters/${rta.id}/details`).set(tom).send({ claimNotified: "2026-12-18" });
+  const r = (await request(app).get(`/matters/${rta.id}`).set(tom)).body;
+  assert.ok(r.insights.find((x) => x.title === "Protocol").rows.some((x) => x.label.startsWith("Liability decision due (RTA Portal") && x.value.startsWith("13 Jan 2027")));
+
+  // Specials need a head, a period and an amount.
+  assert.equal((await request(app).post(`/matters/${rta.id}/lists/specials`).set(tom).send({ head: "Travel", amount: 10 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${rta.id}/lists/specials`).set(tom).send({ head: "Travel", period: "Past", amount: 10 })).status, 201);
 });

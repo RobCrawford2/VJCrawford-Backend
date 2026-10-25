@@ -96,7 +96,8 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, "Tom Reid", "tom@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'litigation')`, [firm.id]);
-    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation')`, [tom.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation'), ($1, 'personal_injury')`, [tom.id]);
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'personal_injury')`, [firm.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -386,6 +387,49 @@ async function runSeed(pool, { password = "password123" } = {}) {
       details: {
         weAct: "Claimant", otherParty: "Lumen Events Ltd", debtorType: "Business", invoiceDue: "2026-03-31", claimValue: 6240, causeOfAction: "2026-03-31",
         letterBeforeClaim: "2026-05-02", claimIssued: "2026-06-10", judgmentDate: isoIn(-20), judgmentAmount: 6802.4, amountRecovered: 1500,
+      },
+    });
+
+    // Personal injury
+    await practiceMatter({
+      reference: "PI-2026-0001", department: "personal_injury", description: "RTA — rear-end collision, Gloucester Road", clientName: "Leanne Moss",
+      type: "Road traffic accident", stage: 3, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Craig Benson", insurer: "Admiral", insurerRef: "ADM-77120", dateOfAccident: isoIn(-95), clientDob: "1991-06-22",
+        accidentLocation: "Gloucester Road, Bristol", injuries: "Neck and shoulder soft tissue; wrist sprain", route: "MoJ Portal — RTA",
+        claimNotified: isoIn(-26), liability: "Awaiting decision", generalDamages: 7500, cfaSigned: isoIn(-90), successFeePercent: 25, atePremium: 350,
+      },
+      lists: { specials: [
+        { head: "Medical / treatment", description: "6 physiotherapy sessions", period: "Past", amount: 650, evidence: "Invoices" },
+        { head: "Travel", description: "Mileage to appointments", period: "Past", amount: 85, evidence: "Mileage log" },
+        { head: "Loss of earnings", description: "2 weeks off work", period: "Past", amount: 1240, evidence: "Payslips" },
+        { head: "Care and assistance", description: "Help from partner, 4 weeks", period: "Past", amount: 900 },
+      ] },
+    });
+    await practiceMatter({
+      reference: "PI-2026-0002", department: "personal_injury", description: "Accident at work — crushed hand, Hexley Manufacturing", clientName: "Daniel Price",
+      type: "Accident at work", stage: 5, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Hexley Manufacturing Ltd", insurer: "Zurich", dateOfAccident: "2025-02-17", clientDob: "1988-01-09", route: "MoJ Portal — employer's liability",
+        claimNotified: "2025-04-02", liability: "Admitted with contributory negligence", contributoryPercent: 20, injuries: "Crush injury to the left hand; two fractured fingers",
+        medicalExpert: "Mr A Shah, consultant hand surgeon", medicalReportDate: "2026-05-14", generalDamages: 28000, cruAmount: 2300,
+        cfaSigned: "2025-03-01", successFeePercent: 50, atePremium: 1500,
+      },
+      lists: {
+        specials: [
+          { head: "Loss of earnings", description: "14 weeks off work", period: "Past", amount: 7980, evidence: "Payslips; employer letter", agreed: true },
+          { head: "Care and assistance", period: "Past", amount: 2100 },
+          { head: "Loss of earnings", description: "Reduced overtime, 2 years", period: "Future", amount: 6500 },
+        ],
+        offers: [{ date: isoIn(-12), madeBy: "Other side", offerType: "Part 36", amount: 22000, terms: "Net of CRU and interim payments", status: "Open" }],
+      },
+    });
+    await practiceMatter({
+      reference: "PI-2026-0003", department: "personal_injury", description: "Playground fall — Ava Brooks (child)", clientName: "Ava Brooks (by her mother, Sarah Brooks)",
+      type: "Public liability", stage: 2, feeEarner: tom.id, funding: "cfa", estimate: null,
+      details: {
+        otherParty: "Riverside Leisure Ltd", dateOfAccident: "2025-07-12", clientDob: "2016-05-01", accidentLocation: "Riverside adventure playground",
+        injuries: "Fractured forearm", route: "MoJ Portal — public liability", claimNotified: isoIn(-7), liability: "Awaiting decision",
       },
     });
 

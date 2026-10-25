@@ -216,6 +216,20 @@ const AREAS = [
       "Instructed", "ID & AML Checks", "Letter of claim / Portal", "Liability decision", "Medical evidence",
       "Offers & negotiation", "Proceedings issued", "Settlement / trial", "Closed",
     ],
+    // Clinical negligence runs differently (same number of stages, so existing matters keep their place).
+    typeStages: {
+      "Clinical negligence": [
+        ["Instructed", "Client care letter and CFA / funding; limitation diarised"],
+        ["ID & AML Checks", "Identity verified"],
+        ["Records & screening", "Medical records obtained and screened"],
+        ["Expert evidence", "Breach of duty and causation reports"],
+        ["Letter of claim", "Letter of claim sent under the clinical negligence protocol"],
+        ["Letter of response", "Response due within 4 months"],
+        ["Negotiation / proceedings", "Offers, or proceedings issued"],
+        ["Settlement / trial", "Settled (court approval if a child) or tried"],
+        ["Closed", "File closed"],
+      ],
+    },
   },
   {
     key: "corporate",
