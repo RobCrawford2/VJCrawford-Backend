@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 4000;
 // don't use the well-known local default. Unset SEED_ON_BOOT again after the
 // first successful run.
 app.listen(PORT, () => {
-  console.log(`V J Crawford Conveyancing API listening on port ${PORT}`);
+  console.log(`V J Crawford Law API listening on port ${PORT}`);
 
   (async () => {
     try {

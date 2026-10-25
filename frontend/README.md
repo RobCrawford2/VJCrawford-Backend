@@ -1,4 +1,4 @@
-# V J Crawford Conveyancing — Frontend
+# V J Crawford Law — Frontend
 
 This is the real, deployable version of the case management app — the same
 interface built up in the prototype, now wired to the actual backend API
@@ -60,7 +60,7 @@ created via `POST /auth/register`.
    site settings: `VITE_API_URL` = your deployed backend's URL (the Railway
    or Render URL from the backend README, including `https://`).
 5. Deploy. Netlify gives you a URL immediately; add a custom domain
-   afterward if you want `app.vjcrawfordconveyancing.co.uk` or similar.
+   afterward if you want `app.vjcrawfordlaw.co.uk` or similar.
 
 ## Connecting to the backend
 

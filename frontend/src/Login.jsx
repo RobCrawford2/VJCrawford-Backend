@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Scale } from "lucide-react";
 import { api, setAuthToken } from "./api";
+import { APP_NAME } from "./brand";
 
 export default function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
@@ -33,7 +34,7 @@ export default function Login({ onLoggedIn }) {
         <div style={styles.brandRow}>
           <div style={styles.mark}><Scale size={18} color="#ab8a44" /></div>
           <div>
-            <div style={styles.firmName}>V J Crawford Conveyancing</div>
+            <div style={styles.firmName}>{APP_NAME}</div>
             <div style={styles.tag}>Case Management</div>
           </div>
         </div>
@@ -45,7 +46,7 @@ export default function Login({ onLoggedIn }) {
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@vjcrawfordconveyancing.co.uk"
+            placeholder="Your work email"
             autoFocus
             required
           />

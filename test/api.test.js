@@ -13,7 +13,7 @@ const { runMigrations } = require("../scripts/migrate");
 const { runSeed } = require("../scripts/seed");
 
 const PASSWORD = "password123";
-const email = (name) => `${name}@vjcrawfordconveyancing.co.uk`;
+const email = (name) => `${name}@vjcrawfordlaw.co.uk`;
 
 async function login(name, password = PASSWORD) {
   return request(app).post("/auth/login").send({ email: email(name), password });
@@ -51,7 +51,7 @@ test("protected routes need a token", async () => {
 
 test("an account is locked after 5 failed logins, without affecting others", async () => {
   // Uses a non-existent account so the lockout can't leak into other tests.
-  const victim = "nobody-locked@vjcrawfordconveyancing.co.uk";
+  const victim = "nobody-locked@vjcrawfordlaw.co.uk";
   for (let i = 0; i < 5; i++) {
     const res = await request(app).post("/auth/login").send({ email: victim, password: "x" });
     assert.equal(res.status, 401);
@@ -135,11 +135,11 @@ test("sslmode=require is rewritten to verify-full (silences pg warning)", () => 
 test("deactivating a user or changing their role takes effect immediately", async () => {
   const david = { Authorization: `Bearer ${await tokenFor("david")}` };
   const created = await request(app).post("/users").set(david)
-    .send({ name: "Temp Leaver", email: "leaver@vjcrawfordconveyancing.co.uk", password: "leaver-password", role: "admin" });
+    .send({ name: "Temp Leaver", email: "leaver@vjcrawfordlaw.co.uk", password: "leaver-password", role: "admin" });
   assert.equal(created.status, 201);
 
   const login = await request(app).post("/auth/login")
-    .send({ email: "leaver@vjcrawfordconveyancing.co.uk", password: "leaver-password" });
+    .send({ email: "leaver@vjcrawfordlaw.co.uk", password: "leaver-password" });
   const leaver = { Authorization: `Bearer ${login.body.token}` };
   assert.equal((await request(app).get("/matters").set(leaver)).status, 200);
 
@@ -182,7 +182,7 @@ test("the firm's last active admin can't be demoted or deactivated", async () =>
 
   // With a second admin, demoting one of them is fine.
   const other = await request(app).post("/users").set(david)
-    .send({ name: "Second Admin", email: "admin2@vjcrawfordconveyancing.co.uk", password: "second-admin-pw", role: "admin" });
+    .send({ name: "Second Admin", email: "admin2@vjcrawfordlaw.co.uk", password: "second-admin-pw", role: "admin" });
   assert.equal((await request(app).patch(`/users/${other.body.id}`).set(david).send({ role: "supervisor", departments: ["conveyancing"] })).status, 200);
 
   assert.equal((await request(app).patch(`/users/${davidId}`).set(david).send({ role: "boss" })).status, 400);
@@ -286,7 +286,7 @@ test("import: admins can bulk-import matters after checking them", async () => {
       "Price": "£300,000", "Stage": "Searches", "Fee Earner": "Sarah Ncube", "Date Instructed": "01/09/2026",
       "Target Completion": "15/12/2026", "Legacy ID": "X-1" },
     { "Property Address": "2 Test Street, Bath, BA1 1AA", "Client Name": "B Tester", "Matter Type": "Sale",
-      "Reference": "OLD-0002", "Fee Earner": "marcus@vjcrawfordconveyancing.co.uk", "Stage": "12" },
+      "Reference": "OLD-0002", "Fee Earner": "marcus@vjcrawfordlaw.co.uk", "Stage": "12" },
     { "Property Address": "", "Client Name": "", "Matter Type": "" }, // blank line — skipped
   ];
 
@@ -457,11 +457,11 @@ test("staff management: admins add, edit, reset and deactivate staff, and it's a
   const sarahId = (await request(app).get("/auth/me").set({ Authorization: `Bearer ${await tokenFor("sarah")}` })).body.id;
 
   const added = await request(app).post("/users").set(david)
-    .send({ name: "New Starter", email: "Starter@VJCrawfordConveyancing.co.uk", password: "temporary-pass-1", supervisorId: sarahId, departments: ["conveyancing"] });
+    .send({ name: "New Starter", email: "Starter@VJCrawfordLaw.co.uk", password: "temporary-pass-1", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(added.status, 201);
-  assert.equal(added.body.email, "starter@vjcrawfordconveyancing.co.uk");
+  assert.equal(added.body.email, "starter@vjcrawfordlaw.co.uk");
   const id = added.body.id;
-  const login = (pw) => request(app).post("/auth/login").send({ email: "starter@vjcrawfordconveyancing.co.uk", password: pw });
+  const login = (pw) => request(app).post("/auth/login").send({ email: "starter@vjcrawfordlaw.co.uk", password: pw });
   assert.equal((await login("temporary-pass-1")).status, 200);
 
   const edited = await request(app).patch(`/users/${id}`).set(david).send({ name: "New Starter-Smith", role: "supervisor" });
@@ -469,7 +469,7 @@ test("staff management: admins add, edit, reset and deactivate staff, and it's a
   assert.equal(edited.body.name, "New Starter-Smith");
   assert.equal(edited.body.role, "supervisor");
 
-  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "david@vjcrawfordconveyancing.co.uk" })).status, 409);
+  assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "david@vjcrawfordlaw.co.uk" })).status, 409);
   assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ email: "not-an-email" })).status, 400);
   assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: id })).status, 400);
   assert.equal((await request(app).patch(`/users/${id}`).set(david).send({ supervisorId: "00000000-0000-0000-0000-000000000000" })).status, 400);
@@ -572,9 +572,9 @@ test("stage sign-off follows the chain: assistants request, the matter's fee ear
 
   // An assistant who works for Sarah
   const created = await request(app).post("/users").set(david)
-    .send({ name: "Amy Assistant", email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId, departments: ["conveyancing"] });
+    .send({ name: "Amy Assistant", email: "amy@vjcrawfordlaw.co.uk", password: "assistant-pass-1", role: "assistant", supervisorId: sarahId, departments: ["conveyancing"] });
   assert.equal(created.status, 201);
-  const amy = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "amy@vjcrawfordconveyancing.co.uk", password: "assistant-pass-1" })).body.token}` };
+  const amy = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "amy@vjcrawfordlaw.co.uk", password: "assistant-pass-1" })).body.token}` };
 
   await request(app).patch("/settings").set(david).send({ requireExchangeChecks: false }); // gate tested separately
   // Amy sees exactly Sarah's matters
@@ -681,7 +681,7 @@ test("tasks can be assigned to staff who can see the matter, edited, and listed 
   assert.ok(detail.activity.some((a) => a.text.includes("assigned to Sarah Ncube") && a.text.includes("due 2026-10-15")));
 
   // My tasks for Jess = just "Order searches"; Sarah's include the two of hers; admin's "all" includes everything
-  const jess = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "jess@vjcrawfordconveyancing.co.uk", password: "password123" })).body.token}` };
+  const jess = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "jess@vjcrawfordlaw.co.uk", password: "password123" })).body.token}` };
   const jessMine = (await request(app).get("/tasks?mine=true").set(jess)).body;
   assert.deepEqual(jessMine.map((x) => x.description), ["Order searches"]);
   assert.equal(jessMine[0].reference, matter.reference);
@@ -942,12 +942,12 @@ test("departments: admins switch departments on for the firm and grant staff acc
 
   // "All departments" (e.g. a partner) sees across departments without being admin.
   const partner = await request(app).post("/users").set(david)
-    .send({ name: "Pat Partner", email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1", role: "supervisor", allDepartments: true });
+    .send({ name: "Pat Partner", email: "pat@vjcrawfordlaw.co.uk", password: "partner-pass-1", role: "supervisor", allDepartments: true });
   assert.equal(partner.status, 201);
   assert.equal((await request(app).post("/users").set(david)
-    .send({ name: "No Dept", email: "nodept@vjcrawfordconveyancing.co.uk", password: "nodept-pass-1", role: "fee_earner" })).status, 400);
+    .send({ name: "No Dept", email: "nodept@vjcrawfordlaw.co.uk", password: "nodept-pass-1", role: "fee_earner" })).status, 400);
   await request(app).patch(`/users/${sarahId}`).set(david).send({ supervisorId: partner.body.id });
-  const pat = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "pat@vjcrawfordconveyancing.co.uk", password: "partner-pass-1" })).body.token}` };
+  const pat = { Authorization: `Bearer ${(await request(app).post("/auth/login").send({ email: "pat@vjcrawfordlaw.co.uk", password: "partner-pass-1" })).body.token}` };
   assert.equal((await request(app).get(`/matters/${fam.body.id}`).set(pat)).status, 200);
 
   const audit = (await request(app).get("/users/audit").set(david)).body.map((a) => a.details);
@@ -1276,7 +1276,7 @@ test("review fixes: staff and matter assignments are validated; odd input gets a
 
   // A repeated department is fine (not a half-created account).
   const dup = await request(app).post("/users").set(david)
-    .send({ name: "Dup Dept", email: "dupdept@vjcrawfordconveyancing.co.uk", password: "dup-dept-pass-1", departments: ["family", "family"] });
+    .send({ name: "Dup Dept", email: "dupdept@vjcrawfordlaw.co.uk", password: "dup-dept-pass-1", departments: ["family", "family"] });
   assert.equal(dup.status, 201);
   assert.deepEqual(dup.body.departments, ["family"]);
 

@@ -1,4 +1,4 @@
-# V J Crawford Conveyancing — Case Management API
+# V J Crawford Law — Case Management API
 
 This is **Phase 1** of moving the case management system off browser-only
 storage and onto a real backend: a Postgres database, a REST API, and real
@@ -97,12 +97,12 @@ curl http://localhost:4000/health
 ```
 
 Log in with one of the seeded demo accounts (see the output of `npm run
-seed`, or use `sarah@vjcrawfordconveyancing.co.uk` / `password123`):
+seed`, or use `sarah@vjcrawfordlaw.co.uk` / `password123`):
 
 ```bash
 curl -X POST http://localhost:4000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"sarah@vjcrawfordconveyancing.co.uk","password":"password123"}'
+  -d '{"email":"sarah@vjcrawfordlaw.co.uk","password":"password123"}'
 ```
 
 That returns a `token` — pass it as `Authorization: Bearer <token>` on
