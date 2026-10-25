@@ -7,6 +7,7 @@
  */
 
 const { STAGE_NAMES } = require("./stages");
+const { stagesFor } = require("../config/areas");
 
 // Field → accepted header spellings (compared after lower-casing and
 // stripping everything but letters and digits).
@@ -99,7 +100,9 @@ function parseStage(value) {
     const n = Number(v);
     return n >= 1 && n <= STAGE_NAMES.length ? n - 1 : null;
   }
-  const idx = STAGE_NAMES.findIndex((s) => normalizeStage(s) === normalizeStage(v));
+  // Purchase or sale stage names (they line up, so either gives the right number).
+  let idx = STAGE_NAMES.findIndex((s) => normalizeStage(s) === normalizeStage(v));
+  if (idx === -1) idx = stagesFor("conveyancing", "Sale").findIndex((s) => normalizeStage(s) === normalizeStage(v));
   return idx >= 0 ? idx : null;
 }
 

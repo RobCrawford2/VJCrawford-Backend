@@ -64,6 +64,22 @@ const PRE_COMPLETION_CHECKLIST = [
   "Contract signed by the client and held, ready to exchange",
 ];
 
+// A seller's checklist before exchange: no searches, mortgage offer or Report
+// on Title, but signed documents, redemption figures and vacant possession.
+const SALE_PRE_EXCHANGE_CHECKLIST = [
+  "Client has given informed authority to exchange — the completion date and the binding nature of exchange have been explained",
+  "Contract and transfer (TR1) signed by the client and held, ready to exchange",
+  "All the buyer's enquiries answered, with the replies approved by the client",
+  "Redemption figures obtained for every mortgage and charge — the sale price covers them (no shortfall)",
+  "Fittings and contents, and any agreed allowances or retentions, reflected in the contract",
+  "Completion date agreed with the buyer's solicitors and through the chain",
+  "Client understands vacant possession must be given and keys left with the agent on completion",
+  "Client's bank details for the sale proceeds verified by phone",
+  "Leasehold: management pack, landlord's consents and apportionments in hand (or not applicable)",
+];
+/** The pre-exchange checklist for this matter (a sale has its own). */
+const preExchangeChecklist = (matter) => (matter.type === "Sale" ? SALE_PRE_EXCHANGE_CHECKLIST : PRE_COMPLETION_CHECKLIST);
+
 const TYPES = ["Sale", "Purchase", "Remortgage"];
 
 /** YYYY-MM-DD in the user's own (UK) time — toISOString() would give the UTC date. */
@@ -189,17 +205,20 @@ const STANDARD_TASKS = {
     10: [["Submit SDLT return and pay SDLT (within 14 days of completion)", "assistant"], ["Discharge any undertakings given", "fee_earner"], ["Apply to register at HM Land Registry (AP1)", "assistant"], ["Send title information document to client and lender", "secretary"]],
     11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
+  // A sale, keyed by the sale's own stages (see the server's areas config).
   Sale: {
-    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business and payment on account", "secretary"]],
-    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"], ["Confirm client's name matches the registered proprietor", "fee_earner"], ["Verify client's bank details by phone (cyber-fraud check)", "assistant"]],
-    2: [["Obtain official copies of the title register and plan", "assistant"], ["Client to complete TA6, TA10 (and TA7 if leasehold)", "assistant"], ["Draft contract and send contract pack to buyer's solicitors", "fee_earner"], ["Leasehold: request management pack from managing agent", "assistant"]],
-    4: [["Receive buyer's enquiries", "assistant"], ["Answer buyer's enquiries with the client", "fee_earner"]],
-    5: [["Obtain redemption statement for the existing mortgage", "assistant"]],
-    7: [["Obtain signed contract and transfer (TR1) from client", "assistant"], ["Agree completion date with all parties in the chain", "fee_earner"]],
-    8: [["Exchange contracts and record time, method and formula used", "fee_earner"], ["Confirm exchange to client and estate agent", "secretary"], ["Obtain final redemption figure for completion day", "assistant"]],
-    9: [["Receive completion monies from buyer's solicitors", "fee_earner"], ["Redeem the seller's mortgage", "fee_earner"], ["Authorise release of keys and confirm completion to client", "fee_earner"]],
-    10: [["Send DS1 / evidence of discharge to buyer's solicitors", "assistant"], ["Pay estate agent's invoice", "secretary"], ["Account to client for net sale proceeds", "fee_earner"], ["Discharge any undertakings given", "fee_earner"]],
-    11: [["Send final bill and close client ledger", "secretary"], ["Archive the file", "secretary"]],
+    0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business and payment on account", "secretary"], ["Get the memorandum of sale from the estate agent (buyer, price, buyer's solicitors)", "secretary"], ["Record any referral arrangement with the agent", "secretary"]],
+    1: [["Verify client identity (photo ID and proof of address)", "assistant"], ["Complete AML risk assessment", "fee_earner"], ["Check the client is the registered owner (and the right number of owners)", "fee_earner"], ["Ask if anyone else lives at the property (occupiers to sign the contract)", "fee_earner"]],
+    2: [["Obtain official copies of the title register and plan", "assistant"], ["Send TA6, TA10 (and TA7 if leasehold) for the client to complete", "secretary"], ["Ask for building regulations, planning, guarantees and FENSA certificates", "assistant"], ["Leasehold: request the management pack from the managing agent / landlord", "assistant"], ["Check the title for restrictions, charges and anything that needs consent", "fee_earner"]],
+    3: [["Draft the contract (Standard Conditions / SCPC as appropriate)", "fee_earner"], ["Send the contract pack to the buyer's solicitors", "secretary"], ["Confirm to the estate agent that the pack has gone out", "secretary"]],
+    4: [["Log the buyer's enquiries as they arrive", "assistant"], ["Take the client's instructions and answer the enquiries", "fee_earner"], ["Chase any information still needed from the client or agent", "assistant"]],
+    5: [["Get redemption statements for every mortgage and secured loan", "assistant"], ["Check the sale price clears all charges and costs (no shortfall)", "fee_earner"], ["Help to Buy / shared ownership: get the redemption or staircasing figures", "fee_earner"]],
+    6: [["Send the contract and transfer (TR1) to the client to sign", "secretary"], ["Check the signed documents and hold them for exchange", "fee_earner"], ["Verify the client's bank details for the proceeds by phone (cyber-fraud check)", "assistant"]],
+    7: [["Complete the pre-exchange review checklist", "fee_earner"], ["Agree the completion date with the buyer's solicitors and the chain", "fee_earner"], ["Confirm the client can give vacant possession on the completion date", "fee_earner"]],
+    8: [["Exchange contracts and record the time, method and formula used", "fee_earner"], ["Confirm exchange to the client and estate agent", "secretary"], ["Get the final redemption figure for completion day", "assistant"], ["Prepare the completion statement and send it to the client", "fee_earner"], ["Answer the buyer's requisitions on title (TA13)", "fee_earner"]],
+    9: [["Receive the completion money from the buyer's solicitors", "fee_earner"], ["Redeem the mortgage(s) on completion day", "fee_earner"], ["Authorise release of the keys and confirm completion to the client", "fee_earner"]],
+    10: [["Send the discharge (DS1 / ED) or undertaking evidence to the buyer's solicitors", "assistant"], ["Pay the estate agent's invoice", "secretary"], ["Send the net sale proceeds to the client's verified account", "fee_earner"], ["Discharge any undertakings given", "fee_earner"]],
+    11: [["Send final bill and close the client ledger", "secretary"], ["Archive the file", "secretary"]],
   },
   Remortgage: {
     0: [["Send client care letter, terms of business and costs estimate", "secretary"], ["Receive signed terms of business", "secretary"]],
@@ -554,6 +573,12 @@ function workstreamStatus(matter) {
   const enquiries = matter.enquiries.length === 0 ? "pending" : enquiriesReady ? "ready" : "progress";
   const mortgage = !mortgageNeeded ? "n/a" : mortgageConflict ? "blocked" : mortgageDoc ? "ready" : "pending";
 
+  if (matter.type === "Sale") {
+    // A seller doesn't order searches or need an offer: it's the buyer's enquiries and clearing the mortgage.
+    const redemption = !matter.parties.lender ? "n/a" : matter.money.redemptionAmount !== "" ? "ready" : "pending";
+    const readyToExchange = enquiries === "ready" && redemption !== "pending";
+    return { sale: true, enquiries, redemption, readyToExchange };
+  }
   const readyToExchange = searches === "ready" && enquiries === "ready" && (mortgage === "ready" || mortgage === "n/a");
   return { searches, enquiries, mortgage, readyToExchange, mortgageConflict, mortgageExpiry };
 }
@@ -677,7 +702,7 @@ function conveyancingAttention(matter, today) {
   const reasons = [];
   if (matter.searches.some((s) => s.issue)) reasons.push("Search issue flagged");
   if (matter.searches.some((s) => searchStatus(s) === "overdue")) reasons.push("A search is overdue");
-  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push("Enquiries raised and not yet answered");
+  if (matter.enquiries.some((q) => q.status === "Outstanding")) reasons.push(matter.type === "Sale" ? "Buyer's enquiries not yet answered" : "Enquiries raised and not yet answered");
   if (matter.enquiries.some((q) => q.status === "Pending Review")) reasons.push("Enquiry responses received — check whether they're satisfactory");
   const bank = (matter.bankDetails || []).find((b) => b.status !== "superseded");
   if (bank && bank.status === "unverified") {
@@ -1048,7 +1073,7 @@ export default function App() {
     // With the firm's exchange checks on, the server refuses (and explains) — only ask when they're off.
     if (matter && isConveyancing(matter) && settings.requireExchangeChecks === false && idx >= EXCHANGE_INDEX && idx > matter.currentStageIndex && !matter.preCompletionReview.confirmedBy) {
       const proceed = await confirmAction(
-        `The pre-exchange review hasn't been confirmed on this file yet. Move to ${STAGES[idx].name} anyway?`,
+        `The pre-exchange review hasn't been confirmed on this file yet. Move to ${stagesOf(matter)[idx]?.name} anyway?`,
         { confirmLabel: "Move anyway", danger: true }
       );
       if (!proceed) return;
@@ -3286,6 +3311,27 @@ function StageFocus({ matter, setActiveTab, onEdit, onAddNote, onGenerateDocumen
         <div className="ac-focus-actions">{letter("client-care", "Client care letter")}</div>
       </>
     );
+  } else if (matter.type === "Sale" && idx <= 6) {
+    const formsOnFile = matter.documents.some((d) => /TA ?6|TA ?10|TA ?7|property information|fittings|leasehold information|management pack/i.test(d.name));
+    const packSent = matter.documents.some((d) => d.category === "Contract");
+    body = (
+      <>
+        <FocusItem ok={!!matter.property.titleNumber} action="Add" onAction={() => onEdit("property")}>Official copies obtained (title number recorded)</FocusItem>
+        <FocusItem ok={!!matter.property.registeredProprietor} action="Add" onAction={() => onEdit("property")}>Registered owner checked against the client</FocusItem>
+        <FocusItem ok={formsOnFile} action="Documents" onAction={() => setActiveTab("documents")}>Property forms back from the client (TA6, TA10{matter.property.tenure === "Leasehold" ? ", TA7 and management pack" : ""})</FocusItem>
+        {idx >= 3 && <FocusItem ok={packSent} action="Documents" onAction={() => setActiveTab("documents")}>Contract pack sent to the buyer's solicitors</FocusItem>}
+        {idx >= 4 && (
+          <FocusItem ok={matter.enquiries.length > 0 && openEnquiries === 0} action="Enquiries" onAction={() => setActiveTab("enquiries")}>
+            {matter.enquiries.length ? `Buyer's enquiries answered (${matter.enquiries.length - openEnquiries} of ${matter.enquiries.length})` : "Buyer's enquiries received"}
+          </FocusItem>
+        )}
+        {idx >= 5 && hasLender && <FocusItem ok={matter.money.redemptionAmount !== ""} action="Money" onAction={() => setActiveTab("money")}>Redemption figure for {matter.parties.lender} recorded</FocusItem>}
+        {idx >= 6 && <FocusItem ok={bank?.status === "verified"} action="Money" onAction={() => setActiveTab("money")}>Client's bank details for the proceeds verified</FocusItem>}
+        {idx >= 5 && hasLender && <div className="ac-focus-actions">{letter("redemption-request", "Redemption request to lender")}</div>}
+        <div style={{ marginTop: 10 }}><Workstreams matter={matter} /></div>
+      </>
+    );
+    if (idx === 6) tool = <BankDetailsCard matter={matter} onAdd={onAddBankDetails} onVerify={onVerifyBankDetails} />;
   } else if (idx <= 5 || (idx === 6 && !(isPurchase || matter.type === "Remortgage"))) {
     body = (
       <>
@@ -3405,11 +3451,9 @@ function Workstreams({ matter }) {
     <>
               {(() => {
                 const w = workstreamStatus(matter);
-                const rows = [
-                  ["Searches", w.searches],
-                  ["Enquiries", w.enquiries],
-                  ["Mortgage", w.mortgage],
-                ];
+                const rows = w.sale
+                  ? [["Buyer's enquiries", w.enquiries], ["Mortgage redemption", w.redemption]]
+                  : [["Searches", w.searches], ["Enquiries", w.enquiries], ["Mortgage", w.mortgage]];
                 const label = { ready: "Ready", progress: "In progress", pending: "Not started", blocked: "Blocked", "n/a": "Not required" };
                 const cls = { ready: "closed", progress: "progress", pending: "setup", blocked: "issue", "n/a": "setup" };
                 return (
@@ -3459,7 +3503,7 @@ function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onR
                   <p style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 0, marginBottom: 10 }}>
                     Check the file over before exchange — this is the point contracts become legally binding. Confirming this signs off that it's ready to proceed.
                   </p>
-                  {PRE_COMPLETION_CHECKLIST.map((item) => (
+                  {preExchangeChecklist(matter).map((item) => (
                     <label key={item} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, fontWeight: 400, color: "var(--ink-soft)", padding: "5px 0", lineHeight: 1.4, cursor: "pointer" }}>
                       <input
                         type="checkbox"
@@ -3471,7 +3515,7 @@ function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onR
                     </label>
                   ))}
                   <div style={{ fontSize: 11, color: "var(--slate-light)", margin: "8px 0 10px" }}>
-                    {matter.preCompletionReview.checkedItems.length} of {PRE_COMPLETION_CHECKLIST.length} checked
+                    {preExchangeChecklist(matter).filter((i) => matter.preCompletionReview.checkedItems.includes(i)).length} of {preExchangeChecklist(matter).length} checked
                   </div>
                   {matter.type === "Purchase" && (
                     <div className="ac-kv" style={{ marginBottom: 10 }}>
@@ -3484,7 +3528,7 @@ function PreExchangeReview({ matter, onToggleChecklistItem, onConfirmReview, onR
                   <button
                     className="ac-submit"
                     style={{ marginTop: 0 }}
-                    disabled={matter.preCompletionReview.checkedItems.length < PRE_COMPLETION_CHECKLIST.length}
+                    disabled={!preExchangeChecklist(matter).every((i) => matter.preCompletionReview.checkedItems.includes(i))}
                     onClick={onConfirmReview}
                   >
                     <Check size={14} /> Confirm reviewed &amp; ready to exchange
@@ -3546,8 +3590,9 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
             ["time", <><Clock size={13} /> Time &amp; billing</>],
             ...(conv ? [
               ["money", <><PoundSterling size={13} /> Money</>],
-              ["enquiries", <><FileSearch size={13} /> Enquiries ({matter.enquiries.length})</>],
-              ["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>],
+              ["enquiries", <><FileSearch size={13} /> {matter.type === "Sale" ? "Buyer's enquiries" : "Enquiries"} ({matter.enquiries.length})</>],
+              // The buyer orders searches, so a sale only shows the tab if searches have been logged on it.
+              ...(matter.type !== "Sale" || matter.searches.length ? [["searches", <><ShieldCheck size={13} /> Searches ({matter.searches.length})</>]] : []),
             ] : []),
             ...(isProbate(matter) ? [["estate", <><Landmark size={13} /> Estate</>]] : []),
             ...(matter.department === "family" && matter.type === "Financial settlement" ? [["assets", <><Scale size={13} /> Assets ({(matter.familyAssets || []).length})</>]] : []),
@@ -3772,17 +3817,18 @@ function MatterDetail({ matter, allMatters, settings, onImportOutlook, onOpenSet
         <div className="ac-detail-body" style={{ gridTemplateColumns: "1fr" }}>
           <div className="ac-col-main">
             <div className="ac-section-head">
-              <h2>Pre-contract enquiries</h2>
+              <h2>{matter.type === "Sale" ? "Buyer's enquiries" : "Pre-contract enquiries"}</h2>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="ac-addbtn" onClick={onLoadStandardEnquiries}><FileSearch size={13} /> Use standard template</button>
-                <button className="ac-addbtn" onClick={onAddEnquiry}><Plus size={13} /> Add enquiry</button>
+                {/* The standard template is for raising enquiries as the buyer's solicitor; on a sale they arrive from the buyer. */}
+                {matter.type !== "Sale" && <button className="ac-addbtn" onClick={onLoadStandardEnquiries}><FileSearch size={13} /> Use standard template</button>}
+                <button className="ac-addbtn" onClick={onAddEnquiry}><Plus size={13} /> {matter.type === "Sale" ? "Log an enquiry received" : "Add enquiry"}</button>
                 <button
                   className="ac-addbtn"
                   style={{ background: "var(--brass)" }}
                   onClick={onEmailEnquiries}
                   disabled={!matter.enquiries.some((q) => q.status === "Outstanding")}
                 >
-                  <Send size={13} /> Email raised enquiries to other side
+                  <Send size={13} /> {matter.type === "Sale" ? "Email replies to the buyer's solicitors" : "Email raised enquiries to other side"}
                 </button>
               </div>
             </div>
@@ -6247,7 +6293,7 @@ function ConfirmReviewForm({ matter, defaultName, onClose, onConfirm }) {
           <button type="button" className="ac-iconbtn" onClick={onClose}><X size={18} /></button>
         </div>
         <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 0 }}>
-          This confirms all {PRE_COMPLETION_CHECKLIST.length} checklist items have been reviewed on {matter.reference} — {matter.address} — and the file is ready to exchange contracts.
+          This confirms all {preExchangeChecklist(matter).length} checklist items have been reviewed on {matter.reference} — {matter.address} — and the file is ready to exchange contracts.
         </p>
         <div className="ac-field">
           <label>Reviewed by</label>
