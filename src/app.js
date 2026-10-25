@@ -81,7 +81,9 @@ app.use((req, res) => {
 // on failure, so error responses are consistent and stack traces never leak
 // to the client.
 app.use((err, req, res, next) => {
-  console.error(err);
+  // A short reference ties the message the user sees to this log entry.
+  const ref = `ERR-${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 5)}`.toUpperCase();
+  console.error(`[error] ${ref} ${req.method} ${req.originalUrl} user=${req.user?.id || "-"}`, err);
 
   if (err.code === "23505") {
     // Postgres unique_violation
@@ -107,7 +109,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: "That references something that doesn't exist." });
   }
 
-  res.status(500).json({ error: "Something went wrong on our end." });
+  res.status(500).json({ error: `Something went wrong on our end (reference ${ref}).`, ref });
 });
 
 module.exports = app;
