@@ -406,6 +406,50 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Corporate & commercial — by type, keyed by the type's own stage index.
+const SHARE_DEAL_TASKS = {
+  0: [["Send client care letter, terms and costs estimate", "secretary"], ["Conflict check on buyer, seller and target", "assistant"]],
+  1: [["Verify client identity and beneficial owners", "assistant"], ["Complete AML risk assessment", "fee_earner"]],
+  2: [["Review / draft heads of terms", "fee_earner"], ["Put an NDA and exclusivity agreement in place", "fee_earner"], ["Check whether NSI Act notification is mandatory", "fee_earner"]],
+  3: [["Send the due diligence questionnaire", "fee_earner"], ["Review the data room; log issues (red / amber / green)", "fee_earner"], ["Prepare the due diligence report", "fee_earner"]],
+  4: [["Draft / review the SPA, disclosure letter and tax covenant", "fee_earner"], ["Prepare board minutes, stock transfer forms and resignations", "assistant"]],
+  5: [["Negotiate the SPA; agree warranties, limitations and price mechanism", "fee_earner"], ["Satisfy conditions; obtain consents and clearances", "fee_earner"], ["Agree the completion agenda / checklist", "fee_earner"]],
+  6: [["Hold the completion meeting / virtual signing", "fee_earner"], ["Transfer consideration; release signed documents", "fee_earner"]],
+  7: [["Stamp the stock transfer form (30 days)", "assistant"], ["File Companies House changes (officers, PSC) within 14 days", "assistant"], ["Update the statutory registers; issue share certificates", "assistant"], ["Diary warranty and tax covenant claim deadlines", "assistant"]],
+  8: [["Send completion bible and final bill; close the file", "secretary"]],
+};
+Object.assign(STANDARD_TASKS, {
+  "Share sale": SHARE_DEAL_TASKS,
+  "Share purchase": SHARE_DEAL_TASKS,
+  "Company formation": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify directors, shareholders and PSCs", "assistant"]],
+    2: [["Check the name is available; agree share structure and officers", "fee_earner"], ["Decide model or bespoke articles", "fee_earner"]],
+    3: [["Prepare the IN01 / online incorporation and articles", "assistant"]],
+    4: [["File the incorporation; send the certificate to the client", "assistant"]],
+    5: [["Write up the statutory registers and PSC register", "assistant"], ["Issue share certificates", "assistant"], ["Advise on corporation tax, VAT and PAYE registration", "fee_earner"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+  "Commercial contract": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Understand the commercial deal, risks and must-haves", "fee_earner"]],
+    3: [["Draft the contract, or review the other side's draft", "fee_earner"], ["Check liability caps, indemnities, IP, data protection and termination", "fee_earner"]],
+    4: [["Send mark-ups and agree points with the other side", "fee_earner"]],
+    5: [["Arrange signing; send the signed copy", "secretary"], ["Diary renewal and notice dates", "assistant"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+  "Shareholders' agreement": {
+    0: [["Send client care letter and terms", "secretary"]],
+    1: [["Verify client identity", "assistant"]],
+    2: [["Take instructions on reserved matters, transfers, leavers, deadlock and dividends", "fee_earner"]],
+    3: [["Draft the agreement and any new articles", "fee_earner"]],
+    4: [["Agree comments from all shareholders", "fee_earner"]],
+    5: [["Arrange signing; pass the special resolution and file the articles", "assistant"]],
+    6: [["Send final bill and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",
@@ -3045,6 +3089,9 @@ function attentionAction(reason, matter) {
   if (r.includes("no activity")) return { label: "Log update", note: true };
   if (r.includes("injunction order") || r.includes("conditional order") || r.includes("final order")) return { label: "Details", scroll: "matter-details" };
   if (r.includes("part 36") || r.includes("offer")) return { label: "Offers", tab: "list:offers" };
+  if (r.startsWith("checklist:")) return { label: "Checklist", tab: "list:checklist" };
+  if (r.includes("due diligence")) return { label: "Due diligence", tab: "list:dd" };
+  if (r.startsWith("statement / report from")) return { label: "Witnesses", tab: "list:witnesses" };
   if ((matter.lists || []).length || (matter.insights || []).length) return { label: "Details", scroll: "matter-details" };
   return {};
 }

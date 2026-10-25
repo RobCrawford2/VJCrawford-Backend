@@ -89,7 +89,8 @@ async function runSeed(pool, { password = "password123" } = {}) {
       [firm.id, "Aisha Khan", "aisha@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
     )).rows[0];
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'employment')`, [firm.id]);
-    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment')`, [aisha.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'employment'), ($1, 'corporate')`, [aisha.id]);
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'corporate')`, [firm.id]);
     // Tom does litigation (and personal injury).
     const tom = (await client.query(
       `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
@@ -390,6 +391,47 @@ async function runSeed(pool, { password = "password123" } = {}) {
       },
     });
 
+    // Corporate & commercial
+    await practiceMatter({
+      reference: "CC-2026-0001", department: "corporate", description: "Acquisition of Pembroke Marine Services Ltd", clientName: "Harbour Group Holdings Ltd",
+      type: "Share purchase", stage: 4, feeEarner: aisha.id, funding: "hourly", estimate: 45000,
+      details: {
+        weAct: "Buyer", otherParty: "The shareholders of Pembroke Marine Services Ltd", targetCompany: "Pembroke Marine Services Ltd", companyNumber: "08812345",
+        consideration: 1850000, deferredConsideration: 250000, headsAgreed: isoIn(-70), longstopDate: isoIn(10), warrantyMonths: 24, taxCovenantYears: 7, wiInsurance: true,
+      },
+      lists: {
+        checklist: [
+          { item: "Share purchase agreement", category: "Transaction document", responsible: "Us", status: "With other side", due: isoIn(5) },
+          { item: "Disclosure letter and bundle", category: "Transaction document", responsible: "Other side", status: "Drafting", due: isoIn(5) },
+          { item: "Tax covenant", category: "Transaction document", responsible: "Us", status: "Agreed" },
+          { item: "Bank consent to change of control", category: "Condition precedent", responsible: "Other side", status: "Not started", due: isoIn(-2) },
+          { item: "Buyer board minutes approving the acquisition", category: "Board / shareholder approval", responsible: "Us", status: "Drafting", due: isoIn(-1) },
+          { item: "Stock transfer forms", category: "Completion deliverable", responsible: "Other side", status: "Not started" },
+          { item: "Resignations of outgoing directors", category: "Completion deliverable", responsible: "Other side", status: "Not started" },
+          { item: "W&I insurance policy bound", category: "Ancillary document", responsible: "Client", status: "Agreed" },
+        ],
+        dd: [
+          { area: "Commercial contracts", issue: "Main customer contract (38% of revenue) terminable on change of control", risk: "Red", protection: "Condition precedent", status: "Open" },
+          { area: "Employment", issue: "Two contractors likely to be employees (IR35 exposure)", risk: "Amber", protection: "Specific indemnity", status: "Open" },
+          { area: "Property", issue: "Boatyard lease expires in 14 months; no renewal rights", risk: "Amber", protection: "Further enquiry", status: "Open" },
+          { area: "Corporate", issue: "Share capital history reconciles to filings", risk: "Green", protection: "Accept", status: "Resolved" },
+        ],
+      },
+    });
+    await practiceMatter({
+      reference: "CC-2026-0002", department: "corporate", description: "Incorporation — Fern & Finch Interiors Ltd", clientName: "Fern & Finch Interiors Ltd",
+      type: "Company formation", stage: 5, feeEarner: aisha.id, funding: "fixed_fee", estimate: 450,
+      details: {
+        proposedName: "Fern & Finch Interiors Ltd", companyType: "Private limited by shares", sicCode: "74100 — specialised design", directors: "Holly Fern; Marcus Finch",
+        shareholders: "Holly Fern 50; Marcus Finch 50 (£1 ordinary)", articles: "Model articles", incorporationDate: isoIn(-40), companyNumber: "16455120", startedTrading: isoIn(-20),
+      },
+    });
+    await practiceMatter({
+      reference: "CC-2026-0003", department: "corporate", description: "Supply agreement — Coastline Foods", clientName: "Harbour Group Holdings Ltd",
+      type: "Commercial contract", stage: 5, feeEarner: aisha.id, funding: "hourly", estimate: 3000,
+      details: { otherParty: "Coastline Foods Ltd", contractType: "Supply of goods", contractValue: 240000, signedOn: "2024-02-01", startDate: "2024-03-01", renewalDate: isoIn(115), noticeDays: 90, governingLaw: "England and Wales" },
+    });
+
     // Personal injury
     await practiceMatter({
       reference: "PI-2026-0001", department: "personal_injury", description: "RTA — rear-end collision, Gloucester Road", clientName: "Leanne Moss",
@@ -516,7 +558,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             lucy@vjcrawfordconveyancing.co.uk / ${shown} (secretary to Marcus)`);
     console.log(`[seed]             priya@vjcrawfordconveyancing.co.uk / ${shown} (family fee earner)`);
     console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
-    console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment fee earner)`);
+    console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment & corporate fee earner)`);
     console.log(`[seed]             tom@vjcrawfordconveyancing.co.uk / ${shown} (litigation & personal injury fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");

@@ -240,6 +240,50 @@ const AREAS = [
       "Instructed", "ID & AML Checks", "Heads of terms / scoping", "Due diligence",
       "Drafting & negotiation", "Signing / completion", "Post-completion filings", "Closed",
     ],
+    typeStages: (() => {
+      const deal = [
+        ["Instructed", "Client care letter and terms; conflict check on all parties"],
+        ["ID & AML Checks", "Identity verified, including beneficial owners"],
+        ["Heads of terms", "Heads agreed; exclusivity and confidentiality in place"],
+        ["Due diligence", "Questionnaire, data room review and due diligence report"],
+        ["SPA & disclosure", "SPA, disclosure letter and ancillaries drafted"],
+        ["Negotiation", "Terms negotiated; conditions and approvals obtained"],
+        ["Exchange / completion", "Signed and completed; consideration paid"],
+        ["Post-completion", "Stamp duty, Companies House filings, registers updated"],
+        ["Closed", "File closed"],
+      ];
+      return {
+        "Share sale": deal,
+        "Share purchase": deal,
+        "Company formation": [
+          ["Instructed", "Client care letter and terms"],
+          ["ID & AML Checks", "Directors, shareholders and PSCs verified"],
+          ["Structure agreed", "Name, share structure, officers and articles agreed"],
+          ["Documents prepared", "Incorporation application (IN01) and articles"],
+          ["Incorporated", "Certificate of incorporation received"],
+          ["Post-incorporation", "Registers, share certificates, bank account, HMRC registrations"],
+          ["Closed", "File closed"],
+        ],
+        "Commercial contract": [
+          ["Instructed", "Client care letter and terms"],
+          ["ID & AML Checks", "Identity verified"],
+          ["Scoping", "Commercial terms and risks understood"],
+          ["Drafting", "Contract drafted or the other side's draft reviewed"],
+          ["Negotiation", "Mark-ups exchanged and issues agreed"],
+          ["Signed", "Signed; key dates diarised"],
+          ["Closed", "File closed"],
+        ],
+        "Shareholders' agreement": [
+          ["Instructed", "Client care letter and terms"],
+          ["ID & AML Checks", "Identity verified"],
+          ["Instructions", "Decision-making, transfers, leavers, deadlock and dividends agreed"],
+          ["Drafting", "Agreement (and articles) drafted"],
+          ["Negotiation", "Comments from all shareholders agreed"],
+          ["Signed", "Signed; articles adopted by special resolution and filed"],
+          ["Closed", "File closed"],
+        ],
+      };
+    })(),
   },
   {
     key: "crime",

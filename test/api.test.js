@@ -919,7 +919,7 @@ test("departments: admins switch departments on for the firm and grant staff acc
   const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
 
   const settings = (await request(app).get("/settings").set(david)).body;
-  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation", "personal_injury"]);
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation", "personal_injury", "corporate"]);
   assert.equal(settings.areas.length, 8);
   assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
   const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
@@ -1661,4 +1661,38 @@ test("personal injury: limitation (incl. children), portal deadlines in business
   // Specials need a head, a period and an amount.
   assert.equal((await request(app).post(`/matters/${rta.id}/lists/specials`).set(tom).send({ head: "Travel", amount: 10 })).status, 400);
   assert.equal((await request(app).post(`/matters/${rta.id}/lists/specials`).set(tom).send({ head: "Travel", period: "Past", amount: 10 })).status, 201);
+});
+
+test("corporate: own stages, stamp duty, deal timetable, checklist and due diligence lists, company and renewal dates", async () => {
+  const aisha = { Authorization: `Bearer ${await tokenFor("aisha")}` };
+  const list = (await request(app).get("/matters?limit=100").set(aisha)).body.matters;
+  const deal = list.find((m) => m.reference === "CC-2026-0001");
+  const formation = list.find((m) => m.reference === "CC-2026-0002");
+  const contract = list.find((m) => m.reference === "CC-2026-0003");
+  assert.equal((await request(app).post(`/matters/${deal.id}/stage`).set(aisha).send({ stageIndex: 9 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${formation.id}/stage`).set(aisha).send({ stageIndex: 7 })).status, 400);
+
+  let m = (await request(app).get(`/matters/${deal.id}`).set(aisha)).body;
+  // £1,850,000 + £250,000 deferred = £2.1m × 0.5% = £10,500.
+  assert.ok(m.insights.find((c) => c.title === "Stamp duty").rows.some((r) => r.value === "£10,500.00"));
+  assert.ok(m.serverAttention.some((t) => t.startsWith("Longstop date")));
+  assert.ok(m.serverAttention.some((t) => t.startsWith("1 red due diligence issue")));
+  assert.ok(m.serverAttention.some((t) => t.includes("Buyer board minutes")));
+  assert.ok(!m.serverAttention.some((t) => t.includes("Bank consent"))); // the other side's job
+  const checklist = m.lists.find((l) => l.key === "checklist");
+  assert.ok(checklist.summary.rows.some((r) => r.label === "Complete" && r.value === "0 of 8"));
+
+  // Complete the deal: warranty, tax and filing dates appear.
+  await request(app).patch(`/matters/${deal.id}/details`).set(aisha).send({ completionDate: "2026-11-30" });
+  m = (await request(app).get(`/matters/${deal.id}`).set(aisha)).body;
+  const t = m.insights.find((c) => c.title === "Deal timetable");
+  assert.ok(t.rows.some((r) => r.label.startsWith("Warranty claims") && r.value === "30 Nov 2028"));
+  assert.ok(t.rows.some((r) => r.label.startsWith("Tax covenant") && r.value === "30 Nov 2033"));
+  assert.ok(m.insights.find((c) => c.title === "Stamp duty").rows.some((r) => r.label === "Stamp the transfer within 30 days" && r.value.startsWith("30 Dec 2026")));
+
+  const f = (await request(app).get(`/matters/${formation.id}`).set(aisha)).body;
+  assert.ok(f.insights.find((c) => c.title === "Company deadlines"));
+  assert.equal(f.lists.find((l) => l.key === "dd"), undefined);
+  const c = (await request(app).get(`/matters/${contract.id}`).set(aisha)).body;
+  assert.ok(c.serverAttention.some((x) => x.startsWith("Notice to end or renegotiate")));
 });
