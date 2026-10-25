@@ -889,7 +889,7 @@ test("departments: staff only see and open matters in their own departments", as
   // Opening matters: only in your departments, with that department's types.
   assert.equal((await request(app).post("/matters").set(sarah).send({ department: "family", address: "Divorce", client: "X", type: "Divorce" })).status, 403);
   assert.equal((await request(app).post("/matters").set(priya).send({ department: "family", address: "Divorce", client: "X", type: "Purchase" })).status, 400);
-  assert.equal((await request(app).post("/matters").set(david).send({ department: "crime", address: "R v X", client: "X", type: "Crown Court" })).status, 400); // not switched on
+  assert.equal((await request(app).post("/matters").set(priya).send({ department: "crime", address: "R v X", client: "X", type: "Crown Court" })).status, 403); // not her department
   const priyaId = (await request(app).get("/auth/me").set(priya)).body.id;
   const created = await request(app).post("/matters").set(priya).send({ department: "family", address: "Child arrangements", client: "Y", type: "Children", feeEarnerId: priyaId });
   assert.equal(created.status, 201);
@@ -919,7 +919,7 @@ test("departments: admins switch departments on for the firm and grant staff acc
   const sarahId = (await request(app).get("/auth/me").set(sarah)).body.id;
 
   const settings = (await request(app).get("/settings").set(david)).body;
-  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation", "personal_injury", "corporate"]);
+  assert.deepEqual(settings.departments, ["conveyancing", "private_client", "family", "employment", "litigation", "personal_injury", "corporate", "crime"]);
   assert.equal(settings.areas.length, 8);
   assert.equal((await request(app).patch("/settings").set(sarah).send({ departments: ["conveyancing"] })).status, 403);
   const off = await request(app).patch("/settings").set(david).send({ departments: ["conveyancing", "private_client"] });
@@ -1695,4 +1695,43 @@ test("corporate: own stages, stamp duty, deal timetable, checklist and due dilig
   assert.equal(f.lists.find((l) => l.key === "dd"), undefined);
   const c = (await request(app).get(`/matters/${contract.id}`).set(aisha)).body;
   assert.ok(c.serverAttention.some((x) => x.startsWith("Notice to end or renegotiate")));
+});
+
+test("crime: own stages, PACE clock, custody time limit, defence statement, plea credit, appeal deadline, charges", async () => {
+  const dan = { Authorization: `Bearer ${await tokenFor("dan")}` };
+  const aisha = { Authorization: `Bearer ${await tokenFor("aisha")}` };
+  const list = (await request(app).get("/matters?limit=100").set(dan)).body.matters;
+  assert.ok(list.length === 3 && list.every((m) => m.department === "crime"));
+  const station = list.find((m) => m.reference === "CRI-2026-0001");
+  const mags = list.find((m) => m.reference === "CRI-2026-0002");
+  const crown = list.find((m) => m.reference === "CRI-2026-0003");
+  assert.equal((await request(app).post(`/matters/${station.id}/stage`).set(dan).send({ stageIndex: 6 })).status, 400);
+  assert.equal((await request(app).post(`/matters/${crown.id}/stage`).set(dan).send({ stageIndex: 9 })).status, 200);
+  await request(app).post(`/matters/${crown.id}/stage`).set(dan).send({ stageIndex: 5 });
+
+  // PACE clock from a known relevant time.
+  assert.equal((await request(app).patch(`/matters/${station.id}/details`).set(dan).send({ relevantTime: "2026-10-25T25:00" })).status, 400);
+  await request(app).patch(`/matters/${station.id}/details`).set(dan).send({ relevantTime: "2026-10-25T21:30" });
+  const s = (await request(app).get(`/matters/${station.id}`).set(dan)).body;
+  const pace = s.insights.find((c) => c.title === "PACE clock");
+  assert.ok(pace.rows.some((r) => r.label === "24-hour limit" && r.value.startsWith("26 Oct 2026 21:30")));
+
+  // Crown Court, remanded: CTL 182 days from sending (12 days left) and defence statement due in 4 days → flagged.
+  const c = (await request(app).get(`/matters/${crown.id}`).set(dan)).body;
+  assert.ok(c.serverAttention.some((t) => t.startsWith("Custody time limit expires")));
+  assert.ok(c.serverAttention.some((t) => t.startsWith("Defence statement due")));
+  const charges = c.lists.find((l) => l.key === "charges");
+  assert.ok(charges.summary.rows.some((r) => r.label === "Venue" && r.value.startsWith("Crown Court")));
+
+  // Magistrates': guilty-plea credit after the first hearing is a quarter at most; sentence → 15 business days to appeal.
+  let m = (await request(app).get(`/matters/${mags.id}`).set(dan)).body;
+  assert.ok(m.insights.find((x) => x.title === "Case timetable").rows.some((r) => r.label === "Credit for a guilty plea now" && r.value.startsWith("one quarter")));
+  await request(app).patch(`/matters/${mags.id}/details`).set(dan).send({ verdictDate: "2026-12-18", sentenceDate: "2026-12-18" });
+  m = (await request(app).get(`/matters/${mags.id}`).set(dan)).body;
+  assert.ok(m.insights.find((x) => x.title === "Appeal deadline").rows[0].value.startsWith("13 Jan 2027"));
+
+  // Charges need an offence and a classification; other departments can't see crime files.
+  assert.equal((await request(app).post(`/matters/${mags.id}/lists/charges`).set(dan).send({ offence: "Assault" })).status, 400);
+  assert.equal((await request(app).post(`/matters/${mags.id}/lists/charges`).set(dan).send({ offence: "Common assault", classification: "Summary only" })).status, 201);
+  assert.equal((await request(app).get(`/matters/${mags.id}`).set(aisha)).status, 404);
 });

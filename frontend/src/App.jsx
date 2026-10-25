@@ -450,6 +450,49 @@ Object.assign(STANDARD_TASKS, {
   },
 });
 
+// Crime — by type, keyed by the type's own stage index.
+Object.assign(STANDARD_TASKS, {
+  "Police station": {
+    0: [["Log the call (DSCC reference) and arrange attendance within 45 minutes where possible", "fee_earner"]],
+    1: [["Conflict check on co-suspects", "assistant"]],
+    2: [["Review the custody record; note the relevant time and reviews", "fee_earner"], ["Obtain disclosure from the officer; private consultation", "fee_earner"], ["Check fitness for interview and need for an appropriate adult / interpreter", "fee_earner"]],
+    3: [["Advise on interview (answer / prepared statement / no comment); attend", "fee_earner"], ["Record the advice and reasons on file", "fee_earner"]],
+    4: [["Note the outcome; make representations on bail / charge", "fee_earner"], ["Diary any bail return date; open a court file if charged", "assistant"]],
+    5: [["Submit the police station claim and close the file", "secretary"]],
+  },
+  "Magistrates' court": {
+    0: [["Take instructions; check custody / bail position", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Apply for a representation order (interests of justice and means)", "assistant"]],
+    3: [["Review the IDPC; advise on plea and credit", "fee_earner"], ["Represent at the first hearing; make bail application if needed", "fee_earner"], ["Complete the preparation for effective trial form", "fee_earner"]],
+    4: [["Review initial disclosure; consider a defence statement and section 8 application", "fee_earner"]],
+    5: [["Warn defence witnesses; obtain evidence and character references", "assistant"], ["Prepare cross-examination and submissions", "fee_earner"]],
+    6: [["Attend trial / sentence; mitigation and pre-sentence report", "fee_earner"], ["Advise on appeal (15 business days)", "fee_earner"]],
+    7: [["Submit the legal aid claim and close the file", "secretary"]],
+  },
+  "Crown Court": {
+    0: [["Take instructions; check custody / bail position", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Representation order (and any contribution order)", "assistant"]],
+    3: [["Note the sending date; diary the PTPH and custody time limit", "assistant"]],
+    4: [["Prepare for the PTPH: plea, issues, witness requirements; brief counsel", "fee_earner"]],
+    5: [["Review the served case and initial disclosure", "fee_earner"], ["Serve the defence statement within 28 days; defence witness notice", "fee_earner"], ["Consider a section 8 disclosure application", "fee_earner"]],
+    6: [["Instruct experts; take defence witness statements; prepare bundles", "fee_earner"], ["Conference with counsel and the client", "fee_earner"]],
+    7: [["Attend trial / sentence; mitigation and character references", "fee_earner"]],
+    8: [["Advise on appeal within 28 days (and in writing)", "fee_earner"]],
+    9: [["Submit the litigator's fee claim and close the file", "secretary"]],
+  },
+  Appeal: {
+    0: [["Check the time limit for appeal immediately", "fee_earner"]],
+    1: [["Verify identity; conflict check", "assistant"]],
+    2: [["Obtain transcripts / papers; advise on merits", "fee_earner"]],
+    3: [["Lodge the notice and grounds of appeal", "fee_earner"]],
+    4: [["Prepare for the leave / appeal hearing", "fee_earner"]],
+    5: [["Report the outcome to the client", "fee_earner"]],
+    6: [["Submit the claim and close the file", "secretary"]],
+  },
+});
+
 const STANDARD_SEARCHES = [
   {
     category: "Core searches (standard on almost every purchase)",

@@ -99,6 +99,13 @@ async function runSeed(pool, { password = "password123" } = {}) {
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'litigation')`, [firm.id]);
     await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'litigation'), ($1, 'personal_injury')`, [tom.id]);
     await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'personal_injury')`, [firm.id]);
+    // Dan does crime.
+    const dan = (await client.query(
+      `INSERT INTO users (firm_id, name, email, password_hash, role, supervisor_id) VALUES ($1,$2,$3,$4,'fee_earner',$5) RETURNING id`,
+      [firm.id, "Dan Hughes", "dan@vjcrawfordconveyancing.co.uk", passwordHash, david.id]
+    )).rows[0];
+    await client.query(`INSERT INTO firm_departments (firm_id, department) VALUES ($1, 'crime')`, [firm.id]);
+    await client.query(`INSERT INTO user_departments (user_id, department) VALUES ($1, 'crime')`, [dan.id]);
 
     async function insertMatter(m) {
       const row = (await client.query(
@@ -432,6 +439,40 @@ async function runSeed(pool, { password = "password123" } = {}) {
       details: { otherParty: "Coastline Foods Ltd", contractType: "Supply of goods", contractValue: 240000, signedOn: "2024-02-01", startDate: "2024-03-01", renewalDate: isoIn(115), noticeDays: 90, governingLaw: "England and Wales" },
     });
 
+    // Crime
+    const hoursAgo = (h) => new Date(Date.now() - h * 3600000).toLocaleString("sv-SE", { timeZone: "Europe/London" }).slice(0, 16).replace(" ", "T");
+    await practiceMatter({
+      reference: "CRI-2026-0001", department: "crime", description: "R v Kyle Mason — police station (burglary)", clientName: "Kyle Mason",
+      type: "Police station", stage: 2, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        policeStation: "Bristol Patchway", custodyNumber: "BS-26-118842", relevantTime: hoursAgo(5), clientDob: "2002-03-19",
+        offenceSummary: "Burglary of a dwelling (Westbury-on-Trym)", legalAid: "Police station scheme (free)", custodyStatus: "Not in custody",
+      },
+    });
+    await practiceMatter({
+      reference: "CRI-2026-0002", department: "crime", description: "R v Shannon Price — theft from a shop", clientName: "Shannon Price",
+      type: "Magistrates' court", stage: 5, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        court: "Bristol Magistrates' Court", firstHearing: isoIn(-21), venue: "Either way — kept in the magistrates' court", initialDisclosure: isoIn(-6),
+        trialDate: isoIn(38), clientDob: "1995-08-04", urn: "52SS0412326", legalAid: "Representation order granted", maat: "6123455", custodyStatus: "Court bail",
+        bailConditions: "Not to enter Cribbs Causeway shopping centre",
+      },
+      lists: { charges: [{ offence: "Theft from a shop", legislation: "s.1 Theft Act 1968", dateOfOffence: isoIn(-60), classification: "Either way", plea: "Not guilty", outcome: "Pending" }] },
+    });
+    await practiceMatter({
+      reference: "CRI-2026-0003", department: "crime", description: "R v Jamal Okoro — wounding with intent", clientName: "Jamal Okoro",
+      type: "Crown Court", stage: 5, feeEarner: dan.id, funding: "legal_aid", estimate: null,
+      details: {
+        court: "Bristol Crown Court", firstHearing: isoIn(-171), sentDate: isoIn(-170), remandedFrom: isoIn(-171), ptphDate: isoIn(-140),
+        initialDisclosure: isoIn(-24), trialDate: isoIn(30), clientDob: "1999-11-27", urn: "52SS0399126", legalAid: "Representation order granted",
+        custodyStatus: "Remanded in custody",
+      },
+      lists: { charges: [
+        { offence: "Wounding with intent", legislation: "s.18 Offences Against the Person Act 1861", dateOfOffence: isoIn(-175), classification: "Indictable only", plea: "Not guilty", outcome: "Pending" },
+        { offence: "Possession of a bladed article", legislation: "s.139 Criminal Justice Act 1988", dateOfOffence: isoIn(-175), classification: "Either way", plea: "Guilty", outcome: "Convicted" },
+      ] },
+    });
+
     // Personal injury
     await practiceMatter({
       reference: "PI-2026-0001", department: "personal_injury", description: "RTA — rear-end collision, Gloucester Road", clientName: "Leanne Moss",
@@ -560,6 +601,7 @@ async function runSeed(pool, { password = "password123" } = {}) {
     console.log(`[seed]             emma@vjcrawfordconveyancing.co.uk / ${shown} (wills, trusts & probate fee earner)`);
     console.log(`[seed]             aisha@vjcrawfordconveyancing.co.uk / ${shown} (employment & corporate fee earner)`);
     console.log(`[seed]             tom@vjcrawfordconveyancing.co.uk / ${shown} (litigation & personal injury fee earner)`);
+    console.log(`[seed]             dan@vjcrawfordconveyancing.co.uk / ${shown} (criminal fee earner)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
